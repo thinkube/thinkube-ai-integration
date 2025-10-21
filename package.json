@@ -1,0 +1,256 @@
+{
+  "name": "thinkube-ai-integration",
+  "displayName": "Thinkube AI Integration",
+  "description": "Thinkube integration for AI assistants - Launch Claude from explorer context menu with smart directory detection and project configuration",
+  "version": "0.1.0",
+  "publisher": "thinkube",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": ["Other", "Programming Languages"],
+  "keywords": ["claude", "ai", "thinkube", "code assistant"],
+  "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cmxela/thinkube-ai-integration"
+  },
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "thinkube-ai.claude.openHere",
+        "title": "Open Here",
+        "category": "Claude Code"
+      },
+      {
+        "command": "thinkube-ai.claude.continueHere",
+        "title": "Continue Session",
+        "category": "Claude Code"
+      },
+      {
+        "command": "thinkube-ai.claude.addDirectory",
+        "title": "Add Reference Directory",
+        "category": "Claude Code"
+      },
+      {
+        "command": "thinkube-ai.claude.configureProject",
+        "title": "Configure Project",
+        "category": "Claude Code"
+      },
+      {
+        "command": "thinkube-ai.claude.showConfiguration",
+        "title": "Show Configuration",
+        "category": "Claude Code"
+      },
+      {
+        "command": "thinkube-ai.app.createFromTemplate",
+        "title": "Create from Template",
+        "category": "Thinkube App"
+      },
+      {
+        "command": "thinkube-ai.app.addService",
+        "title": "Add Service",
+        "category": "Thinkube App"
+      },
+      {
+        "command": "thinkube-ai.app.generateComponent",
+        "title": "Generate Component",
+        "category": "Thinkube App"
+      },
+      {
+        "command": "thinkube-ai.app.generateAPI",
+        "title": "Generate API",
+        "category": "Thinkube App"
+      },
+      {
+        "command": "thinkube-ai.deploy.preview",
+        "title": "Deploy to Preview",
+        "category": "Thinkube Deploy"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "submenu": "claude.code.submenu",
+          "group": "navigation@30",
+          "when": "explorerResourceIsFolder"
+        }
+      ],
+      "claude.code.submenu": [
+        {
+          "command": "thinkube-ai.claude.openHere",
+          "group": "1_session@1"
+        },
+        {
+          "command": "thinkube-ai.claude.continueHere",
+          "group": "1_session@2"
+        },
+        {
+          "command": "thinkube-ai.claude.addDirectory",
+          "group": "2_config@1"
+        },
+        {
+          "command": "thinkube-ai.claude.configureProject",
+          "group": "2_config@2"
+        },
+        {
+          "command": "thinkube-ai.claude.showConfiguration",
+          "group": "2_config@3"
+        },
+        {
+          "submenu": "claude.code.quickactions",
+          "group": "3_quickactions@1"
+        }
+      ],
+      "claude.code.quickactions": [
+        {
+          "command": "thinkube-ai.app.createFromTemplate",
+          "group": "1_create@1"
+        },
+        {
+          "command": "thinkube-ai.app.generateComponent",
+          "group": "2_generate@1"
+        },
+        {
+          "command": "thinkube-ai.app.generateAPI",
+          "group": "2_generate@2"
+        },
+        {
+          "command": "thinkube-ai.app.addService",
+          "group": "3_services@1"
+        },
+        {
+          "command": "thinkube-ai.deploy.preview",
+          "group": "4_deploy@1"
+        }
+      ],
+      "editor/context": [
+        {
+          "submenu": "claude.code.editor.submenu",
+          "group": "claude@1"
+        }
+      ],
+      "claude.code.editor.submenu": [
+        {
+          "command": "thinkube-ai.claude.openHere",
+          "group": "1_session@1"
+        },
+        {
+          "command": "thinkube-ai.claude.continueHere",
+          "group": "1_session@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "thinkube-ai.claude.openHere",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "thinkube-ai.claude.continueHere",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "thinkube-ai.claude.addDirectory",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "thinkube-ai.claude.configureProject",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "thinkube-ai.claude.showConfiguration",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "thinkube-ai.app.createFromTemplate",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "thinkube-ai.app.addService",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "thinkube-ai.app.generateComponent",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "thinkube-ai.app.generateAPI",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "thinkube-ai.deploy.preview",
+          "when": "workspaceFolderCount > 0"
+        }
+      ]
+    },
+    "submenus": [
+      {
+        "id": "claude.code.submenu",
+        "label": "Claude Code"
+      },
+      {
+        "id": "claude.code.quickactions",
+        "label": "Quick Actions"
+      },
+      {
+        "id": "claude.code.editor.submenu",
+        "label": "Claude Code"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "thinkube-ai.claude.openHere",
+        "key": "ctrl+shift+c",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "thinkube-ai.claude.continueHere",
+        "key": "ctrl+shift+alt+c",
+        "when": "editorTextFocus"
+      }
+    ],
+    "configuration": {
+      "title": "Thinkube AI Integration",
+      "properties": {
+        "thinkube-ai.claude.defaultReferenceDirectories": {
+          "type": "array",
+          "default": [],
+          "description": "Default directories to add as references for all Claude sessions"
+        },
+        "thinkube-ai.claude.showNotifications": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show notifications when adding/removing directories"
+        },
+        "thinkube-ai.controlDomain": {
+          "type": "string",
+          "default": "",
+          "description": "Your Thinkube domain (e.g., thinkube.com)"
+        },
+        "thinkube-ai.apiToken": {
+          "type": "string",
+          "default": "",
+          "description": "Thinkube Control API token for deployments",
+          "markdownDescription": "Get your API token from Thinkube Control settings"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "test": "node ./dist/test/runTest.js",
+    "publish:ovsx": "ovsx publish",
+    "prepublish:ovsx": "npm run compile && npm run package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.100.0",
+    "@types/node": "^24.0.0",
+    "@vscode/vsce": "^2.22.0",
+    "ovsx": "^0.8.3",
+    "typescript": "^5.8.3"
+  }
+}
