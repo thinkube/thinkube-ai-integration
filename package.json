@@ -21,7 +21,7 @@
       "activitybar": [
         {
           "id": "claude-config",
-          "title": "Claude Config",
+          "title": "Thinkube AI",
           "icon": "resources/tk_ai.svg"
         }
       ]
@@ -96,112 +96,112 @@
       {
         "command": "thinkube.refreshConfig",
         "title": "Refresh Configuration",
-        "category": "Claude Config",
+        "category": "Thinkube AI",
         "icon": "$(refresh)"
       },
       {
         "command": "thinkube.addHook",
         "title": "Add Hook",
-        "category": "Claude Config",
+        "category": "Thinkube AI",
         "icon": "$(add)"
       },
       {
         "command": "thinkube.deleteHook",
         "title": "Delete Hook",
-        "category": "Claude Config",
+        "category": "Thinkube AI",
         "icon": "$(trash)"
       },
       {
         "command": "thinkube.addCommand",
         "title": "Add Command",
-        "category": "Claude Config",
+        "category": "Thinkube AI",
         "icon": "$(add)"
       },
       {
         "command": "thinkube.openCommand",
         "title": "Open Command",
-        "category": "Claude Config"
+        "category": "Thinkube AI"
       },
       {
         "command": "thinkube.deleteCommand",
         "title": "Delete Command",
-        "category": "Claude Config",
+        "category": "Thinkube AI",
         "icon": "$(trash)"
       },
       {
         "command": "thinkube.addSkill",
         "title": "Add Skill",
-        "category": "Claude Config",
+        "category": "Thinkube AI",
         "icon": "$(add)"
       },
       {
         "command": "thinkube.openSkill",
         "title": "Open Skill",
-        "category": "Claude Config"
+        "category": "Thinkube AI"
       },
       {
         "command": "thinkube.deleteSkill",
         "title": "Delete Skill",
-        "category": "Claude Config",
+        "category": "Thinkube AI",
         "icon": "$(trash)"
       },
       {
         "command": "thinkube.addAgent",
         "title": "Add Agent",
-        "category": "Claude Config",
+        "category": "Thinkube AI",
         "icon": "$(add)"
       },
       {
         "command": "thinkube.openAgent",
         "title": "Open Agent",
-        "category": "Claude Config"
+        "category": "Thinkube AI"
       },
       {
         "command": "thinkube.deleteAgent",
         "title": "Delete Agent",
-        "category": "Claude Config",
+        "category": "Thinkube AI",
         "icon": "$(trash)"
       },
       {
         "command": "thinkube.addMcpServer",
         "title": "Add MCP Server",
-        "category": "Claude Config",
+        "category": "Thinkube AI",
         "icon": "$(add)"
       },
       {
         "command": "thinkube.deleteMcpServer",
         "title": "Remove MCP Server",
-        "category": "Claude Config",
+        "category": "Thinkube AI",
         "icon": "$(trash)"
       },
       {
         "command": "thinkube.editPermissions",
         "title": "Edit Permissions",
-        "category": "Claude Config",
+        "category": "Thinkube AI",
         "icon": "$(edit)"
       },
       {
         "command": "thinkube.initializeConfig",
         "title": "Initialize Claude Config",
-        "category": "Claude Config",
+        "category": "Thinkube AI",
         "icon": "$(new-folder)"
       },
       {
         "command": "thinkube.smartSetup",
         "title": "Smart Setup",
-        "category": "Claude Config",
+        "category": "Thinkube AI",
         "icon": "$(sparkle)"
       },
       {
         "command": "thinkube.naturalLanguageSetup",
         "title": "Describe What You Need",
-        "category": "Claude Config",
+        "category": "Thinkube AI",
         "icon": "$(comment-discussion)"
       },
       {
         "command": "thinkube.browseTemplates",
         "title": "Browse Templates",
-        "category": "Claude Config",
+        "category": "Thinkube AI",
         "icon": "$(folder-library)"
       }
     ],
