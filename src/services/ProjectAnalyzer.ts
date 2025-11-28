@@ -15,11 +15,11 @@ export interface DetectedTool {
 }
 
 export interface ConfigSuggestion {
-    type: 'hook' | 'command' | 'skill' | 'mcp-server';
+    type: 'hook' | 'command' | 'skill' | 'agent' | 'mcp-server';
     name: string;
     description: string;
     reason: string;
-    config: HookConfig | CommandConfig | SkillConfig | McpServerConfig;
+    config: HookConfig | CommandConfig | SkillConfig | AgentConfig | McpServerConfig;
 }
 
 interface HookConfig {
@@ -38,6 +38,14 @@ interface SkillConfig {
     name: string;
     description: string;
     content: string;
+}
+
+interface AgentConfig {
+    name: string;
+    description: string;
+    content: string;
+    tools?: string[];
+    model?: 'inherit' | 'haiku' | 'sonnet' | 'opus';
 }
 
 interface McpServerConfig {
@@ -285,32 +293,53 @@ export class ProjectAnalyzer {
             });
         }
 
-        // Code review skill
+        // Code review subagent (NOT a skill - needs isolated context for thorough analysis)
         suggestions.push({
-            type: 'skill',
+            type: 'agent',
             name: 'code-reviewer',
             description: 'Review code for issues and improvements',
-            reason: 'Useful for any project',
+            reason: 'Delegated code review with isolated context',
             config: {
                 name: 'code-reviewer',
-                description: 'Reviews code for best practices, bugs, and improvements',
-                content: `# Code Reviewer Skill
+                description: 'Expert code review. Use PROACTIVELY after significant code changes.',
+                tools: ['Read', 'Grep', 'Glob'],
+                model: 'inherit',
+                content: `You are a senior code reviewer ensuring high standards of code quality.
 
-You are a code review expert. When invoked:
+## Review Checklist
 
-1. Analyze the code for:
+1. **Correctness**:
    - Potential bugs and edge cases
-   - Security vulnerabilities
-   - Performance issues
-   - Code style and readability
+   - Logic errors
+   - Error handling
+
+2. **Security**:
+   - Input validation
+   - Authentication/authorization
+   - Common vulnerabilities (XSS, SQL injection, etc.)
+
+3. **Performance**:
+   - Inefficient algorithms
+   - Memory leaks
+   - Unnecessary computations
+
+4. **Maintainability**:
+   - Code clarity and readability
+   - Documentation
+   - Test coverage
    - Best practices for ${type === 'unknown' ? 'the language being used' : type}
 
-2. Provide actionable feedback with specific line references
+## Output Format
 
-3. Suggest improvements with code examples
+Provide structured feedback with:
+- Severity (Critical/Major/Minor)
+- Location (file:line)
+- Issue description
+- Suggested fix with code example
+- Explanation of "why"
 
-Be constructive and explain the "why" behind each suggestion.`
-            } as SkillConfig
+Be constructive and focus on learning.`
+            } as AgentConfig
         });
 
         // MCP servers based on project

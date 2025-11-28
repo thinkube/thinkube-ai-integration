@@ -468,6 +468,7 @@ function getIconForType(type: string): string {
         case 'hook': return 'symbol-event';
         case 'command': return 'terminal';
         case 'skill': return 'mortar-board';
+        case 'agent': return 'hubot';
         case 'mcp-server': return 'server';
         default: return 'gear';
     }
@@ -735,6 +736,15 @@ async function applySuggestion(service: ClaudeConfigService, suggestion: ConfigS
                 config.name as string,
                 config.description as string,
                 config.content as string
+            );
+            break;
+        case 'agent':
+            await service.createAgent(
+                config.name as string,
+                config.description as string,
+                config.content as string,
+                config.tools as string[] | undefined,
+                config.model as 'inherit' | 'haiku' | 'sonnet' | 'opus' | undefined
             );
             break;
         case 'mcp-server':
