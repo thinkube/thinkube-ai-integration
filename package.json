@@ -39,6 +39,12 @@
     "views": {
       "claude-config": [
         {
+          "id": "thinkube.chatPanel",
+          "name": "Claude Assistant",
+          "type": "webview",
+          "contextualTitle": "Chat with Claude"
+        },
+        {
           "id": "claudeConfigTree",
           "name": "Configuration",
           "contextualTitle": "Claude Code Configuration"

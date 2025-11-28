@@ -5,6 +5,7 @@ import * as appCommands from './commands/app';
 import { ClaudeConfigService } from './services/ClaudeConfigService';
 import { ProjectAnalyzer, ConfigSuggestion } from './services/ProjectAnalyzer';
 import { ConfigTreeProvider, ConfigTreeItem } from './views/sidebar/ConfigTreeProvider';
+import { ChatPanel } from './views/sidebar/ChatPanel';
 import { Command } from './models/Command';
 import { Skill } from './models/Skill';
 import { Agent } from './models/Agent';
@@ -16,6 +17,7 @@ interface ClaudeConfig {
 // Global instances
 let configService: ClaudeConfigService | undefined;
 let treeProvider: ConfigTreeProvider | undefined;
+let chatPanel: ChatPanel | undefined;
 let currentActiveContext: string | undefined;
 let statusBarItem: vscode.StatusBarItem | undefined;
 
@@ -97,6 +99,9 @@ async function updateActiveContext(): Promise<void> {
         if (treeProvider) {
             treeProvider.setConfigService(configService);
         }
+        if (chatPanel) {
+            chatPanel.updateConfigService(configService);
+        }
 
         await updateConfigContext();
 
@@ -145,6 +150,15 @@ export function activate(context: vscode.ExtensionContext) {
             showCollapseAll: true
         });
         context.subscriptions.push(treeView);
+
+        // Register chat panel
+        chatPanel = new ChatPanel(context.extensionUri, configService);
+        context.subscriptions.push(
+            vscode.window.registerWebviewViewProvider(
+                ChatPanel.viewType,
+                chatPanel
+            )
+        );
 
         // Update context and refresh when config changes
         configService.onConfigChanged(() => {
@@ -805,6 +819,9 @@ function registerConfigCommands(context: vscode.ExtensionContext): void {
                 configService = new ClaudeConfigService(choice.path);
                 if (treeProvider) {
                     treeProvider.setConfigService(configService);
+                }
+                if (chatPanel) {
+                    chatPanel.updateConfigService(configService);
                 }
                 await updateConfigContext();
                 vscode.window.showInformationMessage(`Switched to ${choice.label}`);
