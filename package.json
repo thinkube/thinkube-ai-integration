@@ -17,6 +17,31 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claude-config",
+          "title": "Claude Config",
+          "icon": "resources/tk_ai.svg"
+        }
+      ]
+    },
+    "views": {
+      "claude-config": [
+        {
+          "id": "claudeConfigTree",
+          "name": "Configuration",
+          "contextualTitle": "Claude Code Configuration"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "claudeConfigTree",
+        "contents": "Configure Claude Code for this project.\n\n[$(sparkle) Smart Setup](command:thinkube.smartSetup)\nAnalyze project and suggest configurations\n\n[$(comment-discussion) Describe What You Need](command:thinkube.naturalLanguageSetup)\nTell me in plain English what you want\n\n[$(folder-library) Browse Templates](command:thinkube.browseTemplates)\nPre-built configs for common scenarios\n\n[$(gear) Manual Setup](command:thinkube.initializeConfig)\nCreate empty .claude folder",
+        "when": "!thinkube.hasClaudeConfig"
+      }
+    ],
     "commands": [
       {
         "command": "thinkube-ai.claude.openHere",
@@ -67,9 +92,184 @@
         "command": "thinkube-ai.deploy.preview",
         "title": "Deploy to Preview",
         "category": "Thinkube Deploy"
+      },
+      {
+        "command": "thinkube.refreshConfig",
+        "title": "Refresh Configuration",
+        "category": "Claude Config",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "thinkube.addHook",
+        "title": "Add Hook",
+        "category": "Claude Config",
+        "icon": "$(add)"
+      },
+      {
+        "command": "thinkube.deleteHook",
+        "title": "Delete Hook",
+        "category": "Claude Config",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "thinkube.addCommand",
+        "title": "Add Command",
+        "category": "Claude Config",
+        "icon": "$(add)"
+      },
+      {
+        "command": "thinkube.openCommand",
+        "title": "Open Command",
+        "category": "Claude Config"
+      },
+      {
+        "command": "thinkube.deleteCommand",
+        "title": "Delete Command",
+        "category": "Claude Config",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "thinkube.addSkill",
+        "title": "Add Skill",
+        "category": "Claude Config",
+        "icon": "$(add)"
+      },
+      {
+        "command": "thinkube.openSkill",
+        "title": "Open Skill",
+        "category": "Claude Config"
+      },
+      {
+        "command": "thinkube.deleteSkill",
+        "title": "Delete Skill",
+        "category": "Claude Config",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "thinkube.addAgent",
+        "title": "Add Agent",
+        "category": "Claude Config",
+        "icon": "$(add)"
+      },
+      {
+        "command": "thinkube.openAgent",
+        "title": "Open Agent",
+        "category": "Claude Config"
+      },
+      {
+        "command": "thinkube.deleteAgent",
+        "title": "Delete Agent",
+        "category": "Claude Config",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "thinkube.addMcpServer",
+        "title": "Add MCP Server",
+        "category": "Claude Config",
+        "icon": "$(add)"
+      },
+      {
+        "command": "thinkube.deleteMcpServer",
+        "title": "Remove MCP Server",
+        "category": "Claude Config",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "thinkube.editPermissions",
+        "title": "Edit Permissions",
+        "category": "Claude Config",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "thinkube.initializeConfig",
+        "title": "Initialize Claude Config",
+        "category": "Claude Config",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "thinkube.smartSetup",
+        "title": "Smart Setup",
+        "category": "Claude Config",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "thinkube.naturalLanguageSetup",
+        "title": "Describe What You Need",
+        "category": "Claude Config",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "thinkube.browseTemplates",
+        "title": "Browse Templates",
+        "category": "Claude Config",
+        "icon": "$(folder-library)"
       }
     ],
     "menus": {
+      "view/title": [
+        {
+          "command": "thinkube.refreshConfig",
+          "when": "view == claudeConfigTree && thinkube.hasClaudeConfig",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "thinkube.addHook",
+          "when": "view == claudeConfigTree && viewItem == hooks-section",
+          "group": "inline"
+        },
+        {
+          "command": "thinkube.deleteHook",
+          "when": "view == claudeConfigTree && viewItem == hook",
+          "group": "inline"
+        },
+        {
+          "command": "thinkube.addCommand",
+          "when": "view == claudeConfigTree && viewItem == commands-section",
+          "group": "inline"
+        },
+        {
+          "command": "thinkube.deleteCommand",
+          "when": "view == claudeConfigTree && viewItem == command",
+          "group": "inline"
+        },
+        {
+          "command": "thinkube.addSkill",
+          "when": "view == claudeConfigTree && viewItem == skills-section",
+          "group": "inline"
+        },
+        {
+          "command": "thinkube.deleteSkill",
+          "when": "view == claudeConfigTree && viewItem == skill",
+          "group": "inline"
+        },
+        {
+          "command": "thinkube.addAgent",
+          "when": "view == claudeConfigTree && viewItem == agents-section",
+          "group": "inline"
+        },
+        {
+          "command": "thinkube.deleteAgent",
+          "when": "view == claudeConfigTree && viewItem == agent",
+          "group": "inline"
+        },
+        {
+          "command": "thinkube.addMcpServer",
+          "when": "view == claudeConfigTree && viewItem == mcp-section",
+          "group": "inline"
+        },
+        {
+          "command": "thinkube.deleteMcpServer",
+          "when": "view == claudeConfigTree && viewItem == mcp-server",
+          "group": "inline"
+        },
+        {
+          "command": "thinkube.editPermissions",
+          "when": "view == claudeConfigTree && viewItem == permissions-section",
+          "group": "inline"
+        }
+      ],
       "explorer/context": [
         {
           "submenu": "claude.code.submenu",
