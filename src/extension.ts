@@ -759,6 +759,49 @@ function registerConfigCommands(context: vscode.ExtensionContext): void {
         })
     );
 
+    // Switch Scope (Global vs Project)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('thinkube.switchScope', async () => {
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            if (!workspaceFolders) {
+                vscode.window.showErrorMessage('No workspace folder open');
+                return;
+            }
+
+            const currentContext = currentActiveContext || workspaceFolders[0].uri.fsPath;
+            const contextName = path.basename(currentContext);
+
+            const choice = await vscode.window.showQuickPick([
+                {
+                    label: '$(home) Global Configuration',
+                    description: '/home/thinkube/.claude/',
+                    detail: 'Apply to all projects and apps',
+                    path: '/home/thinkube'
+                },
+                {
+                    label: `$(folder) Current Project (${contextName})`,
+                    description: `${currentContext}/.claude/`,
+                    detail: 'Only this project',
+                    path: currentContext
+                }
+            ], {
+                placeHolder: 'Switch to which configuration scope?',
+                title: 'Switch Configuration Scope'
+            });
+
+            if (choice && choice.path !== currentContext) {
+                // Switch to the chosen scope
+                currentActiveContext = choice.path;
+                configService = new ClaudeConfigService(choice.path);
+                if (treeProvider) {
+                    treeProvider.setConfigService(configService);
+                }
+                await updateConfigContext();
+                vscode.window.showInformationMessage(`Switched to ${choice.label}`);
+            }
+        })
+    );
+
     // Initialize Claude Config
     context.subscriptions.push(
         vscode.commands.registerCommand('thinkube.initializeConfig', async () => {

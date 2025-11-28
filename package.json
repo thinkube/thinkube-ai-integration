@@ -205,10 +205,21 @@
         "title": "Browse Templates",
         "category": "Thinkube AI",
         "icon": "$(folder-library)"
+      },
+      {
+        "command": "thinkube.switchScope",
+        "title": "Switch Scope (Global/Project)",
+        "category": "Thinkube AI",
+        "icon": "$(arrow-swap)"
       }
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "thinkube.switchScope",
+          "when": "view == claudeConfigTree",
+          "group": "navigation@0"
+        },
         {
           "command": "thinkube.smartSetup",
           "when": "view == claudeConfigTree",

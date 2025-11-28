@@ -224,7 +224,23 @@ export class ConfigTreeProvider implements vscode.TreeDataProvider<ConfigTreeIte
             return [];
         }
 
+        // Get current scope info
+        const basePath = (this.configService as any).basePath || '/home/thinkube';
+        const isGlobal = basePath === '/home/thinkube';
+        const scopeName = isGlobal ? 'Global (All Projects)' : `Project: ${require('path').basename(basePath)}`;
+        const scopeIcon = isGlobal ? 'home' : 'folder';
+
+        // Create scope indicator item
+        const scopeItem = new ConfigTreeItem(
+            `📍 ${scopeName}`,
+            'root',
+            vscode.TreeItemCollapsibleState.None
+        );
+        scopeItem.tooltip = `Configuration location: ${basePath}/.claude/`;
+        scopeItem.description = basePath;
+
         return [
+            scopeItem,
             new ConfigTreeItem('Hooks', 'hooks-section', vscode.TreeItemCollapsibleState.Collapsed),
             new ConfigTreeItem('Commands', 'commands-section', vscode.TreeItemCollapsibleState.Collapsed),
             new ConfigTreeItem('Skills', 'skills-section', vscode.TreeItemCollapsibleState.Collapsed),
