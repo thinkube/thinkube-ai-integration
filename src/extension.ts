@@ -786,12 +786,43 @@ function registerConfigCommands(context: vscode.ExtensionContext): void {
                 return;
             }
 
+            // Ask user which scope to configure
+            const currentContext = currentActiveContext || workspaceFolders[0].uri.fsPath;
+            const contextName = path.basename(currentContext);
+            const isGlobalContext = currentContext === '/home/thinkube';
+
+            const scopeChoice = await vscode.window.showQuickPick([
+                {
+                    label: '$(home) Global Configuration',
+                    description: 'Apply to all projects (/home/thinkube/.claude/)',
+                    detail: 'Settings will apply across all apps and repos',
+                    scope: 'global'
+                },
+                {
+                    label: `$(folder) Project Configuration (${contextName})`,
+                    description: `Apply to ${currentContext}/.claude/`,
+                    detail: 'Settings will only apply to this specific project',
+                    scope: 'project'
+                }
+            ], {
+                placeHolder: 'Where should these configurations be applied?',
+                title: 'Choose Configuration Scope'
+            });
+
+            if (!scopeChoice) {
+                return;
+            }
+
+            // Determine which config service to use
+            const targetPath = scopeChoice.scope === 'global' ? '/home/thinkube' : currentContext;
+            const targetService = new ClaudeConfigService(targetPath);
+
             await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
                 title: 'Analyzing project...',
                 cancellable: false
             }, async () => {
-                const analyzer = new ProjectAnalyzer(workspaceFolders[0].uri.fsPath);
+                const analyzer = new ProjectAnalyzer(currentContext);
                 const projectInfo = await analyzer.analyze();
 
                 if (projectInfo.suggestions.length === 0) {
@@ -803,7 +834,7 @@ function registerConfigCommands(context: vscode.ExtensionContext): void {
                 const items = projectInfo.suggestions.map(s => ({
                     label: `$(${getIconForType(s.type)}) ${s.name}`,
                     description: s.description,
-                    detail: `${s.reason}`,
+                    detail: `${s.reason} → ${scopeChoice.label}`,
                     suggestion: s,
                     picked: true
                 }));
@@ -816,19 +847,19 @@ function registerConfigCommands(context: vscode.ExtensionContext): void {
 
                 if (selected && selected.length > 0) {
                     // Initialize config if needed
-                    const hasConfig = await configService!.hasClaudeConfig();
+                    const hasConfig = await targetService.hasClaudeConfig();
                     if (!hasConfig) {
-                        await configService!.initializeClaudeConfig();
+                        await targetService.initializeClaudeConfig();
                     }
 
                     // Apply selected suggestions
                     for (const item of selected) {
-                        await applySuggestion(configService!, item.suggestion);
+                        await applySuggestion(targetService, item.suggestion);
                     }
 
                     await updateConfigContext();
                     treeProvider?.refresh();
-                    vscode.window.showInformationMessage(`Applied ${selected.length} configuration(s)`);
+                    vscode.window.showInformationMessage(`Applied ${selected.length} configuration(s) to ${scopeChoice.scope} scope`);
                 }
             });
         })

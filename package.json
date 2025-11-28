@@ -210,9 +210,24 @@
     "menus": {
       "view/title": [
         {
+          "command": "thinkube.smartSetup",
+          "when": "view == claudeConfigTree",
+          "group": "navigation@1"
+        },
+        {
+          "command": "thinkube.naturalLanguageSetup",
+          "when": "view == claudeConfigTree",
+          "group": "navigation@2"
+        },
+        {
+          "command": "thinkube.browseTemplates",
+          "when": "view == claudeConfigTree",
+          "group": "navigation@3"
+        },
+        {
           "command": "thinkube.refreshConfig",
           "when": "view == claudeConfigTree && thinkube.hasClaudeConfig",
-          "group": "navigation"
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
