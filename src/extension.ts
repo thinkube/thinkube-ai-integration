@@ -16,6 +16,101 @@ interface ClaudeConfig {
 // Global instances
 let configService: ClaudeConfigService | undefined;
 let treeProvider: ConfigTreeProvider | undefined;
+let currentActiveContext: string | undefined;
+let statusBarItem: vscode.StatusBarItem | undefined;
+
+/**
+ * Get the active project path based on current editor or workspace
+ */
+function getActiveProjectPath(): string | undefined {
+    // 1. Try to get from active editor
+    const editor = vscode.window.activeTextEditor;
+    if (editor) {
+        const filePath = editor.document.uri.fsPath;
+        const projectRoot = findProjectRoot(filePath);
+        if (projectRoot) {
+            return projectRoot;
+        }
+
+        // If no project root found, use the workspace folder containing this file
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+        if (workspaceFolder) {
+            return workspaceFolder.uri.fsPath;
+        }
+    }
+
+    // 2. Fall back to first workspace folder
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (workspaceFolders && workspaceFolders.length > 0) {
+        return workspaceFolders[0].uri.fsPath;
+    }
+
+    return undefined;
+}
+
+/**
+ * Find the project root by searching upward for markers
+ */
+function findProjectRoot(startPath: string): string | undefined {
+    let current = fs.statSync(startPath).isDirectory() ? startPath : path.dirname(startPath);
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+
+    // Don't search above workspace folders
+    const workspacePaths = workspaceFolders?.map(f => f.uri.fsPath) || [];
+
+    while (current !== path.dirname(current)) {
+        // Check for project markers
+        if (fs.existsSync(path.join(current, '.git')) ||
+            fs.existsSync(path.join(current, 'package.json')) ||
+            fs.existsSync(path.join(current, 'pyproject.toml')) ||
+            fs.existsSync(path.join(current, 'Cargo.toml')) ||
+            fs.existsSync(path.join(current, 'go.mod'))) {
+            return current;
+        }
+
+        // Stop at workspace folder boundaries
+        if (workspacePaths.includes(current)) {
+            return current;
+        }
+
+        current = path.dirname(current);
+    }
+
+    return undefined;
+}
+
+/**
+ * Update config service to point to the active project
+ */
+async function updateActiveContext(): Promise<void> {
+    const activePath = getActiveProjectPath();
+
+    // Only update if context changed
+    if (activePath === currentActiveContext) {
+        return;
+    }
+
+    currentActiveContext = activePath;
+
+    if (activePath) {
+        configService = new ClaudeConfigService(activePath);
+        if (treeProvider) {
+            treeProvider.setConfigService(configService);
+        }
+
+        await updateConfigContext();
+
+        // Update status bar to show active context
+        const contextName = path.basename(activePath);
+        if (statusBarItem) {
+            statusBarItem.text = `$(folder) ${contextName}`;
+            statusBarItem.tooltip = `Claude Code context: ${activePath}`;
+            statusBarItem.show();
+        }
+
+        vscode.commands.executeCommand('setContext', 'thinkube.activeContext', contextName);
+    }
+}
 
 /**
  * Update the context variable for whether .claude config exists
@@ -32,10 +127,16 @@ async function updateConfigContext(): Promise<void> {
 export function activate(context: vscode.ExtensionContext) {
     console.log('Thinkube AI Integration is now active!');
 
+    // Create status bar item to show active context
+    statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    statusBarItem.command = 'thinkube.refreshConfig';
+    context.subscriptions.push(statusBarItem);
+
     // Initialize ClaudeConfigService with workspace folder
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (workspaceFolders && workspaceFolders.length > 0) {
-        configService = new ClaudeConfigService(workspaceFolders[0].uri.fsPath);
+        const initialPath = workspaceFolders[0].uri.fsPath;
+        configService = new ClaudeConfigService(initialPath);
         treeProvider = new ConfigTreeProvider(configService);
 
         // Register tree view
@@ -51,7 +152,21 @@ export function activate(context: vscode.ExtensionContext) {
         });
 
         // Initial context update
-        updateConfigContext();
+        updateActiveContext();
+
+        // Update context when active editor changes
+        context.subscriptions.push(
+            vscode.window.onDidChangeActiveTextEditor(() => {
+                updateActiveContext();
+            })
+        );
+
+        // Update context when workspace folders change
+        context.subscriptions.push(
+            vscode.workspace.onDidChangeWorkspaceFolders(() => {
+                updateActiveContext();
+            })
+        );
     } else {
         // No workspace - set context to false
         vscode.commands.executeCommand('setContext', 'thinkube.hasClaudeConfig', false);

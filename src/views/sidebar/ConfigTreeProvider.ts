@@ -164,6 +164,21 @@ export class ConfigTreeProvider implements vscode.TreeDataProvider<ConfigTreeIte
         });
     }
 
+    /**
+     * Update the config service (used when switching workspace context)
+     */
+    setConfigService(newService: ClaudeConfigService): void {
+        this.configService = newService;
+
+        // Re-subscribe to config changes
+        newService.onConfigChanged(() => {
+            this.refresh();
+        });
+
+        // Refresh tree to show new context
+        this.refresh();
+    }
+
     refresh(): void {
         this._onDidChangeTreeData.fire();
     }
