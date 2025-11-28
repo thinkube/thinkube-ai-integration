@@ -24,12 +24,13 @@ export class ClaudeAnalyzer {
         const prompt = this.buildAnalysisPrompt(projectPath);
 
         // Invoke Claude via Agent SDK
+        // This automatically uses the same API key as Claude Code (from user settings)
         const queryResult = query({
             prompt,
             options: {
                 model: 'claude-sonnet-4-5-20250929',
                 cwd: projectPath, // Set working directory to project
-                settingSources: ['project'], // Load .claude config from project
+                settingSources: ['user', 'project'], // Load API key from user settings, .claude config from project
                 allowedTools: ['Read', 'Grep', 'Glob'], // Limit to read-only tools
             }
         });
