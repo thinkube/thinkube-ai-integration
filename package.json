@@ -54,7 +54,7 @@
     "viewsWelcome": [
       {
         "view": "claudeConfigTree",
-        "contents": "Configure Claude Code for this project.\n\n[$(sparkle) Smart Setup](command:thinkube.smartSetup)\nAnalyze project and suggest configurations\n\n[$(comment-discussion) Describe What You Need](command:thinkube.naturalLanguageSetup)\nTell me in plain English what you want\n\n[$(folder-library) Browse Templates](command:thinkube.browseTemplates)\nPre-built configs for common scenarios\n\n[$(gear) Manual Setup](command:thinkube.initializeConfig)\nCreate empty .claude folder",
+        "contents": "Configure Claude Code for this project.\n\n[$(sparkle) Smart Setup](command:thinkube.smartSetup)\nAnalyze project and suggest configurations\n\n[$(folder-library) Browse Templates](command:thinkube.browseTemplates)\nPre-built configs for common scenarios\n\n[$(gear) Manual Setup](command:thinkube.initializeConfig)\nCreate empty .claude folder",
         "when": "!thinkube.hasClaudeConfig"
       }
     ],
@@ -209,12 +209,6 @@
         "icon": "$(sparkle)"
       },
       {
-        "command": "thinkube.naturalLanguageSetup",
-        "title": "Describe What You Need",
-        "category": "Thinkube AI",
-        "icon": "$(comment-discussion)"
-      },
-      {
         "command": "thinkube.browseTemplates",
         "title": "Browse Templates",
         "category": "Thinkube AI",
@@ -240,19 +234,14 @@
           "group": "navigation@1"
         },
         {
-          "command": "thinkube.naturalLanguageSetup",
+          "command": "thinkube.browseTemplates",
           "when": "view == claudeConfigTree",
           "group": "navigation@2"
         },
         {
-          "command": "thinkube.browseTemplates",
-          "when": "view == claudeConfigTree",
-          "group": "navigation@3"
-        },
-        {
           "command": "thinkube.refreshConfig",
           "when": "view == claudeConfigTree && thinkube.hasClaudeConfig",
-          "group": "navigation@4"
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
