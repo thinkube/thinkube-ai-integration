@@ -557,6 +557,23 @@ export class ConfigTreeProvider implements vscode.TreeDataProvider<ConfigTreeIte
                         const hasConfig = fs.existsSync(path.join(fullPath, '.claude')) ||
                                           fs.existsSync(path.join(fullPath, 'CLAUDE.md'));
                         results.push({ name: entry.name, path: fullPath, hasConfig });
+                    } else {
+                        // Scan one level deeper for categorized structures (e.g. core/, templates/)
+                        try {
+                            const subEntries = fs.readdirSync(fullPath, { withFileTypes: true });
+                            for (const subEntry of subEntries) {
+                                if (subEntry.isDirectory() && !subEntry.name.startsWith('.')) {
+                                    const subFullPath = path.join(fullPath, subEntry.name);
+                                    if (fs.existsSync(path.join(subFullPath, '.git'))) {
+                                        const hasConfig = fs.existsSync(path.join(subFullPath, '.claude')) ||
+                                                          fs.existsSync(path.join(subFullPath, 'CLAUDE.md'));
+                                        results.push({ name: `${entry.name}/${subEntry.name}`, path: subFullPath, hasConfig });
+                                    }
+                                }
+                            }
+                        } catch {
+                            // ignore read errors on subdirectory
+                        }
                     }
                 }
             }

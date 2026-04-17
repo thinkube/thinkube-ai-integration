@@ -65,11 +65,11 @@ export interface PluginCreationOptions {
 const KNOWN_MARKETPLACES: Record<string, { type: 'github' | 'local'; repo?: string; path?: string }> = {
     'thinkube': {
         type: 'local',
-        path: '/home/thinkube/thinkube-platform/thinkube-claude-marketplace'
+        path: '/home/thinkube/thinkube-platform/misc/thinkube-claude-marketplace'
     },
     'thinkube-platform': {
         type: 'local',
-        path: '/home/thinkube/thinkube-platform/thinkube-claude-marketplace-platform'
+        path: '/home/thinkube/thinkube-platform/misc/thinkube-claude-marketplace-platform'
     }
 };
 

@@ -170,7 +170,7 @@ function getTemplatePaths(template: string): string[] {
     const paths: string[] = [];
     
     // Add template repository paths
-    const templateBase = path.join(process.env.HOME || '', 'thinkube-platform', 'tkt-webapp-vue-fastapi');
+    const templateBase = path.join(process.env.HOME || '', 'thinkube-platform', 'templates', 'tkt-webapp-vue-fastapi');
     
     if (template === 'vue-fastapi') {
         paths.push(templateBase);

@@ -752,6 +752,25 @@ function registerConfigCommands(context: vscode.ExtensionContext): void {
                                     description: configured ? '$(check)' : '(no config)',
                                     detail: fullPath,
                                 });
+                            } else {
+                                // Scan one level deeper for categorized structures
+                                try {
+                                    const subEntries = fs.readdirSync(fullPath, { withFileTypes: true });
+                                    for (const subEntry of subEntries) {
+                                        if (subEntry.isDirectory() && !subEntry.name.startsWith('.')) {
+                                            const subFullPath = path.join(fullPath, subEntry.name);
+                                            if (fs.existsSync(path.join(subFullPath, '.git'))) {
+                                                const configured = fs.existsSync(path.join(subFullPath, '.claude')) ||
+                                                                   fs.existsSync(path.join(subFullPath, 'CLAUDE.md'));
+                                                items.push({
+                                                    label: `${section.prefix}: ${entry.name}/${subEntry.name}`,
+                                                    description: configured ? '$(check)' : '(no config)',
+                                                    detail: subFullPath,
+                                                });
+                                            }
+                                        }
+                                    }
+                                } catch { /* ignore */ }
                             }
                         }
                     }
