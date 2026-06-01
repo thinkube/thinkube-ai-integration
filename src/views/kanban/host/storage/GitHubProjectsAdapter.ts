@@ -45,16 +45,33 @@ const COLUMN_DEFS: ReadonlyArray<{
   id: string;
   title: string;
   status: string;
+  /** GitHub Projects option colour used only when auto-creating the option. */
+  color: string;
 }> = [
-  { id: "column-spec", title: "Spec", status: "Spec" },
-  { id: "column-ready", title: "Ready", status: "Ready" },
-  { id: "column-in-progress", title: "In Progress", status: "In Progress" },
-  { id: "column-review", title: "Review", status: "Review" },
-  { id: "column-verify", title: "Verify", status: "Verify" },
-  { id: "column-done", title: "Done", status: "Done" },
+  { id: "column-spec", title: "Spec", status: "Spec", color: "GRAY" },
+  { id: "column-ready", title: "Ready", status: "Ready", color: "BLUE" },
+  {
+    id: "column-in-progress",
+    title: "In Progress",
+    status: "In Progress",
+    color: "YELLOW",
+  },
+  { id: "column-review", title: "Review", status: "Review", color: "ORANGE" },
+  { id: "column-verify", title: "Verify", status: "Verify", color: "PINK" },
+  { id: "column-done", title: "Done", status: "Done", color: "GREEN" },
 ];
 
 const EXPECTED_STATUSES = COLUMN_DEFS.map((c) => c.status);
+
+/**
+ * The methodology Status options in canonical order, with the colour to use
+ * when an option has to be created. Passed to
+ * `GitHubService.ensureSingleSelectOptions` to auto-provision boards.
+ */
+export const METHODOLOGY_OPTIONS: ReadonlyArray<{
+  name: string;
+  color: string;
+}> = COLUMN_DEFS.map((c) => ({ name: c.status, color: c.color }));
 
 /** Synthetic, non-status column holding untracked issues awaiting triage. */
 const INBOX_COLUMN_ID = "column-inbox";
@@ -300,14 +317,40 @@ export class GitHubProjectsAdapter implements StorageAdapter {
       this.projectNumber,
     );
     this.projectInfo = project;
-    const statusField = project.statusField;
+    let statusField = project.statusField;
     if (!statusField) {
       throw new StatusFieldMisconfiguredError(EXPECTED_STATUSES, []);
     }
-    const present = statusField.options.map((o) => o.name);
-    const missing = EXPECTED_STATUSES.filter((s) => !present.includes(s));
+    let present = statusField.options.map((o) => o.name);
+    let missing = EXPECTED_STATUSES.filter((s) => !present.includes(s));
     if (missing.length > 0) {
-      throw new StatusFieldMisconfiguredError(missing, present);
+      // Self-heal: create the missing methodology options in place rather than
+      // making the user add them by hand. Non-destructive — existing options
+      // and their items are preserved. On failure (e.g. the token lacks the
+      // `project` scope) fall through to the misconfigured error below so the
+      // UI can still guide the user.
+      try {
+        const added = await this.github.ensureSingleSelectOptions(
+          statusField.id,
+          METHODOLOGY_OPTIONS,
+        );
+        if (added.length) {
+          this.log(`created missing Status options: ${added.join(", ")}`);
+        }
+        const refreshed = await this.github.getStatusField(project.id);
+        if (refreshed) {
+          statusField = refreshed;
+          present = refreshed.options.map((o) => o.name);
+          missing = EXPECTED_STATUSES.filter((s) => !present.includes(s));
+        }
+      } catch (err) {
+        this.log(
+          `auto-create Status options failed: ${(err as Error).message}`,
+        );
+      }
+      if (missing.length > 0) {
+        throw new StatusFieldMisconfiguredError(missing, present);
+      }
     }
     this.statusField = statusField;
     this.optionIdByColumnId.clear();

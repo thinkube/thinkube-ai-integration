@@ -1137,6 +1137,112 @@ export class GitHubService {
     );
   }
 
+  /**
+   * Ensure a single-select field (e.g. a board's "Status") contains every
+   * option in `desired`, creating any that are missing. Non-destructive:
+   * existing options are preserved verbatim (id, name, colour, description) so
+   * items keep their values; we only re-order so the desired set leads in the
+   * given order, with any extra pre-existing options kept at the end.
+   *
+   * No mutation is issued when nothing is missing — safe to call on every load.
+   * Returns the names that were created (empty array ⇒ no-op). Requires the
+   * token's `project` scope; throws on permission errors so callers can fall
+   * back to asking the user to add the options by hand.
+   */
+  async ensureSingleSelectOptions(
+    fieldId: string,
+    desired: ReadonlyArray<{
+      name: string;
+      color?: string;
+      description?: string;
+    }>,
+  ): Promise<string[]> {
+    type Opt = { id: string; name: string; color: string; description: string };
+    const data = await this.runGraphQL<{
+      node: { id: string; options?: Opt[] } | null;
+    }>(
+      /* GraphQL */ `
+        query ($id: ID!) {
+          node(id: $id) {
+            ... on ProjectV2SingleSelectField {
+              id
+              options {
+                id
+                name
+                color
+                description
+              }
+            }
+          }
+        }
+      `,
+      { id: fieldId },
+    );
+    const existing = data.node?.options;
+    if (!existing) {
+      throw new Error(
+        `Field ${fieldId} is not a single-select field (cannot add options).`,
+      );
+    }
+
+    const existingByName = new Map(existing.map((o) => [o.name, o]));
+    const missing = desired.filter((d) => !existingByName.has(d.name));
+    if (missing.length === 0) return [];
+
+    // `updateProjectV2Field` replaces the whole option set, so we must re-send
+    // every option we want to keep. Re-sending existing options *with their id*
+    // preserves them (and the items assigned to them); options sent without an
+    // id are created. We lead with the desired set in order, then append any
+    // extra pre-existing options we don't manage (e.g. a stray "Todo").
+    const desiredNames = new Set(desired.map((d) => d.name));
+    const options = [
+      ...desired.map((d) => {
+        const ex = existingByName.get(d.name);
+        return ex
+          ? {
+              id: ex.id,
+              name: ex.name,
+              color: ex.color,
+              description: ex.description ?? "",
+            }
+          : {
+              name: d.name,
+              color: d.color ?? "GRAY",
+              description: d.description ?? "",
+            };
+      }),
+      ...existing
+        .filter((o) => !desiredNames.has(o.name))
+        .map((o) => ({
+          id: o.id,
+          name: o.name,
+          color: o.color,
+          description: o.description ?? "",
+        })),
+    ];
+
+    await this.runGraphQL(
+      /* GraphQL */ `
+        mutation (
+          $fieldId: ID!
+          $options: [ProjectV2SingleSelectFieldOptionInput!]!
+        ) {
+          updateProjectV2Field(
+            input: { fieldId: $fieldId, singleSelectOptions: $options }
+          ) {
+            projectV2Field {
+              ... on ProjectV2SingleSelectField {
+                id
+              }
+            }
+          }
+        }
+      `,
+      { fieldId, options },
+    );
+    return missing.map((d) => d.name);
+  }
+
   // ─── Internals ──────────────────────────────────────────────────────────
 
   private toSummary(node: RawIssueNode, mode: ClassifierMode): IssueSummary {

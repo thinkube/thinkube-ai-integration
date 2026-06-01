@@ -26,6 +26,7 @@ import { KanbanPanel } from "../views/kanban/host/Panel";
 import { StorageAdapter } from "../views/kanban/host/StorageAdapter";
 import {
   GitHubProjectsAdapter,
+  METHODOLOGY_OPTIONS,
   METHODOLOGY_STATUSES,
   StatusFieldMisconfiguredError,
 } from "../views/kanban/host/storage/GitHubProjectsAdapter";
@@ -280,7 +281,8 @@ async function pickAdapter(
  *     the user can still choose, then we report what's missing.
  *
  * Writes `thinkube.kanban.repo` + `thinkube.kanban.projectNumber` to workspace
- * settings. Status options are validated read-only (never auto-created).
+ * settings. Any missing methodology Status options are created automatically
+ * (non-destructive) so the board is ready to use without a manual GitHub-UI step.
  */
 async function configureProject(deps: KanbanDeps): Promise<void> {
   const cfg = vscode.workspace.getConfiguration("thinkube.kanban");
@@ -377,16 +379,36 @@ async function configureProject(deps: KanbanDeps): Promise<void> {
         `[configureProject] saved: repo=${repo} project=${chosen.number}`,
       );
 
-      // 4. Report on the chosen board's Status field.
+      // 4. Ensure the board's Status field has the methodology columns,
+      //    creating any that are missing (non-destructive) so the user doesn't
+      //    have to add them by hand in the GitHub Projects UI.
       const present = chosen.statusField?.options.map((o) => o.name) ?? [];
-      const missing = METHODOLOGY_STATUSES.filter((s) => !present.includes(s));
+      let missing = METHODOLOGY_STATUSES.filter((s) => !present.includes(s));
+      let created: string[] = [];
+      if (missing.length > 0 && chosen.statusField) {
+        try {
+          created = await deps.github.ensureSingleSelectOptions(
+            chosen.statusField.id,
+            METHODOLOGY_OPTIONS,
+          );
+          deps.output.appendLine(
+            `[configureProject] created Status options: ${created.join(", ") || "(none)"}`,
+          );
+          missing = [];
+        } catch (err) {
+          deps.output.appendLine(
+            `[configureProject] auto-create Status options failed: ${(err as Error).message}`,
+          );
+        }
+      }
       if (missing.length > 0) {
         vscode.window.showWarningMessage(
-          `Linked ${repo} · project #${chosen.number} (${chosen.title}), but its Status field is missing: ${missing.join(", ")}. Add them in the GitHub Projects UI, then reopen the kanban.`,
+          `Linked ${repo} · project #${chosen.number} (${chosen.title}), but its Status field is missing: ${missing.join(", ")} — and they couldn't be created automatically (the GitHub token needs the \`project\` scope). Add them in the GitHub Projects UI, then reopen the kanban.`,
         );
       } else {
+        const suffix = created.length ? ` (added: ${created.join(", ")})` : "";
         vscode.window.showInformationMessage(
-          `Kanban configured: ${repo} · project #${chosen.number} (${chosen.title}).`,
+          `Kanban configured: ${repo} · project #${chosen.number} (${chosen.title})${suffix}.`,
         );
       }
     },
