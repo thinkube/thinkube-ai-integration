@@ -19,6 +19,7 @@ import {
   RepoCoords,
 } from "../github/GitHubService";
 import { detectRepoCoords } from "../github/gitRemote";
+import { listCandidateFolders } from "../github/workspaceRepo";
 import { TasksMaterializer } from "../methodology/TasksMaterializer";
 import { ThinkubeStore } from "../store/ThinkubeStore";
 import { InMemoryAdapter } from "../views/kanban/host/InMemoryAdapter";
@@ -269,53 +270,42 @@ async function pickAdapter(
 }
 
 /**
- * Configure-project: link this workspace to its GitHub repo + Projects v2 board.
+ * Configure-project: pick the local repository folder where the methodology
+ * lives, then derive everything else from it.
  *
- * Auto-detects rather than asking the user to retype things the environment
- * already knows:
- *   - the repo comes from the workspace's git remote (`detectRepoCoords`),
- *     falling back to the saved setting, and only then to a manual prompt;
- *   - the board is discovered by listing the owner's Projects v2 and matching
- *     the one whose Status field has all six methodology columns. One match →
- *     auto-selected; several → quick-pick; none → quick-pick over all boards so
- *     the user can still choose, then we report what's missing.
+ * Folder-first by design — the user selects the folder (a git repo) and we read
+ * its github.com remote to get `owner/repo` (failing loudly if it has none,
+ * rather than guessing a default), discover the owner's Projects v2 board, and
+ * persist `thinkube.kanban.folder` + `.repo` + `.projectNumber`. That folder is
+ * the single anchor for the `.thinkube` store, the bundle installer, and the MCP
+ * server, so the methodology files always land in the repo they belong to.
  *
- * Writes `thinkube.kanban.repo` + `thinkube.kanban.projectNumber` to workspace
- * settings. Any missing methodology Status options are created automatically
+ * Any missing methodology Status options are created automatically
  * (non-destructive) so the board is ready to use without a manual GitHub-UI step.
  */
 async function configureProject(deps: KanbanDeps): Promise<void> {
   const cfg = vscode.workspace.getConfiguration("thinkube.kanban");
-  const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
-  // 1. Resolve the repo: git remote → saved setting → manual prompt.
-  let repo = "";
-  const detected = workspacePath
-    ? await detectRepoCoords(workspacePath)
-    : undefined;
-  if (detected) {
-    repo = `${detected.owner}/${detected.name}`;
-    deps.output.appendLine(`[configureProject] repo from git remote: ${repo}`);
-  } else {
-    const saved = (cfg.get<string>("repo") ?? "").trim();
-    const repoInput = await vscode.window.showInputBox({
-      title: "Thinkube Kanban — repository",
-      prompt:
-        "owner/repo backing this kanban (no git remote found to detect it)",
-      value: saved,
-      placeHolder: "octocat/hello-world",
-      validateInput: (v) =>
-        /^[\w.-]+\/[\w.-]+$/.test(v.trim())
-          ? undefined
-          : "Expected `owner/repo` format.",
-      ignoreFocusOut: true,
-    });
-    if (repoInput === undefined) return;
-    repo = repoInput.trim();
+  // 1. Pick the repository folder where the methodology will live.
+  const folder = await pickMethodologyFolder();
+  if (!folder) return;
+
+  // 2. Derive the repo from the folder's git remote — fail if there isn't one
+  //    (no silent fallback: a folder with no GitHub remote can't back a board).
+  const coords = await detectRepoCoords(folder);
+  if (!coords) {
+    vscode.window.showErrorMessage(
+      `"${folder}" is not a git repository with a github.com remote. Pick the folder of a GitHub-hosted repo.`,
+    );
+    return;
   }
-  const [owner] = repo.split("/", 2);
+  const repo = `${coords.owner}/${coords.name}`;
+  const owner = coords.owner;
+  deps.output.appendLine(
+    `[configureProject] folder=${folder} repo=${repo} (from git remote)`,
+  );
 
-  // 2. Discover the board by listing the owner's Projects v2.
+  // 3. Discover the board by listing the owner's Projects v2.
   await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
@@ -368,7 +358,8 @@ async function configureProject(deps: KanbanDeps): Promise<void> {
       }
       if (!chosen) return;
 
-      // 3. Persist.
+      // 4. Persist the folder + derived repo + board.
+      await cfg.update("folder", folder, vscode.ConfigurationTarget.Workspace);
       await cfg.update("repo", repo, vscode.ConfigurationTarget.Workspace);
       await cfg.update(
         "projectNumber",
@@ -376,10 +367,10 @@ async function configureProject(deps: KanbanDeps): Promise<void> {
         vscode.ConfigurationTarget.Workspace,
       );
       deps.output.appendLine(
-        `[configureProject] saved: repo=${repo} project=${chosen.number}`,
+        `[configureProject] saved: folder=${folder} repo=${repo} project=${chosen.number}`,
       );
 
-      // 4. Ensure the board's Status field has the methodology columns,
+      // 5. Ensure the board's Status field has the methodology columns,
       //    creating any that are missing (non-destructive) so the user doesn't
       //    have to add them by hand in the GitHub Projects UI.
       const present = chosen.statusField?.options.map((o) => o.name) ?? [];
@@ -408,11 +399,52 @@ async function configureProject(deps: KanbanDeps): Promise<void> {
       } else {
         const suffix = created.length ? ` (added: ${created.join(", ")})` : "";
         vscode.window.showInformationMessage(
-          `Kanban configured: ${repo} · project #${chosen.number} (${chosen.title})${suffix}.`,
+          `Kanban configured: ${repo} · project #${chosen.number} (${chosen.title})${suffix}. Methodology folder: ${folder}. Run "Install Bundle" to (re)write the methodology files there.`,
         );
       }
     },
   );
+}
+
+/**
+ * Pick the local repository folder for the methodology. Lists open workspace
+ * folders (annotated with the GitHub repo detected from each one's remote) plus
+ * a "Browse…" entry for repos that aren't open as workspace folders (e.g. a
+ * nested sub-repo). Returns the absolute path, or undefined if cancelled.
+ */
+async function pickMethodologyFolder(): Promise<string | undefined> {
+  const candidates = await listCandidateFolders();
+  const BROWSE = "$(folder-opened) Browse for a folder…";
+  type Item = vscode.QuickPickItem & { fsPath?: string };
+  const items: Item[] = candidates.map((c) => ({
+    label: c.coords ? `$(repo) ${c.name}` : `$(folder) ${c.name}`,
+    description: c.coords
+      ? `${c.coords.owner}/${c.coords.name}`
+      : "no github.com remote",
+    detail: c.fsPath,
+    fsPath: c.fsPath,
+  }));
+  items.push({ label: BROWSE });
+
+  const picked = await vscode.window.showQuickPick(items, {
+    title: "Thinkube Kanban — pick the repository folder",
+    placeHolder: "The folder whose git remote is the repo backing the kanban",
+    ignoreFocusOut: true,
+  });
+  if (!picked) return undefined;
+  if (picked.label === BROWSE) {
+    const uris = await vscode.window.showOpenDialog({
+      canSelectFolders: true,
+      canSelectFiles: false,
+      canSelectMany: false,
+      openLabel: "Use this folder",
+      defaultUri: candidates[0]
+        ? vscode.Uri.file(candidates[0].fsPath)
+        : undefined,
+    });
+    return uris?.[0]?.fsPath;
+  }
+  return picked.fsPath;
 }
 
 /** Quick-pick over Projects v2 boards, returning the chosen one. */

@@ -13,6 +13,7 @@ import {
 } from "./context/active";
 import { AuthService } from "./github/AuthService";
 import { GitHubService } from "./github/GitHubService";
+import { getMethodologyRootOrUndefined } from "./github/workspaceRepo";
 import { KanbanMcpProvider } from "./mcp/KanbanMcpProvider";
 import { BundleInstaller } from "./methodology/BundleInstaller";
 import { TasksMaterializer } from "./methodology/TasksMaterializer";
@@ -99,16 +100,23 @@ export function activate(context: vscode.ExtensionContext) {
   const kanbanOutput = vscode.window.createOutputChannel("Thinkube Kanban");
   context.subscriptions.push(kanbanOutput);
 
-  // .thinkube/ file layer — rooted at the first workspace folder (multi-root
-  // ergonomics revisit in chunk 6 alongside roadmap/kanban panel scoping).
-  // Tolerant of "no workspace open" — the store still constructs but its
-  // watcher and writes will no-op against a non-existent root.
-  const thinkubeStore = workspaceFolders?.[0]
-    ? new ThinkubeStore(workspaceFolders[0].uri.fsPath)
+  // .thinkube/ file layer — rooted at the configured methodology folder
+  // (thinkube.kanban.folder), NOT workspaceFolders[0]. If it isn't configured
+  // yet we leave the store undefined and log; we do NOT fall back to a default
+  // folder, because writing methodology files into the wrong repo is exactly
+  // the failure that silent fallback caused before.
+  const methodologyRoot = getMethodologyRootOrUndefined();
+  const thinkubeStore = methodologyRoot
+    ? new ThinkubeStore(methodologyRoot)
     : undefined;
   if (thinkubeStore) {
     context.subscriptions.push(thinkubeStore);
     thinkubeStore.activate();
+    kanbanOutput.appendLine(`[thinkube] .thinkube store rooted at ${methodologyRoot}`);
+  } else {
+    kanbanOutput.appendLine(
+      '[thinkube] .thinkube store not initialised: no methodology folder configured — run "Thinkube Kanban: Configure Project".',
+    );
   }
 
   // Chunk-9 tasks materialiser — turns .thinkube/specs/SP-*-tasks.md rows

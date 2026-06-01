@@ -22,6 +22,7 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 
 import { AuthService } from "../github/AuthService";
+import { getMethodologyRoot } from "../github/workspaceRepo";
 
 const SERVER_LABEL = "Thinkube Kanban";
 
@@ -109,12 +110,12 @@ export class KanbanMcpProvider implements vscode.McpServerDefinitionProvider<vsc
     const cfg = readSettings();
     if (!cfg) return server;
 
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (!workspaceFolder) {
-      this.log("no workspace folder; refusing to launch MCP server");
-      throw new Error(
-        "Thinkube Kanban MCP: open a workspace folder before starting the server.",
-      );
+    let workspaceFsPath: string;
+    try {
+      workspaceFsPath = getMethodologyRoot();
+    } catch (err) {
+      this.log(`refusing to launch MCP server: ${(err as Error).message}`);
+      throw new Error(`Thinkube Kanban MCP: ${(err as Error).message}`);
     }
 
     // Resolve a token non-interactively — at launch time we're inside a
@@ -127,7 +128,7 @@ export class KanbanMcpProvider implements vscode.McpServerDefinitionProvider<vsc
     // read-only, regardless of the flag. driver / both leave it as set.
     const effectiveAllowWrites = cfg.mode !== "navigator" && cfg.allowAIWrites;
     const env: Record<string, string | number | null> = {
-      THINKUBE_WORKSPACE: workspaceFolder.uri.fsPath,
+      THINKUBE_WORKSPACE: workspaceFsPath,
       THINKUBE_REPO: cfg.repo,
       THINKUBE_PROJECT_NUMBER: String(cfg.projectNumber),
       THINKUBE_ALLOW_AI_WRITES: effectiveAllowWrites ? "true" : "false",

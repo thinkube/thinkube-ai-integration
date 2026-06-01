@@ -455,10 +455,15 @@
     "configuration": {
       "title": "Thinkube Kanban",
       "properties": {
+        "thinkube.kanban.folder": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path of the local git repository where the methodology lives (.thinkube/, CLAUDE.md, .claude/, .mcp.json). Set by 'Thinkube Kanban: Configure Project' from the folder you pick; the repo and board are derived from this folder's git remote."
+        },
         "thinkube.kanban.repo": {
           "type": "string",
           "default": "",
-          "description": "GitHub repository backing the kanban, as 'owner/repo'."
+          "description": "GitHub repository backing the kanban, as 'owner/repo'. Derived from `thinkube.kanban.folder`'s git remote by Configure Project."
         },
         "thinkube.kanban.projectNumber": {
           "type": "integer",

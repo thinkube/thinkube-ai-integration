@@ -18,6 +18,7 @@
  */
 import * as vscode from "vscode";
 
+import { getMethodologyRoot } from "../github/workspaceRepo";
 import {
   BundleInstaller,
   StatusReport,
@@ -47,11 +48,11 @@ export function registerBundleCommands(
 }
 
 async function installBundle(deps: BundleCommandDeps): Promise<void> {
-  const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  if (!workspace) {
-    vscode.window.showErrorMessage(
-      "Install Bundle: open a workspace folder first.",
-    );
+  let workspace: string;
+  try {
+    workspace = getMethodologyRoot();
+  } catch (err) {
+    vscode.window.showErrorMessage(`Install Bundle: ${(err as Error).message}`);
     return;
   }
 
@@ -133,11 +134,11 @@ async function installBundle(deps: BundleCommandDeps): Promise<void> {
 }
 
 async function statusBundle(deps: BundleCommandDeps): Promise<void> {
-  const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  if (!workspace) {
-    vscode.window.showErrorMessage(
-      "Bundle status: open a workspace folder first.",
-    );
+  let workspace: string;
+  try {
+    workspace = getMethodologyRoot();
+  } catch (err) {
+    vscode.window.showErrorMessage(`Bundle status: ${(err as Error).message}`);
     return;
   }
   try {
@@ -155,11 +156,11 @@ async function statusBundle(deps: BundleCommandDeps): Promise<void> {
 }
 
 async function diffBundle(deps: BundleCommandDeps): Promise<void> {
-  const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  if (!workspace) {
-    vscode.window.showErrorMessage(
-      "Bundle diff: open a workspace folder first.",
-    );
+  let workspace: string;
+  try {
+    workspace = getMethodologyRoot();
+  } catch (err) {
+    vscode.window.showErrorMessage(`Bundle diff: ${(err as Error).message}`);
     return;
   }
   try {

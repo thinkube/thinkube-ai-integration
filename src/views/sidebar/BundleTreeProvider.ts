@@ -20,6 +20,7 @@
  */
 import * as vscode from "vscode";
 
+import { getMethodologyRootOrUndefined } from "../../github/workspaceRepo";
 import {
   BundleInstaller,
   FileDiff,
@@ -98,13 +99,13 @@ export class BundleTreeProvider implements vscode.TreeDataProvider<BundleNode> {
   }
 
   async getChildren(element?: BundleNode): Promise<BundleNode[]> {
-    const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const workspace = getMethodologyRootOrUndefined();
     this.output.appendLine(
       `[bundle-tree] getChildren element=${element ? element.kind : "root"} workspace=${workspace ?? "(none)"}`,
     );
     if (!workspace) {
       this.output.appendLine(
-        "[bundle-tree] no workspace folder — returning []",
+        "[bundle-tree] no methodology folder configured — returning []",
       );
       return [];
     }
