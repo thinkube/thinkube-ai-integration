@@ -94,6 +94,8 @@ export interface ProjectItem {
   status?: string;
   /** Value of the board's DATE field for this item (ISO date), if set. */
   dueDate?: string;
+  /** Current value of the "Priority" single-select (P0–P3), if set. */
+  priority?: string;
 }
 
 export interface CreateIssueInput {
@@ -1289,6 +1291,12 @@ export class GitHubService {
           (v: FieldValueNode) =>
             !!v && v.__typename === "ProjectV2ItemFieldDateValue" && !!v.date,
         );
+        const priorityValue = values.find(
+          (v: FieldValueNode) =>
+            !!v &&
+            v.__typename === "ProjectV2ItemFieldSingleSelectValue" &&
+            v.field?.name === "Priority",
+        );
         out.push({
           id: it.id,
           issue: issueContent
@@ -1305,6 +1313,7 @@ export class GitHubService {
             : undefined,
           status: statusValue?.name,
           dueDate: dateValue?.date,
+          priority: priorityValue?.name,
         });
         if (out.length >= limit) break;
       }
