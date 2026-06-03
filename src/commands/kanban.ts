@@ -9,6 +9,8 @@
  * Each later chunk hangs additional commands here as the panels and the MCP
  * provider come online.
  */
+import * as path from "node:path";
+
 import * as vscode from "vscode";
 
 import { AuthService } from "../github/AuthService";
@@ -31,6 +33,8 @@ import {
   METHODOLOGY_STATUSES,
   StatusFieldMisconfiguredError,
 } from "../views/kanban/host/storage/GitHubProjectsAdapter";
+import { ThinkubeFilesAdapter } from "../views/kanban/host/storage/ThinkubeFilesAdapter";
+import { decodeCardNumber } from "../views/kanban/host/storage/sliceBoard";
 
 interface KanbanDeps {
   auth: AuthService;
@@ -203,19 +207,19 @@ async function refreshFromGitHub(deps: KanbanDeps): Promise<void> {
 async function openKanban(deps: KanbanDeps): Promise<void> {
   const adapter = await pickAdapter(deps);
   if (!adapter) return;
-  const cfg = vscode.workspace.getConfiguration("thinkube.kanban");
-  const repo = (cfg.get<string>("repo") ?? "").trim();
+  const store = deps.store;
   try {
     await KanbanPanel.open({
       extensionUri: deps.extensionUri,
       adapter,
       output: deps.output,
-      openDetail: repo.includes("/")
+      // Files-first: a card's "detail" is its slice file open in the editor.
+      openDetail: store
         ? async (issueNumber: number) => {
-            await vscode.env.openExternal(
-              vscode.Uri.parse(
-                `https://github.com/${repo}/issues/${issueNumber}`,
-              ),
+            const { specNumber, sliceNumber } = decodeCardNumber(issueNumber);
+            const rel = store.pathForSlice(specNumber, sliceNumber);
+            await vscode.window.showTextDocument(
+              vscode.Uri.file(path.join(store.thinkubeDir, rel)),
             );
           }
         : undefined,
@@ -252,20 +256,15 @@ async function openKanban(deps: KanbanDeps): Promise<void> {
 async function pickAdapter(
   deps: KanbanDeps,
 ): Promise<StorageAdapter | undefined> {
-  const cfg = vscode.workspace.getConfiguration("thinkube.kanban");
-  const repoSetting = (cfg.get<string>("repo") ?? "").trim();
-  const projectNumber = cfg.get<number>("projectNumber") ?? 0;
-
-  if (repoSetting.includes("/") && projectNumber > 0) {
-    const [owner, name] = repoSetting.split("/", 2);
-    return new GitHubProjectsAdapter({
-      coords: { owner, name },
-      projectNumber,
-      github: deps.github,
-      output: deps.output,
-    });
+  // Files-first (ADR-0001/0007): render the board over the repo's committed
+  // .thinkube/ via ThinkubeFilesAdapter whenever a methodology root is wired.
+  if (deps.store) {
+    const scope = path.basename(deps.store.workspaceRoot) || "Tandem board";
+    const adapter = new ThinkubeFilesAdapter(deps.store, scope);
+    adapter.watchExternal();
+    return adapter;
   }
-  // Fall through to the chunk-5 in-memory demo.
+  // No methodology root yet → the in-memory demo board.
   return new InMemoryAdapter();
 }
 
