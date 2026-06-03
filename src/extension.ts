@@ -4,7 +4,6 @@ import { registerBundleCommands } from "./commands/bundle";
 import { registerConfigCommands } from "./commands/config";
 import { registerKanbanCommands } from "./commands/kanban";
 import { registerLauncherCommands } from "./commands/launcher";
-import { registerRoadmapCommands } from "./commands/roadmap";
 import {
   initActiveContext,
   getCurrentActiveContext,
@@ -16,15 +15,9 @@ import { GitHubService } from "./github/GitHubService";
 import { getMethodologyRootOrUndefined } from "./github/workspaceRepo";
 import { KanbanMcpProvider } from "./mcp/KanbanMcpProvider";
 import { BundleInstaller } from "./methodology/BundleInstaller";
-import { TasksMaterializer } from "./methodology/TasksMaterializer";
-import { installTasksWatcher } from "./methodology/tasksWatcher";
 import { ClaudeConfigService } from "./services/ClaudeConfigService";
 import { LauncherService } from "./services/LauncherService";
 import { ThinkubeStore } from "./store/ThinkubeStore";
-import {
-  RoadmapNode,
-  RoadmapTreeProvider,
-} from "./views/roadmap/RoadmapTreeProvider";
 import { BundleTreeProvider } from "./views/sidebar/BundleTreeProvider";
 import { ConfigTreeProvider } from "./views/sidebar/ConfigTreeProvider";
 
@@ -121,26 +114,6 @@ export function activate(context: vscode.ExtensionContext) {
     );
   }
 
-  // Chunk-9 tasks materialiser — turns .thinkube/specs/SP-*-tasks.md rows
-  // into GitHub Task issues + Projects v2 items. Watcher fires the toast
-  // when a tasks file appears or changes with unchecked rows.
-  const materializer = thinkubeStore
-    ? new TasksMaterializer({
-        github,
-        store: thinkubeStore,
-        output: kanbanOutput,
-      })
-    : undefined;
-  if (thinkubeStore && materializer) {
-    context.subscriptions.push(
-      installTasksWatcher({
-        store: thinkubeStore,
-        materializer,
-        output: kanbanOutput,
-      }),
-    );
-  }
-
   // Register command groups
   registerConfigCommands(context, {
     configService,
@@ -156,7 +129,6 @@ export function activate(context: vscode.ExtensionContext) {
     output: kanbanOutput,
     store: thinkubeStore,
     extensionUri: context.extensionUri,
-    materializer,
   });
 
   // MCP provider — exposes the kanban tools to any LLM client in this VS
@@ -186,71 +158,11 @@ export function activate(context: vscode.ExtensionContext) {
     ),
   );
 
-  // Roadmap tree (Epic → Story → Spec) in the Thinkube Board activity-bar view.
-  const roadmapProvider = new RoadmapTreeProvider(github, kanbanOutput);
-  const roadmapView = vscode.window.createTreeView<RoadmapNode>(
-    "thinkubeRoadmap",
-    {
-      treeDataProvider: roadmapProvider,
-      showCollapseAll: true,
-    },
-  );
-  context.subscriptions.push(roadmapView);
-
-  // Shared deps for the CardDetailPanel — also passed to the wizards so the
-  // newly-created issue can open straight into the detail view.
-  const cardDetailDeps = {
-    extensionUri: context.extensionUri,
-    store: thinkubeStore,
-    output: kanbanOutput,
-    fetchIssue: (coords: { owner: string; name: string }, number: number) =>
-      github.getIssue(coords, number),
-    updateIssue: (
-      coords: { owner: string; name: string },
-      number: number,
-      fields: { title?: string; body?: string },
-    ) => github.updateIssue(coords, number, fields),
-    countOpenChildren: async (
-      coords: { owner: string; name: string },
-      number: number,
-    ) => {
-      const children = await github.listSubIssues(coords, number);
-      return children.filter((c) => c.state === "open").length;
-    },
-  };
-
-  registerRoadmapCommands(context, {
-    treeView: roadmapView,
-    provider: roadmapProvider,
-    output: kanbanOutput,
-    github,
-    store: thinkubeStore,
-    cardDetail: cardDetailDeps,
-  });
-
-  // Track whether `thinkube.kanban.repo` is set so the viewsWelcome can swap
-  // between the configure prompt and the populated tree. Initial sync + a
-  // listener on settings changes; also refresh the tree when the repo flips.
-  const syncRepoContext = () => {
-    const raw = vscode.workspace
-      .getConfiguration("thinkube.kanban")
-      .get<string>("repo", "")
-      .trim();
-    const configured = raw.includes("/");
-    vscode.commands.executeCommand(
-      "setContext",
-      "thinkube.roadmap.repoConfigured",
-      configured,
-    );
-  };
-  syncRepoContext();
+  // Refresh the Project view when the configured repo changes: its setup
+  // welcome and bundle-status node depend on whether a repo is configured.
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("thinkube.kanban.repo")) {
-        syncRepoContext();
-        roadmapProvider.refresh();
-        // Project view swaps between its setup welcome and the bundle status
-        // node based on whether a repo is configured.
         bundleTree.refresh();
       }
     }),

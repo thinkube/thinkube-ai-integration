@@ -38,7 +38,6 @@ import {
 } from "../github/GitHubService";
 import { classifySpecChange, SpecChangeKind } from "../methodology/specChange";
 import { ThinkubeStore } from "../store/ThinkubeStore";
-import { TasksMaterializer } from "../methodology/TasksMaterializer";
 
 interface ServerEnv {
   workspace: string;
@@ -100,14 +99,6 @@ async function main(): Promise<void> {
   const auth = new AuthService(makeStubContext());
   const github = new GitHubService(auth);
   const store = new ThinkubeStore(env.workspace);
-  const materializer = new TasksMaterializer({
-    github,
-    store,
-    // ThinkubeStore.writeFile needs to scan-for-secrets; outputs go to
-    // stderr in this subprocess. The OutputChannel-shaped object below
-    // routes appendLine() to the log stream.
-    output: { appendLine: (s: string) => log(s) } as vscode.OutputChannel,
-  });
 
   // Dynamic import: the MCP SDK is ESM-only, this entrypoint is CJS.
   const sdkServer: any =
@@ -121,7 +112,7 @@ async function main(): Promise<void> {
     { capabilities: { tools: {}, resources: {} } },
   );
 
-  const ctx: HandlerContext = { env, github, store, materializer };
+  const ctx: HandlerContext = { env, github, store };
   registerHandlers(server, sdkTypes, ctx);
 
   const transport = new sdkStdio.StdioServerTransport();
@@ -142,7 +133,6 @@ interface HandlerContext {
   env: ServerEnv;
   github: GitHubService;
   store: ThinkubeStore;
-  materializer: TasksMaterializer;
 }
 
 function registerHandlers(server: any, types: any, ctx: HandlerContext): void {
@@ -213,52 +203,6 @@ function registerHandlers(server: any, types: any, ctx: HandlerContext): void {
 
 const TOOL_DEFS = [
   {
-    name: "list_epics",
-    description: "List all open Epic issues in the configured repo.",
-    inputSchema: {
-      type: "object",
-      properties: {},
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "list_stories_in_epic",
-    description: "Sub-issues of an Epic (Stories).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        epic_number: { type: "integer", description: "Epic issue number" },
-      },
-      required: ["epic_number"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "list_specs_in_story",
-    description: "Sub-issues of a Story (Specs).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        story_number: { type: "integer", description: "Story issue number" },
-      },
-      required: ["story_number"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "list_tasks_in_spec",
-    description:
-      "Sub-issues of a Spec (Tasks — these are the kanban contents).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        spec_number: { type: "integer", description: "Spec issue number" },
-      },
-      required: ["spec_number"],
-      additionalProperties: false,
-    },
-  },
-  {
     name: "list_board",
     description:
       'Current kanban state from Projects v2. Returns items grouped by Status column, plus an "Inbox" group of open repo issues not yet triaged onto the board (untracked, non-roadmap issues).',
@@ -289,61 +233,6 @@ const TOOL_DEFS = [
         relative_path: { type: "string", description: "e.g. specs/SP-50.md" },
       },
       required: ["relative_path"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "create_epic",
-    description:
-      "Create an Epic issue + `.thinkube/epics/EP-{n}.md`. Returns the new issue.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        title: { type: "string" },
-        body: { type: "string", description: "One-paragraph pitch" },
-      },
-      required: ["title"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "create_story_under_epic",
-    description:
-      "Create a Story issue under an Epic + `.thinkube/stories/ST-{n}.md`, linked as sub-issue.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        epic_number: { type: "integer" },
-        title: { type: "string" },
-        body: { type: "string" },
-      },
-      required: ["epic_number", "title"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "create_spec_under_story",
-    description:
-      "Create a Spec issue under a Story + `.thinkube/specs/SP-{n}.md`, linked as sub-issue.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        story_number: { type: "integer" },
-        title: { type: "string" },
-        body: { type: "string" },
-      },
-      required: ["story_number", "title"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "create_tasks_from_spec",
-    description:
-      "Read `.thinkube/specs/SP-{n}-tasks.md` and materialise unchecked rows as Task issues + Projects v2 items in Ready. Idempotent.",
-    inputSchema: {
-      type: "object",
-      properties: { spec_number: { type: "integer" } },
-      required: ["spec_number"],
       additionalProperties: false,
     },
   },
@@ -431,17 +320,6 @@ const TOOL_DEFS = [
       additionalProperties: false,
     },
   },
-  {
-    name: "decompose_spec",
-    description:
-      "Bridge: the bundle's `/tasks-decompose` skill is the canonical author of `SP-{n}-tasks.md`. This tool returns instructions on how to invoke it; it does not generate the file itself (that's the methodology bundle's job).",
-    inputSchema: {
-      type: "object",
-      properties: { spec_number: { type: "integer" } },
-      required: ["spec_number"],
-      additionalProperties: false,
-    },
-  },
 ];
 
 async function dispatchTool(
@@ -451,61 +329,12 @@ async function dispatchTool(
   writeGate: (n: string) => void,
 ): Promise<unknown> {
   switch (name) {
-    case "list_epics":
-      return ctx.github.listIssues(ctx.env.coords, {
-        type: "epic",
-        state: "open",
-      });
-    case "list_stories_in_epic":
-      return ctx.github.listSubIssues(
-        ctx.env.coords,
-        asInt(args, "epic_number"),
-      );
-    case "list_specs_in_story":
-      return ctx.github.listSubIssues(
-        ctx.env.coords,
-        asInt(args, "story_number"),
-      );
-    case "list_tasks_in_spec":
-      return listTasksInSpec(ctx, asInt(args, "spec_number"));
     case "list_board":
       return listBoard(ctx);
     case "get_issue":
       return getIssue(ctx, asInt(args, "number"));
     case "get_thinkube_file":
       return getThinkubeFile(ctx, asString(args, "relative_path"));
-    case "create_epic":
-      writeGate(name);
-      return createIssueOfKind(
-        ctx,
-        "epic",
-        undefined,
-        asString(args, "title"),
-        optString(args, "body"),
-      );
-    case "create_story_under_epic":
-      writeGate(name);
-      return createIssueOfKind(
-        ctx,
-        "story",
-        asInt(args, "epic_number"),
-        asString(args, "title"),
-        optString(args, "body"),
-      );
-    case "create_spec_under_story":
-      writeGate(name);
-      return createIssueOfKind(
-        ctx,
-        "spec",
-        asInt(args, "story_number"),
-        asString(args, "title"),
-        optString(args, "body"),
-      );
-    case "create_tasks_from_spec":
-      writeGate(name);
-      return ctx.materializer.materialize({
-        specIssueNumber: asInt(args, "spec_number"),
-      });
     case "move_task":
       writeGate(name);
       return moveTask(
@@ -553,8 +382,6 @@ async function dispatchTool(
     case "write_retro_note":
       writeGate(name);
       return writeRetroNote(ctx, asString(args, "body"));
-    case "decompose_spec":
-      return decomposeSpecHint(ctx, asInt(args, "spec_number"));
     default:
       throw new Error(`unknown tool: ${name}`);
   }
@@ -690,33 +517,6 @@ async function stalenessByNumber(
   return out;
 }
 
-/**
- * Sub-issues of a Spec, enriched with SP-86 staleness ({specStale, specChange})
- * from the board. Falls back to the bare sub-issue list if no project is
- * configured or the board read fails.
- */
-async function listTasksInSpec(
-  ctx: HandlerContext,
-  specNumber: number,
-): Promise<unknown> {
-  const subs = await ctx.github.listSubIssues(ctx.env.coords, specNumber);
-  if (ctx.env.projectNumber === 0) return subs;
-  try {
-    const project = await ctx.github.getProject(
-      ctx.env.coords.owner,
-      ctx.env.projectNumber,
-    );
-    const items = await ctx.github.listProjectItems(project.id);
-    const stale = await stalenessByNumber(ctx, items, specNumber);
-    return subs.map((s) => ({ ...s, ...(stale.get(s.number) ?? {}) }));
-  } catch (err) {
-    process.stderr.write(
-      `[thinkube-mcp] list_tasks_in_spec staleness enrich failed: ${(err as Error).message}\n`,
-    );
-    return subs;
-  }
-}
-
 async function getIssue(ctx: HandlerContext, number: number): Promise<unknown> {
   const issue = await ctx.github.getIssue(ctx.env.coords, number);
   const linked = await ctx.store.linkIssueToFile(number).catch(() => undefined);
@@ -742,48 +542,6 @@ async function getThinkubeFile(
   const parsed = await ctx.store.getFile(relativePath);
   if (!parsed) throw new Error(`No file at .thinkube/${relativePath}`);
   return { relativePath, frontmatter: parsed.frontmatter, body: parsed.body };
-}
-
-async function createIssueOfKind(
-  ctx: HandlerContext,
-  kind: "epic" | "story" | "spec",
-  parentNumber: number | undefined,
-  title: string,
-  body: string | undefined,
-): Promise<unknown> {
-  const issue = await ctx.github.createIssue(ctx.env.coords, {
-    type: kind,
-    title,
-    body: body ?? "",
-  });
-  if (parentNumber !== undefined) {
-    const parent = await ctx.github.getIssue(ctx.env.coords, parentNumber);
-    try {
-      await ctx.github.addSubIssue(parent.nodeId, issue.nodeId);
-    } catch (err) {
-      log(
-        `createIssueOfKind: addSubIssue failed (non-fatal): ${(err as Error).message}`,
-      );
-    }
-  }
-  // Write the sidecar .thinkube file.
-  const rel = ctx.store.pathFor(kind, issue.number);
-  const frontmatter: Record<string, unknown> = {
-    kind,
-    issue: issue.number,
-    repo: `${ctx.env.coords.owner}/${ctx.env.coords.name}`,
-    created: new Date().toISOString().slice(0, 10),
-  };
-  if (parentNumber !== undefined) frontmatter.parent_issue = parentNumber;
-  const fileBody = `# ${title}\n\n${body ?? ""}\n`;
-  try {
-    await ctx.store.writeFile(rel, frontmatter, fileBody);
-  } catch (err) {
-    log(
-      `createIssueOfKind: writeFile failed (non-fatal): ${(err as Error).message}`,
-    );
-  }
-  return { issue, relativePath: rel };
 }
 
 async function moveTask(
@@ -887,15 +645,6 @@ async function writeRetroNote(
   const appended = `${previous.trimEnd()}\n\n## ${stamp}\n\n${body}\n`;
   await ctx.store.writeFile(rel, frontmatter, appended);
   return { relativePath: rel };
-}
-
-function decomposeSpecHint(ctx: HandlerContext, specNumber: number): unknown {
-  return {
-    message:
-      "decompose_spec doesn't generate the tasks file directly — the methodology bundle's `/tasks-decompose` skill does. Invoke that skill in your Claude session against the spec, then call `create_tasks_from_spec` once the file lands.",
-    relativeTasksPath: ctx.store.pathForTasks(specNumber),
-    nextStep: `/tasks-decompose ${specNumber}`,
-  };
 }
 
 // ─── Resource definitions + reader ──────────────────────────────────────────
