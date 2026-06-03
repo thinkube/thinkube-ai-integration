@@ -118,29 +118,16 @@ export class KanbanMcpProvider implements vscode.McpServerDefinitionProvider<vsc
       throw new Error(`Thinkube Kanban MCP: ${(err as Error).message}`);
     }
 
-    // Resolve a token non-interactively — at launch time we're inside a
-    // background flow, no place to show an input box. If a token isn't
-    // available, the subprocess will fail on the first GitHub call with
-    // a clear error; we don't block startup.
-    const token = await this.deps.auth.getToken({ prompt: false });
-
-    // Mode trumps the explicit allowAIWrites flag: navigator forces
-    // read-only, regardless of the flag. driver / both leave it as set.
+    // Files-first: the server reads/writes only `.thinkube/` under the
+    // workspace. No GitHub coords or token are needed. Mode trumps the
+    // explicit allowAIWrites flag: navigator forces read-only, regardless of
+    // the flag. driver / both leave it as set.
     const effectiveAllowWrites = cfg.mode !== "navigator" && cfg.allowAIWrites;
     const env: Record<string, string | number | null> = {
       THINKUBE_WORKSPACE: workspaceFsPath,
-      THINKUBE_REPO: cfg.repo,
-      THINKUBE_PROJECT_NUMBER: String(cfg.projectNumber),
       THINKUBE_ALLOW_AI_WRITES: effectiveAllowWrites ? "true" : "false",
       THINKUBE_MODE: cfg.mode,
     };
-    if (token) {
-      env.GITHUB_TOKEN = token;
-    } else {
-      this.log(
-        "WARN: no GitHub token resolved; MCP server will fail on first call",
-      );
-    }
 
     return new vscode.McpStdioServerDefinition(
       server.label,

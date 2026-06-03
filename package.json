@@ -162,16 +162,6 @@
         "icon": "$(folder)"
       },
       {
-        "command": "thinkube.kanban.dumpRoadmap",
-        "title": "Dump Roadmap (Smoke Test)",
-        "category": "Thinkube Kanban"
-      },
-      {
-        "command": "thinkube.kanban.smokeStore",
-        "title": "Smoke Test Thinkube Store",
-        "category": "Thinkube Kanban"
-      },
-      {
         "command": "thinkube.kanban.openKanban",
         "title": "Open Kanban",
         "category": "Thinkube Kanban",
@@ -314,14 +304,6 @@
       "commandPalette": [
         {
           "command": "thinkube-ai.claude.openHere",
-          "when": "workspaceFolderCount > 0"
-        },
-        {
-          "command": "thinkube.kanban.dumpRoadmap",
-          "when": "workspaceFolderCount > 0"
-        },
-        {
-          "command": "thinkube.kanban.smokeStore",
           "when": "workspaceFolderCount > 0"
         },
         {
