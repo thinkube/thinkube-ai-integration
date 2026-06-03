@@ -400,6 +400,37 @@ const TOOL_DEFS = [
     },
   },
   {
+    name: "reparent_issue",
+    description:
+      "Move a sub-issue to a new parent (remove the old sub-issue link, add the new). Keeps the issue's kind — use set_issue_kind to re-type if crossing levels. Mode-gated write.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        issue_number: { type: "integer" },
+        new_parent_number: { type: "integer" },
+      },
+      required: ["issue_number", "new_parent_number"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "set_issue_kind",
+    description:
+      "Change an issue's kind (Issue Type) to one of epic, story, spec, task. Mode-gated write.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        issue_number: { type: "integer" },
+        kind: {
+          type: "string",
+          enum: ["epic", "story", "spec", "task"],
+        },
+      },
+      required: ["issue_number", "kind"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "update_issue",
     description: "Update title / body / labels / state on any issue.",
     inputSchema: {
@@ -559,6 +590,20 @@ async function dispatchTool(
     case "move_to_inbox":
       writeGate(name);
       return moveToInbox(ctx, asInt(args, "issue_number"));
+    case "reparent_issue":
+      writeGate(name);
+      return reparentIssue(
+        ctx,
+        asInt(args, "issue_number"),
+        asInt(args, "new_parent_number"),
+      );
+    case "set_issue_kind":
+      writeGate(name);
+      return setIssueKind(
+        ctx,
+        asInt(args, "issue_number"),
+        asString(args, "kind"),
+      );
     case "update_issue":
       writeGate(name);
       return ctx.github.updateIssue(ctx.env.coords, asInt(args, "number"), {
@@ -991,6 +1036,44 @@ async function moveToInbox(
 
   const { cleared } = await ctx.github.clearIssueType(ctx.env.coords, issueNumber);
   return { ok: true, issue: issueNumber, unboarded, unparented, typeCleared: cleared };
+}
+
+/**
+ * Move a sub-issue from its current parent to `newParentNumber` (remove the old
+ * sub-issue link, add the new). Keeps the issue's kind — use `set_issue_kind`
+ * (or `adopt_issue`) to re-type when crossing hierarchy levels.
+ */
+async function reparentIssue(
+  ctx: HandlerContext,
+  issueNumber: number,
+  newParentNumber: number,
+): Promise<unknown> {
+  const issue = await ctx.github.getIssue(ctx.env.coords, issueNumber);
+  const newParent = await ctx.github.getIssue(ctx.env.coords, newParentNumber);
+  const oldParent = await ctx.github.getParentIssue(ctx.env.coords, issueNumber);
+  let detachedFrom: number | undefined;
+  if (oldParent && oldParent.number !== newParentNumber) {
+    await ctx.github.removeSubIssue(oldParent.nodeId, issue.nodeId);
+    detachedFrom = oldParent.number;
+  }
+  await ctx.github.addSubIssue(newParent.nodeId, issue.nodeId);
+  return { ok: true, issue: issueNumber, newParent: newParentNumber, detachedFrom };
+}
+
+/** Change an issue's kind (Issue Type). */
+async function setIssueKind(
+  ctx: HandlerContext,
+  issueNumber: number,
+  kindRaw: string,
+): Promise<unknown> {
+  const kind = normalizeKind(kindRaw);
+  if (!kind) {
+    throw new Error(
+      `Invalid kind "${kindRaw}"; must be one of epic, story, spec, task.`,
+    );
+  }
+  await ctx.github.setIssueType(ctx.env.coords, issueNumber, kind);
+  return { ok: true, issue: issueNumber, kind };
 }
 
 async function writeDecision(
