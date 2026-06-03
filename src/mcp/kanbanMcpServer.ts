@@ -37,6 +37,7 @@ import {
   RepoCoords,
 } from "../github/GitHubService";
 import { classifySpecChange, SpecChangeKind } from "../methodology/specChange";
+import { Kind, normalizeKind } from "../github/issueTypes";
 import { ThinkubeStore } from "../store/ThinkubeStore";
 import { TasksMaterializer } from "../methodology/TasksMaterializer";
 
@@ -365,6 +366,40 @@ const TOOL_DEFS = [
     },
   },
   {
+    name: "adopt_issue",
+    description:
+      "Triage an Inbox issue into the hierarchy: assign it the child kind of `parent_number` (Epic→Story, Story→Spec, Spec→Task), link it as a sub-issue, and — if it becomes a Task — add it to the board at `status` (default Ready). Mode-gated write.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        issue_number: { type: "integer" },
+        parent_number: {
+          type: "integer",
+          description: "Epic / Story / Spec to adopt the issue under",
+        },
+        status: {
+          type: "string",
+          enum: ["Spec", "Ready", "In Progress", "Review", "Verify", "Done"],
+          description:
+            "Board column when the adopted issue becomes a Task (default Ready)",
+        },
+      },
+      required: ["issue_number", "parent_number"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "move_to_inbox",
+    description:
+      "Send an issue back to the Inbox: remove it from the board, un-parent it (remove the sub-issue link), and clear its Issue Type (best-effort). Mode-gated write.",
+    inputSchema: {
+      type: "object",
+      properties: { issue_number: { type: "integer" } },
+      required: ["issue_number"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "update_issue",
     description: "Update title / body / labels / state on any issue.",
     inputSchema: {
@@ -513,6 +548,17 @@ async function dispatchTool(
         asInt(args, "task_number"),
         asString(args, "status"),
       );
+    case "adopt_issue":
+      writeGate(name);
+      return adoptIssue(
+        ctx,
+        asInt(args, "issue_number"),
+        asInt(args, "parent_number"),
+        optString(args, "status"),
+      );
+    case "move_to_inbox":
+      writeGate(name);
+      return moveToInbox(ctx, asInt(args, "issue_number"));
     case "update_issue":
       writeGate(name);
       return ctx.github.updateIssue(ctx.env.coords, asInt(args, "number"), {
@@ -843,6 +889,108 @@ async function moveTask(
   }
 
   return { ok: true, taskNumber, status, baselineStamped };
+}
+
+/** Parent kind → the kind a child adopted under it becomes. */
+const CHILD_KIND: Partial<Record<Kind, Kind>> = {
+  epic: "story",
+  story: "spec",
+  spec: "task",
+};
+
+/**
+ * Triage an Inbox issue into the hierarchy under `parentNumber`: assign the
+ * child kind (Epic→Story, Story→Spec, Spec→Task), link it as a sub-issue, and —
+ * if it becomes a Task — add it to the board at `status` (default Ready).
+ * Composes the SP-97 #98 primitives with the existing add* primitives.
+ */
+async function adoptIssue(
+  ctx: HandlerContext,
+  issueNumber: number,
+  parentNumber: number,
+  status: string | undefined,
+): Promise<unknown> {
+  const parent = await ctx.github.getIssue(ctx.env.coords, parentNumber);
+  const parentKind =
+    parent.kind ??
+    (parent.issueTypeName ? normalizeKind(parent.issueTypeName) : undefined);
+  const childKind = parentKind ? CHILD_KIND[parentKind] : undefined;
+  if (!childKind) {
+    throw new Error(
+      `Cannot adopt under #${parentNumber} (kind: ${parentKind ?? "unknown"}); ` +
+        "the parent must be an Epic, Story, or Spec.",
+    );
+  }
+
+  await ctx.github.setIssueType(ctx.env.coords, issueNumber, childKind);
+  const child = await ctx.github.getIssue(ctx.env.coords, issueNumber);
+  await ctx.github.addSubIssue(parent.nodeId, child.nodeId);
+
+  let boarded = false;
+  if (childKind === "task" && ctx.env.projectNumber !== 0) {
+    const project = await ctx.github.getProject(
+      ctx.env.coords.owner,
+      ctx.env.projectNumber,
+    );
+    const { itemId } = await ctx.github.addItemToProject(
+      project.id,
+      child.nodeId,
+    );
+    const col = status ?? "Ready";
+    const option = project.statusField?.options.find((o) => o.name === col);
+    if (project.statusField && option) {
+      await ctx.github.setStatus(
+        project.id,
+        itemId,
+        project.statusField.id,
+        option.id,
+      );
+    }
+    boarded = true;
+  }
+  return {
+    ok: true,
+    issue: issueNumber,
+    kind: childKind,
+    parent: parentNumber,
+    boarded,
+  };
+}
+
+/**
+ * Send an issue back to the Inbox: remove it from the board, un-parent it
+ * (remove the sub-issue link), and clear its Issue Type (best-effort — falls
+ * back gracefully if the API can't clear a type). Inverse of {@link adoptIssue}.
+ */
+async function moveToInbox(
+  ctx: HandlerContext,
+  issueNumber: number,
+): Promise<unknown> {
+  const issue = await ctx.github.getIssue(ctx.env.coords, issueNumber);
+
+  let unboarded = false;
+  if (ctx.env.projectNumber !== 0) {
+    const project = await ctx.github.getProject(
+      ctx.env.coords.owner,
+      ctx.env.projectNumber,
+    );
+    const items = await ctx.github.listProjectItems(project.id);
+    const item = items.find((i) => i.issue?.number === issueNumber);
+    if (item) {
+      await ctx.github.removeProjectItem(project.id, item.id);
+      unboarded = true;
+    }
+  }
+
+  let unparented = false;
+  const parent = await ctx.github.getParentIssue(ctx.env.coords, issueNumber);
+  if (parent) {
+    await ctx.github.removeSubIssue(parent.nodeId, issue.nodeId);
+    unparented = true;
+  }
+
+  const { cleared } = await ctx.github.clearIssueType(ctx.env.coords, issueNumber);
+  return { ok: true, issue: issueNumber, unboarded, unparented, typeCleared: cleared };
 }
 
 async function writeDecision(
