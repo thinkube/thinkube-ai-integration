@@ -99,8 +99,9 @@ Can stand alone or as **"Thinkube Tandem."**
 | Term                                  | Verdict           | Why                                                                  |
 | ------------------------------------- | ----------------- | -------------------------------------------------------------------- |
 | Methodology name                      | **Coin** (Tandem) | Identity anchor; the one slam-dunk.                                  |
+| The work unit                         | **Coin** (Slice)  | "Task" wrongly implies a tiny, clock-sized to-do (see ADR-0003).     |
 | pair-start / pair-next (the loop)     | **Keep**          | "Pair" is the standard term for the activity; don't brand the verbs. |
-| Spec, Task                            | Keep              | Standard; Claude + humans parse free.                                |
+| Spec                                  | Keep              | Standard; Claude + humans parse free.                                |
 | Acceptance Criteria                   | Keep              | Standard; load-bearing and well understood.                          |
 | Verify / verifier, Done, Ready, Doing | Keep              | Standard; the verifier _gate_ is the novel idea, not the word.       |
 | Board                                 | Keep              | Standard; "the board is the repo" is a principle, not a coined noun. |
@@ -111,8 +112,9 @@ Can stand alone or as **"Thinkube Tandem."**
 
 - The "you pruned X" critique dissolves; critique shifts to "is the new core real?",
   answered by the derivation table above.
-- Exactly one coined word (the name); everything else stays standard → discipline
-  preserved, Claude comprehension preserved. The `pair-*` skills are untouched.
+- Two coined words only — **Tandem** (the name) and **Slice** (the work unit, where
+  "task" misleads); everything else stays standard → discipline preserved, Claude
+  comprehension preserved. The `pair-*` skills are untouched.
 - Requires a short public "what is Tandem" thesis doc (the derivation table is its
   seed).
 

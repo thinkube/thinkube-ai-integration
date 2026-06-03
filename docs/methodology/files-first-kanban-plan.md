@@ -20,9 +20,9 @@ the MCP server.
 
 `src/store/ThinkubeStore.ts`
 
-- [ ] Add a `status` field to the frontmatter contract for epic/story/spec/task
-      artifacts (`src/store/frontmatter.ts`). Values mirror the six columns;
-      default `Spec`/`Ready` per kind on create.
+- [ ] Add a `status` field to the frontmatter contract for the `slice` kind
+      (`src/store/frontmatter.ts`). Values mirror the three columns
+      (`Ready`/`Doing`/`Done`); default `Ready` on create.
 - [ ] Add a **local monotonic ID** allocator (generalise the existing ADR
       auto-increment): `nextId(kind)` scanning existing files / a small counter,
       replacing GitHub-issue-number identity.
@@ -48,17 +48,16 @@ the MCP server.
 
 `src/mcp/kanbanMcpServer.ts`
 
-- [ ] `create*OfKind` (epic/story/spec) → write the sidecar with a local ID and
-      `status` frontmatter; **drop** the `ctx.github.createIssue` call and
-      sub-issue linking (hierarchy is `parent:` frontmatter).
-- [ ] `move_task` → edit `status:` frontmatter + commit; drop the Projects v2
-      `setStatus` path. Keep the SP-86 spec-hash baseline stamping on reaching
-      Verify/Done.
+- [ ] `create*OfKind` (spec) → write the sidecar with a local ID and `status`
+      frontmatter; **drop** the `ctx.github.createIssue` call and sub-issue linking
+      (parent is `parent:` frontmatter). Epic/Story kinds are removed.
+- [ ] `move_slice` → edit `status:` frontmatter + commit; drop the Projects v2
+      `setStatus` path. Keep the spec-hash staleness baseline on reaching Done.
 - [ ] `list_board` / `list_*_in_*` → read from the store, not the API.
-- [ ] `tasks-decompose` → write **task files** (`.thinkube/tasks/T-{n}.md` with
-      `status:`/`parent:` frontmatter), not GitHub issues. Per ADR-0003 tasks are
-      file-backed cards (card = Task); the issue-minting `create_tasks_from_spec`
-      / `materialise` path is removed.
+- [ ] `/slice` (was `tasks-decompose`) → write **slice files**
+      (`.thinkube/slices/SL-{n}.md` with `status:`/`parent:` frontmatter), not GitHub
+      issues. Per ADR-0003 slices are file-backed cards (card = Slice); the
+      issue-minting `create_tasks_from_spec` / `materialise` path is removed.
 - [ ] Remove the `project`-scope dependency and the API-failure fallbacks from
       the tool surface.
 
