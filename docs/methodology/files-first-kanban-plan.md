@@ -35,17 +35,12 @@ the MCP server.
 
 `src/views/kanban/host/storage/ThinkubeFilesAdapter.ts` (new)
 
-- [ ] Implement `StorageAdapter`:
-      - `load()` → `ThinkubeStore.listBoard()` mapped to `Board`/`TaskCard`.
-      - `save(board)` / move → write `status:` frontmatter + commit with the
-        scoped message.
-      - `updateIssue?`/`createTask?` → file writes (title/body), not API calls.
-      - `onExternalChange` → fire from `ThinkubeStore.onChanged` (the FS watcher
-        already exists) so external edits re-render the panel.
-      - `scope` → repo/workspace label.
+- [ ] Implement `StorageAdapter`: - `load()` → `ThinkubeStore.listBoard()` mapped to `Board`/`TaskCard`. - `save(board)` / move → write `status:` frontmatter + commit with the
+      scoped message. - `updateIssue?`/`createTask?` → file writes (title/body), not API calls. - `onExternalChange` → fire from `ThinkubeStore.onChanged` (the FS watcher
+      already exists) so external edits re-render the panel. - `scope` → repo/workspace label.
 - [ ] Wire adapter selection in `src/views/kanban/host/Panel.ts` /
       `src/commands/kanban.ts`: **files adapter is the default**;
-      `GitHubProjectsAdapter` only when host = GitHub *and* explicitly opted in.
+      `GitHubProjectsAdapter` only when host = GitHub _and_ explicitly opted in.
 - [ ] Add a `thinkube.kanban.backend` setting (`files` | `github-projects`),
       default `files`, in `package.json` → `contributes.configuration`.
 
@@ -91,6 +86,30 @@ the MCP server.
       setting (`thinkube.kanban.inbox.enabled`, default false).
 - [ ] Optional: `.thinkube/inbox.md` local quick-capture drained by the same
       skill.
+
+## Phase 6 — Retrieval (structural-first, no RAG)
+
+See [ADR-0002](../../.thinkube/decisions/ADR-0002-retrieval-over-thinkube.md).
+Vector RAG is explicitly out; this phase implements the cheap, git-native
+retrieval that covers the structured majority.
+
+- [ ] **Frontmatter index.** Generate/maintain a lightweight index of all
+      `.thinkube/` artifacts (id, kind, title, parent, status) from the store's
+      existing `issueIndex`/watcher — the structural lookup table retrieval and
+      the `explorer` agent query first.
+- [ ] **Status-filtered search.** Ensure retrieval helpers exclude `Done`/stale
+      items by default (filter on `status:`), so completed/obsolete specs don't
+      pollute results.
+- [ ] **Index/summary files for accreting kinds.** Generate committed
+      `.thinkube/decisions/INDEX.md` (and a retro index) with one-line synopses,
+      refreshed on write via `ThinkubeStore.onChanged`. This is the primary
+      "have we decided/seen this before?" surface.
+- [ ] **Point skills at it.** Update `spec-prepare` (related-work/dedup check
+      before authoring) and `pair-start`/`pair-next` to consult the index +
+      `explorer` rather than loading the tree.
+- [ ] **Retrieval seam (interface only).** Define a small retrieval interface so a
+      future vector retriever can slot in — scoped to decisions+retros, rebuilt on
+      demand, never committed, off by default. Do **not** implement it now.
 
 ## Validation
 
