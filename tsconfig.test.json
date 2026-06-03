@@ -6,7 +6,9 @@
   },
   "include": [
     "src/methodology/specChange.ts",
-    "src/methodology/specChange.test.ts"
+    "src/methodology/specChange.test.ts",
+    "src/methodology/qualityGates.ts",
+    "src/methodology/qualityGates.test.ts"
   ],
   "exclude": ["node_modules"]
 }
