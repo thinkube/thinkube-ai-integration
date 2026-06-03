@@ -122,3 +122,10 @@ Can stand alone or as **"Thinkube Tandem."**
   judges us against scrum's completeness.
 - **Coin a full dialect** (rename task/spec/review/etc.). Rejected: onboarding cost,
   credibility risk, and worse zero-shot comprehension for the AI executor.
+- **Widen the scope to "pair-first, team-composable"** (the unit is the pair; small
+  teams compose from pairs via an `owner:` field + an optional human-review gate;
+  cede only enterprise coordination). Rejected: deliberately **stay narrow** — "for
+  you and your AI, full stop." A sharp, specific pitch is more memorable and more
+  adoptable, and refusing to claim team support keeps us out of the "okay, how do you
+  handle [team thing]?" cross-examination. The boundary stays at _any_ team that
+  needs to coordinate across people → use the team tools.
