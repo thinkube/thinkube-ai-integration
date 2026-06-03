@@ -20,6 +20,8 @@ import { LauncherService } from "./services/LauncherService";
 import { ThinkubeStore } from "./store/ThinkubeStore";
 import { BundleTreeProvider } from "./views/sidebar/BundleTreeProvider";
 import { ConfigTreeProvider } from "./views/sidebar/ConfigTreeProvider";
+import { BoardNavigatorProvider } from "./views/boards/BoardNavigatorProvider";
+import { registerBoardCommands } from "./commands/boards";
 
 export function activate(context: vscode.ExtensionContext) {
   console.log("Thinkube AI Integration is now active!");
@@ -167,6 +169,20 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
   );
+
+  // Per-repo board navigator (ADR-0006): discover every repo's .thinkube/ board
+  // across the open workspace folders; open enabled ones, enable disabled ones.
+  const boardNavigator = new BoardNavigatorProvider();
+  context.subscriptions.push(
+    vscode.window.createTreeView("thinkubeBoards", {
+      treeDataProvider: boardNavigator,
+    }),
+  );
+  registerBoardCommands(context, {
+    extensionUri: context.extensionUri,
+    output: kanbanOutput,
+    provider: boardNavigator,
+  });
 }
 
 export function deactivate() {

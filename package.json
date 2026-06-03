@@ -39,6 +39,11 @@
     "views": {
       "thinkube": [
         {
+          "id": "thinkubeBoards",
+          "name": "Boards",
+          "contextualTitle": "Tandem Boards"
+        },
+        {
           "id": "thinkubeBundleTree",
           "name": "Project",
           "contextualTitle": "Thinkube Project"
@@ -57,6 +62,24 @@
       }
     ],
     "commands": [
+      {
+        "command": "thinkube.boards.refresh",
+        "title": "Refresh Boards",
+        "category": "Thinkube Boards",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "thinkube.boards.open",
+        "title": "Open Board",
+        "category": "Thinkube Boards",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "thinkube.boards.enable",
+        "title": "Enable Methodology Here",
+        "category": "Thinkube Boards",
+        "icon": "$(add)"
+      },
       {
         "command": "thinkube-ai.claude.openHere",
         "title": "Open Here",
@@ -201,6 +224,11 @@
     "menus": {
       "view/title": [
         {
+          "command": "thinkube.boards.refresh",
+          "when": "view == thinkubeBoards",
+          "group": "navigation@0"
+        },
+        {
           "command": "thinkube.refreshConfig",
           "when": "view == claudeConfigTree",
           "group": "navigation@0"
@@ -232,6 +260,16 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "thinkube.boards.enable",
+          "when": "view == thinkubeBoards && viewItem == tandemBoardDisabled",
+          "group": "inline"
+        },
+        {
+          "command": "thinkube.boards.open",
+          "when": "view == thinkubeBoards && viewItem == tandemBoardEnabled",
+          "group": "inline"
+        },
         {
           "command": "thinkube.addHook",
           "when": "view == claudeConfigTree && viewItem == hooks-section",
