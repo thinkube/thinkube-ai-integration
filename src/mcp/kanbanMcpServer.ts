@@ -261,7 +261,7 @@ const TOOL_DEFS = [
   {
     name: "list_board",
     description:
-      "Current kanban state from Projects v2. Returns items grouped by Status column, plus an \"Inbox\" group of open repo issues not yet triaged onto the board (untracked, non-roadmap issues).",
+      'Current kanban state from Projects v2. Returns items grouped by Status column, plus an "Inbox" group of open repo issues not yet triaged onto the board (untracked, non-roadmap issues).',
     inputSchema: {
       type: "object",
       properties: {},
@@ -905,7 +905,7 @@ const RESOURCE_DEFS = [
     uri: "thinkube://board_state",
     name: "Board state",
     description:
-      "Current Projects v2 board: items grouped by Status column, plus an \"Inbox\" group of untriaged open repo issues.",
+      'Current Projects v2 board: items grouped by Status column, plus an "Inbox" group of untriaged open repo issues.',
     mimeType: "application/json",
   },
   {

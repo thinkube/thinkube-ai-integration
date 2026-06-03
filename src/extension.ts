@@ -112,7 +112,9 @@ export function activate(context: vscode.ExtensionContext) {
   if (thinkubeStore) {
     context.subscriptions.push(thinkubeStore);
     thinkubeStore.activate();
-    kanbanOutput.appendLine(`[thinkube] .thinkube store rooted at ${methodologyRoot}`);
+    kanbanOutput.appendLine(
+      `[thinkube] .thinkube store rooted at ${methodologyRoot}`,
+    );
   } else {
     kanbanOutput.appendLine(
       '[thinkube] .thinkube store not initialised: no methodology folder configured — run "Thinkube Kanban: Configure Project".',

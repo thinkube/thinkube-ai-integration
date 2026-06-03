@@ -29,7 +29,7 @@ In one invocation:
 1. Verify the previous Task — tests, lint, typecheck all green.
 2. On green: move the Task forward (In Progress → Review, or directly to Verify if the chunk-11 gate accepts).
 3. Comment on the issue with a one-paragraph summary of the change for traceability.
-4. Sweep for stale siblings — Tasks whose parent Spec's *requirements* changed (SP-86) — and resolve them before starting new work.
+4. Sweep for stale siblings — Tasks whose parent Spec's _requirements_ changed (SP-86) — and resolve them before starting new work.
 5. Pick the next Ready Task under the same Story.
 6. Move the new Task to In Progress.
 7. Load the new Task's body + parent Spec section into the conversation.
@@ -44,7 +44,7 @@ In one invocation:
 3. **Comment.** On green: leave a one-paragraph comment on the Task issue summarising what changed (key files, approach, anything reviewers should look at first). Use `mcp__thinkube-kanban__add_comment` — this also satisfies the chunk-11 In-Progress→Review gate.
 4. **Move the finished Task forward.** Default target: `Review`. Use `mcp__thinkube-kanban__move_task` with `status = "Review"`. If the user has indicated this work skips review (e.g. trivial fix), they can ask Claude to move to `Verify` directly — but the chunk-11 Review→Verify gate needs the parent Spec's AC fully checked first, so this is the exception not the rule.
 5. **Update the parent Spec's acceptance criteria.** If the completed Task satisfied a specific AC, mark that AC checked in `.thinkube/specs/SP-{n}.md` via `Edit`. The chunk-11 Review→Verify gate later in the workflow looks at these checkboxes.
-6. **Stale-spec sweep (SP-86).** Before picking the next Task, check whether any sibling Task under the active Story went stale because its parent Spec's *requirements* changed. Call `mcp__thinkube-kanban__list_tasks_in_spec` for the active Story's Spec(s) (or read `list_board`) — each Task carries `specStale` (bool) and `specChange` (`none` | `metadata` | `requirements`):
+6. **Stale-spec sweep (SP-86).** Before picking the next Task, check whether any sibling Task under the active Story went stale because its parent Spec's _requirements_ changed. Call `mcp__thinkube-kanban__list_tasks_in_spec` for the active Story's Spec(s) (or read `list_board`) — each Task carries `specStale` (bool) and `specChange` (`none` | `metadata` | `requirements`):
    - **`specChange: "requirements"`** (substantively stale — the Spec's `## Acceptance Criteria` / `## Design` / `## Constraints` changed since this Task was verified): **resolve it before starting new work.** Re-run the `verifier` against the current Spec; if the Task is past `In Progress` (Review/Verify/Done) and no longer meets the new AC, move it back and re-open the affected `.thinkube/specs/SP-{n}.md` checkboxes. Tell the user what changed.
    - **`specChange: "metadata"`** (an issue-type/label/sub-issue/status/comment change, or an AC checkbox toggle): not a real change — no re-verification; the flag clears once the Task is next touched.
    - Handle stale siblings one at a time; finish the sweep before moving on.

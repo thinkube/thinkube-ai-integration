@@ -992,7 +992,8 @@ export class GitHubService {
     projectId: string,
     name: string,
   ): Promise<
-    { id: string; name: string; options: { id: string; name: string }[] } | undefined
+    | { id: string; name: string; options: { id: string; name: string }[] }
+    | undefined
   > {
     const data = await this.runGraphQL<{
       node: {
@@ -1046,7 +1047,11 @@ export class GitHubService {
     projectId: string,
   ): Promise<{
     issueTypesCreated: string[];
-    priorityField: { fieldId: string; created: boolean; optionsAdded: string[] };
+    priorityField: {
+      fieldId: string;
+      created: boolean;
+      optionsAdded: string[];
+    };
   }> {
     const org = coords.owner;
 
@@ -1066,8 +1071,16 @@ export class GitHubService {
       color: string;
     }> = [
       { name: "Epic", description: "A multi-week initiative", color: "purple" },
-      { name: "Story", description: "A user-observable deliverable", color: "blue" },
-      { name: "Spec", description: "The technical how for one Story slice", color: "green" },
+      {
+        name: "Story",
+        description: "A user-observable deliverable",
+        color: "blue",
+      },
+      {
+        name: "Spec",
+        description: "The technical how for one Story slice",
+        color: "green",
+      },
       { name: "Task", description: "1–3 hours of focused work", color: "gray" },
     ];
     const existing = new Set(
@@ -1115,7 +1128,11 @@ export class GitHubService {
         field.id,
         PRIORITY_OPTIONS,
       );
-      priorityField = { fieldId: field.id, created: false, optionsAdded: added };
+      priorityField = {
+        fieldId: field.id,
+        created: false,
+        optionsAdded: added,
+      };
     }
 
     return { issueTypesCreated, priorityField };
@@ -1636,9 +1653,10 @@ export class GitHubService {
   ): Promise<{ fieldId: string; optionsByName: Record<string, string> }> {
     const data = await this.runGraphQL<{
       createProjectV2Field: {
-        projectV2Field:
-          | { id: string; options?: { id: string; name: string }[] }
-          | null;
+        projectV2Field: {
+          id: string;
+          options?: { id: string; name: string }[];
+        } | null;
       } | null;
     }>(
       /* GraphQL */ `

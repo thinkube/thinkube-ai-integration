@@ -24,8 +24,9 @@ import { detectRepoCoords, RepoCoords } from "./gitRemote";
  */
 export function getMethodologyRoot(): string {
   const folder = (
-    vscode.workspace.getConfiguration("thinkube.kanban").get<string>("folder") ??
-    ""
+    vscode.workspace
+      .getConfiguration("thinkube.kanban")
+      .get<string>("folder") ?? ""
   ).trim();
   if (!folder) {
     throw new Error(

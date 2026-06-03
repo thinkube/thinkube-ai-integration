@@ -384,9 +384,11 @@ async function configureProject(deps: KanbanDeps): Promise<void> {
         const mig = await deps.github.migrateLabelKindsToTypes(coords);
         deps.output.appendLine(
           `[configureProject] migrated ${mig.migrated} issue(s) to Issue Types (` +
-            `${Object.entries(mig.perKind)
-              .map(([k, n]) => `${k}:${n}`)
-              .join(", ") || "none"})`,
+            `${
+              Object.entries(mig.perKind)
+                .map(([k, n]) => `${k}:${n}`)
+                .join(", ") || "none"
+            })`,
         );
       } catch (err) {
         deps.output.appendLine(

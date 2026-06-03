@@ -63,7 +63,10 @@ test("ticking an AC checkbox does not change the requirement hash", () => {
 
 test("editing AC text / Design / Constraints changes the requirement hash", () => {
   const ac = SPEC.replace("Second criterion", "Second criterion, revised");
-  const design = SPEC.replace("Do the thing with a hash.", "Do something else.");
+  const design = SPEC.replace(
+    "Do the thing with a hash.",
+    "Do something else.",
+  );
   const constraints = SPEC.replace("- Be fast", "- Be slow");
   assert.notEqual(requirementHash(ac), requirementHash(SPEC));
   assert.notEqual(requirementHash(design), requirementHash(SPEC));
