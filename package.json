@@ -370,18 +370,18 @@
         "thinkube.kanban.folder": {
           "type": "string",
           "default": "",
-          "description": "Absolute path of the local git repository where the methodology lives (.thinkube/, CLAUDE.md, .claude/, .mcp.json). Set by 'Thinkube Kanban: Configure Project' from the folder you pick; the repo and board are derived from this folder's git remote."
+          "description": "Legacy (superseded by the Boards navigator): absolute path of the single git repository the methodology bundle + MCP launch gate still use. The per-repo Boards navigator discovers .thinkube/ boards across the workspace and does not need this."
         },
         "thinkube.kanban.repo": {
           "type": "string",
           "default": "",
-          "description": "GitHub repository backing the kanban, as 'owner/repo'. Derived from `thinkube.kanban.folder`'s git remote by Configure Project."
+          "description": "Legacy: GitHub 'owner/repo' that still gates whether the kanban MCP server launches. Not used by the files-first board — the Boards navigator opens any repo's committed .thinkube/ directly."
         },
         "thinkube.kanban.projectNumber": {
           "type": "integer",
           "default": 0,
           "minimum": 0,
-          "description": "GitHub Projects v2 project number (the number in the project URL). Leave 0 to disable Projects-v2 read/write."
+          "description": "Deprecated / unused: the files-first board has no Projects v2 backing. Retained only so existing settings don't error; ignored by the extension."
         },
         "thinkube.kanban.allowAIWrites": {
           "type": "boolean",
