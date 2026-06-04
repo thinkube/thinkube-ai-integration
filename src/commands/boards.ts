@@ -138,6 +138,17 @@ async function openBoardFor(
         vscode.Uri.file(path.join(store.thinkubeDir, rel)),
       );
     },
+    // "New Spec" header button: allocate the next Spec number and open a
+    // Claude session rooted in this repo with /spec-prepare prefilled —
+    // spec authoring is a conversation (ADR-0003), so the button's job is
+    // only to start it in the right place with the right number.
+    onCreateSpec: async () => {
+      const n = await store.nextSpecNumber();
+      await deps.launcher.openHere(
+        vscode.Uri.file(r.path),
+        `/spec-prepare ${n} `,
+      );
+    },
   });
 }
 

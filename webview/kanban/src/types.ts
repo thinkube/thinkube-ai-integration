@@ -74,7 +74,9 @@ export type WebviewMessage =
   /** Set or clear (null) a card's due date. */
   | { kind: "set-due"; number: number; date: string | null }
   /** Open the full card-detail panel for an issue. */
-  | { kind: "open-detail"; number: number };
+  | { kind: "open-detail"; number: number }
+  /** "New Spec" header button — host opens a Claude session with /spec-prepare prefilled. */
+  | { kind: "create-spec" };
 
 export type ModeFlag = "navigator" | "driver" | "both";
 

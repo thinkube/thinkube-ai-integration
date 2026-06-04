@@ -30,3 +30,16 @@
   flex-grow: 1;
   min-height: 0;
 }
+
+.newSpec {
+  border: none;
+  border-radius: 3px;
+  padding: 4px 10px;
+  font-size: 0.85em;
+  cursor: pointer;
+  color: var(--vscode-button-foreground, #fff);
+  background: var(--vscode-button-background, #0e639c);
+  &:hover {
+    background: var(--vscode-button-hoverBackground, #1177bb);
+  }
+}

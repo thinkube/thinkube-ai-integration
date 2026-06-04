@@ -47,7 +47,9 @@ export type WebviewMessage =
   | { kind: "notify"; level: "info" | "warn" | "error"; text: string }
   | { kind: "update-task"; number: number; title?: string; body?: string }
   | { kind: "set-due"; number: number; date: string | null }
-  | { kind: "open-detail"; number: number };
+  | { kind: "open-detail"; number: number }
+  /** "New Spec" header button — host opens a Claude session with /spec-prepare prefilled. */
+  | { kind: "create-spec" };
 
 export type ModeFlag = "navigator" | "driver" | "both";
 
