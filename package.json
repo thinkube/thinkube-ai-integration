@@ -81,6 +81,18 @@
         "icon": "$(add)"
       },
       {
+        "command": "thinkube.boards.showConfiguredOnly",
+        "title": "Show Configured Thinking Spaces Only",
+        "category": "Thinkube Boards",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "thinkube.boards.showAll",
+        "title": "Show All Repositories",
+        "category": "Thinkube Boards",
+        "icon": "$(filter-filled)"
+      },
+      {
         "command": "thinkube.boards.newClaudeSession",
         "title": "New Claude Session Here",
         "category": "Thinkube Boards",
@@ -239,6 +251,16 @@
           "command": "thinkube.boards.refresh",
           "when": "view == thinkubeBoards",
           "group": "navigation@0"
+        },
+        {
+          "command": "thinkube.boards.showConfiguredOnly",
+          "when": "view == thinkubeBoards && !thinkube.boards.configuredOnly",
+          "group": "navigation@1"
+        },
+        {
+          "command": "thinkube.boards.showAll",
+          "when": "view == thinkubeBoards && thinkube.boards.configuredOnly",
+          "group": "navigation@1"
         },
         {
           "command": "thinkube.refreshConfig",

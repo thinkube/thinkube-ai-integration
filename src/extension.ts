@@ -24,7 +24,7 @@ import { SessionLinkService } from "./services/SessionLinkService";
 import { ConfigTreeProvider } from "./views/sidebar/ConfigTreeProvider";
 import { BoardNavigatorProvider } from "./views/boards/BoardNavigatorProvider";
 import { SpecsProvider } from "./views/boards/SpecsProvider";
-import { registerBoardCommands } from "./commands/boards";
+import { registerBoardCommands, seedBoardsFilter } from "./commands/boards";
 
 export function activate(context: vscode.ExtensionContext) {
   console.log("Thinkube AI Integration is now active!");
@@ -174,6 +174,8 @@ export function activate(context: vscode.ExtensionContext) {
     launcher,
     sessionLinks,
   });
+  // Restore the configured-only filter (icon + list) from the last session.
+  seedBoardsFilter(context, boardNavigator);
 
   // Specs section (master-detail): lists the selected thinking space's
   // .thinkube/specs/SP-{n}/spec.md files; clicking opens the document.

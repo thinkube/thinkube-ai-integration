@@ -134,7 +134,16 @@ const SECRET_PATTERNS: Array<{ name: string; regex: RegExp }> = [
   },
   { name: "github-oauth", regex: /\bgho_[A-Za-z0-9]{36}\b/g },
   { name: "aws-access-key", regex: /\bAKIA[0-9A-Z]{16}\b/g },
-  { name: "aws-secret-key", regex: /\b[a-zA-Z0-9/+=]{40}\b(?=\s*[\n,])/g },
+  // 40 base64 chars at end of line. The negative lookahead skips pure
+  // lowercase-hex 40-runs: those are digests/SHAs (e.g. our own 40-char
+  // `verified_req_hash` stamp, or git object ids), not AWS secret keys — which
+  // use the full mixed-case base64 alphabet and are ~never all-lowercase-hex.
+  // Without this, stamping a slice's requirement-hash on move-to-Done tripped
+  // this very scanner on the server's own write.
+  {
+    name: "aws-secret-key",
+    regex: /\b(?![0-9a-f]{40}\b)[a-zA-Z0-9/+=]{40}\b(?=\s*[\n,])/g,
+  },
   { name: "openai-key", regex: /\bsk-[A-Za-z0-9]{32,}\b/g },
   { name: "slack-token", regex: /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g },
   {

@@ -10,7 +10,9 @@
     "src/methodology/qualityGates.ts",
     "src/methodology/qualityGates.test.ts",
     "src/views/kanban/host/storage/sliceBoard.ts",
-    "src/views/kanban/host/storage/sliceBoard.test.ts"
+    "src/views/kanban/host/storage/sliceBoard.test.ts",
+    "src/store/frontmatter.ts",
+    "src/store/frontmatter.test.ts"
   ],
   "exclude": ["node_modules"]
 }
