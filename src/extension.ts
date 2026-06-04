@@ -164,7 +164,7 @@ export function activate(context: vscode.ExtensionContext) {
   // welcome and bundle-status node depend on whether a repo is configured.
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("thinkube.kanban.repo")) {
+      if (e.affectsConfiguration("thinkube.kanban.folder")) {
         bundleTree.refresh();
       }
     }),

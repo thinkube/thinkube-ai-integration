@@ -50,9 +50,6 @@ class EventEmitter<T> {
 }
 
 const SETTINGS_FROM_ENV: Record<string, () => unknown> = {
-  "thinkube.kanban.repo": () => process.env.THINKUBE_REPO ?? "",
-  "thinkube.kanban.projectNumber": () =>
-    Number(process.env.THINKUBE_PROJECT_NUMBER ?? "0"),
   "thinkube.kanban.allowAIWrites": () =>
     (process.env.THINKUBE_ALLOW_AI_WRITES ?? "true") === "true",
 };

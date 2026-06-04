@@ -370,23 +370,12 @@
         "thinkube.kanban.folder": {
           "type": "string",
           "default": "",
-          "description": "Legacy (superseded by the Boards navigator): absolute path of the single git repository the methodology bundle + MCP launch gate still use. The per-repo Boards navigator discovers .thinkube/ boards across the workspace and does not need this."
-        },
-        "thinkube.kanban.repo": {
-          "type": "string",
-          "default": "",
-          "description": "Legacy: GitHub 'owner/repo' that still gates whether the kanban MCP server launches. Not used by the files-first board — the Boards navigator opens any repo's committed .thinkube/ directly."
-        },
-        "thinkube.kanban.projectNumber": {
-          "type": "integer",
-          "default": 0,
-          "minimum": 0,
-          "description": "Deprecated / unused: the files-first board has no Projects v2 backing. Retained only so existing settings don't error; ignored by the extension."
+          "description": "Optional: absolute path of the git repository the methodology bundle + kanban MCP server operate on. The Boards navigator opens any repo's .thinkube/ board regardless of this; it only pins which root the MCP server serves."
         },
         "thinkube.kanban.allowAIWrites": {
           "type": "boolean",
           "default": true,
-          "description": "Allow the Thinkube Kanban MCP server's mutating tools (create_*, move_task, update_issue, …). Set to false for navigator mode — AI can read and propose but cannot write. Overridden to false by `thinkube.kanban.mode = navigator`."
+          "description": "Allow the Thinkube Kanban MCP server's mutating tools (move_slice, update_slice, write_decision, …). Set to false for navigator mode — AI can read and propose but cannot write. Overridden to false by `thinkube.kanban.mode = navigator`."
         },
         "thinkube.kanban.mode": {
           "type": "string",
@@ -422,7 +411,6 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@octokit/graphql": "^5.0.6",
     "@octokit/rest": "^19.0.13",
     "yaml": "^2.9.0"
   }
