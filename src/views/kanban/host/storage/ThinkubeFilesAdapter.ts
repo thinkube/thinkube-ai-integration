@@ -72,11 +72,15 @@ export class ThinkubeFilesAdapter implements StorageAdapter {
       const sliceNumber = Number(m[2]);
       const parsed = await this.store.getFile(rel);
       const fm: Frontmatter = parsed?.frontmatter ?? {};
+      const { title, detail } = splitSlice(
+        parsed?.body,
+        sliceHandle(specNumber, sliceNumber),
+      );
       inputs.push({
         specNumber,
         sliceNumber,
-        title: sliceTitle(parsed?.body, sliceHandle(specNumber, sliceNumber)),
-        body: parsed?.body,
+        title,
+        body: detail,
         status: fm.status,
         due: fm.due,
         priority: fm.priority,
@@ -111,9 +115,11 @@ export class ThinkubeFilesAdapter implements StorageAdapter {
     const rel = this.store.pathForSlice(specNumber, sliceNumber);
     const parsed = await this.store.getFile(rel);
     if (!parsed) return;
-    const body =
-      fields.body ?? replaceTitleLine(parsed.body, fields.title) ?? parsed.body;
-    await this.store.writeFile(rel, parsed.frontmatter, body);
+    await this.store.writeFile(
+      rel,
+      parsed.frontmatter,
+      composeSliceBody(parsed.body, fields),
+    );
   }
 
   async setDueDate(issueNumber: number, date: string | null): Promise<void> {
@@ -143,28 +149,71 @@ export class ThinkubeFilesAdapter implements StorageAdapter {
   }
 }
 
-/** Card title = the slice body's first non-empty line (heading marker stripped). */
-function sliceTitle(body: string | undefined, fallback: string): string {
-  if (!body) return fallback;
-  for (const line of body.split(/\r?\n/)) {
-    const t = line.replace(/^#+\s*/, "").trim();
-    if (t) return t;
-  }
-  return fallback;
-}
-
-/** Replace the first non-empty body line with `title` (for inline title edits). */
-function replaceTitleLine(
-  body: string,
-  title: string | undefined,
-): string | undefined {
-  if (title === undefined) return undefined;
+/**
+ * Split a slice body into card title + detail. Canonical shape (the /slice
+ * skill writes it): `# <short title>` then the detail paragraphs. The title
+ * line is REMOVED from the detail so the card never shows it twice, and
+ * over-long titles (legacy one-paragraph slices) are clipped for display —
+ * the file keeps the full text.
+ */
+function splitSlice(
+  body: string | undefined,
+  fallback: string,
+): { title: string; detail?: string } {
+  if (!body) return { title: fallback };
   const lines = body.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i].trim()) {
-      lines[i] = title;
-      return lines.join("\n");
+    const t = lines[i].replace(/^#+\s*/, "").trim();
+    if (t) {
+      const detail = lines
+        .slice(i + 1)
+        .join("\n")
+        .trim();
+      return { title: clipTitle(t), detail: detail || undefined };
     }
   }
-  return title;
+  return { title: fallback };
+}
+
+/** Clip a display title at a word boundary; the file keeps the full text. */
+function clipTitle(title: string, max = 80): string {
+  if (title.length <= max) return title;
+  const cut = title.slice(0, max);
+  const at = cut.lastIndexOf(" ");
+  return `${at > 40 ? cut.slice(0, at) : cut}…`;
+}
+
+/**
+ * Recompose a slice body from inline card edits. The card splits the file
+ * into title (first non-empty line) and detail (the rest), so edits arrive
+ * in pieces and must be stitched back around the part that didn't change —
+ * a body edit must never drop the title line, nor vice versa.
+ */
+function composeSliceBody(
+  oldBody: string,
+  fields: { title?: string; body?: string },
+): string {
+  const lines = oldBody.split(/\r?\n/);
+  let idx = -1;
+  let marker = "# ";
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim()) {
+      idx = i;
+      marker = /^(#+\s*)/.exec(lines[i])?.[1] ?? "";
+      break;
+    }
+  }
+  const oldTitle = idx >= 0 ? lines[idx].replace(/^#+\s*/, "").trim() : "";
+  const title = fields.title ?? oldTitle;
+  const detail =
+    fields.body !== undefined
+      ? fields.body.trim()
+      : idx >= 0
+        ? lines
+            .slice(idx + 1)
+            .join("\n")
+            .trim()
+        : "";
+  const titleLine = `${marker}${title}`;
+  return detail ? `${titleLine}\n\n${detail}\n` : `${titleLine}\n`;
 }

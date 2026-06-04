@@ -37,6 +37,39 @@ interface BoardDeps {
   sessionLinks: SessionLinkService;
 }
 
+/**
+ * Single key reused for both the persisted `workspaceState` flag and the
+ * `when`-clause context key that swaps the title-bar filter icon.
+ */
+const CONFIGURED_ONLY_KEY = "thinkube.boards.configuredOnly";
+
+/**
+ * Apply the configured-only filter everywhere it's observed: the provider
+ * (re-renders the list), persisted `workspaceState` (survives reloads), and
+ * the `when`-clause context key (swaps the title-bar icon).
+ */
+function applyConfiguredOnly(
+  context: vscode.ExtensionContext,
+  provider: BoardNavigatorProvider,
+  value: boolean,
+): void {
+  provider.setConfiguredOnly(value);
+  void context.workspaceState.update(CONFIGURED_ONLY_KEY, value);
+  void vscode.commands.executeCommand("setContext", CONFIGURED_ONLY_KEY, value);
+}
+
+/**
+ * Seed the filter from persisted state at activation so the icon and the list
+ * match the choice saved before the last reload. Call after the view exists.
+ */
+export function seedBoardsFilter(
+  context: vscode.ExtensionContext,
+  provider: BoardNavigatorProvider,
+): void {
+  const saved = context.workspaceState.get<boolean>(CONFIGURED_ONLY_KEY, false);
+  applyConfiguredOnly(context, provider, saved);
+}
+
 export function registerBoardCommands(
   context: vscode.ExtensionContext,
   deps: BoardDeps,
@@ -58,6 +91,12 @@ export function registerBoardCommands(
     vscode.commands.registerCommand(
       "thinkube.boards.resumeClaudeSession",
       (r: RepoEntry) => resumeClaudeSession(deps, r),
+    ),
+    vscode.commands.registerCommand("thinkube.boards.showConfiguredOnly", () =>
+      applyConfiguredOnly(context, deps.provider, true),
+    ),
+    vscode.commands.registerCommand("thinkube.boards.showAll", () =>
+      applyConfiguredOnly(context, deps.provider, false),
     ),
   );
 }

@@ -570,12 +570,21 @@ function parseSliceHandle(handle: string): {
   return { specNumber: Number(m[1]), sliceNumber: Number(m[2]) };
 }
 
-/** Card title = the slice body's first non-empty line (heading marker stripped). */
+/**
+ * Card title = the slice body's first non-empty line (heading marker
+ * stripped), clipped for display — legacy one-paragraph slices otherwise
+ * leak a whole paragraph into the title. The file keeps the full text.
+ */
 function sliceTitle(body: string | undefined, fallback: string): string {
   if (!body) return fallback;
   for (const line of body.split(/\r?\n/)) {
     const t = line.replace(/^#+\s*/, "").trim();
-    if (t) return t;
+    if (t) {
+      if (t.length <= 80) return t;
+      const cut = t.slice(0, 80);
+      const at = cut.lastIndexOf(" ");
+      return `${at > 40 ? cut.slice(0, at) : cut}…`;
+    }
   }
   return fallback;
 }

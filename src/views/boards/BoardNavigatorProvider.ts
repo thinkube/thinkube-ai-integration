@@ -99,10 +99,28 @@ export class BoardNavigatorProvider implements vscode.TreeDataProvider<BoardNode
   /** Per-repo bundle status, cached until the next refresh(). */
   private readonly reportCache = new Map<string, StatusReport>();
 
+  /**
+   * When true, only methodology-enabled repos (those with a `.thinkube/` board)
+   * are listed; unconfigured repos are hidden. Persisted across reloads by the
+   * caller (see `seedBoardsFilter` in `commands/boards.ts`).
+   */
+  private _configuredOnly = false;
+
   constructor(
     private readonly installer: BundleInstaller,
     private readonly output: vscode.OutputChannel,
   ) {}
+
+  get configuredOnly(): boolean {
+    return this._configuredOnly;
+  }
+
+  /** Set the configured-only filter; refresh the tree only if it changed. */
+  setConfiguredOnly(value: boolean): void {
+    if (this._configuredOnly === value) return;
+    this._configuredOnly = value;
+    this.refresh();
+  }
 
   refresh(): void {
     this.reportCache.clear();
@@ -110,7 +128,10 @@ export class BoardNavigatorProvider implements vscode.TreeDataProvider<BoardNode
   }
 
   async getChildren(element?: BoardNode): Promise<BoardNode[]> {
-    if (!element) return discoverRepos();
+    if (!element) {
+      const repos = discoverRepos();
+      return this._configuredOnly ? repos.filter((r) => r.enabled) : repos;
+    }
     if (element.kind !== "repo" || !element.enabled) return [];
     // Enabled repo → one bundle-status child (per-file detail stays behind
     // the Diff command, matching the old Project view's single-row design).
