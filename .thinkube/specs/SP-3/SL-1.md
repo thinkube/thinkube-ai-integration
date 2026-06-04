@@ -1,9 +1,12 @@
 ---
 uid: spec-prepare-context-discipline
 parent: SP-3
-status: doing
+status: done
 priority: P2
+verified_req_hash: f5a9096998ff78fca2e50f567cc15638c4db2629
+commit: a7196a51c6efbb6d1e9e83c142d18d8162484f07
 ---
+
 # Fresh /spec-prepare reaches the user in ≤ 2 actions
 
 Reorder the skill's procedure to fetch → skeleton → AC interview → scoped

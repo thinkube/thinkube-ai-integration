@@ -12,22 +12,22 @@ by — the governing document.
 
 ## Acceptance Criteria
 
-- [ ] Running `/spec-prepare {n}` for a new spec reaches its **first question
+- [x] Running `/spec-prepare {n}` for a new spec reaches its **first question
       to the user** after at most **2 actions** — fetching
       `specs/SP-{n}/spec.md` and writing the skeleton — with **no other
       reads** (no other specs, no slice samples, no board listing) before
       that question.
-- [ ] Both skills declare their embedded file shapes **authoritative and
+- [x] Both skills declare their embedded file shapes **authoritative and
       complete**, and explicitly forbid reading other specs/slices to learn
       the format.
-- [ ] Codebase exploration happens only **after** the governing document
+- [x] Codebase exploration happens only **after** the governing document
       content exists — the agreed acceptance criteria for `/spec-prepare`,
       the parent Spec for `/slice` — is **scoped by it**, and consults
       `CLAUDE.md` before any codebase search (explore only what the docs
       don't already answer).
-- [ ] The file-first review flow (skeleton written immediately; review in
+- [x] The file-first review flow (skeleton written immediately; review in
       Markdown Preview, never chat walls) is preserved as shipped in 0.0.5.
-- [ ] Installed repos receive the change as a normal bundle update
+- [x] Installed repos receive the change as a normal bundle update
       (version bumped; boards show "update available").
 
 ## Constraints
@@ -70,4 +70,6 @@ either holds or it doesn't.
 - `templates/methodology-bundle/skills/slice/SKILL.md` — add the Context
   discipline block scoped to the parent Spec.
 - `templates/methodology-bundle/VERSION` +
-  `templates/methodology-bundle/manifest.json` — bump 0.0.6 → 0.0.7.
+  `templates/methodology-bundle/manifest.json` — bump the bundle so installed
+  repos see an update (0.0.7 → 0.0.8; the original 0.0.6 → 0.0.7 was consumed
+  by SP-4's merge).
