@@ -115,8 +115,13 @@ export class LauncherService implements vscode.Disposable {
    * Writes the handoff files, then delegates to the claude-vscode extension's
    * own command — that command spawns the CLI through our wrapper, which is
    * what actually patches the cwd.
+   *
+   * `prefill` overrides the text seeded into the chat input (the second
+   * argument of `claude-vscode.editor.open` lands in the input box — see
+   * docs/claude-code-internals.md, F6). Default: the `[repo/sub]` prefix.
+   * Used by the board's "New Spec" button to seed `/spec-prepare <n> `.
    */
-  async openHere(uri?: vscode.Uri): Promise<void> {
+  async openHere(uri?: vscode.Uri, prefill?: string): Promise<void> {
     if (!uri) {
       vscode.window.showErrorMessage(
         "Open Claude Code Here: no folder URI in command context.",
@@ -161,7 +166,7 @@ export class LauncherService implements vscode.Disposable {
     await vscode.commands.executeCommand(
       "claude-vscode.editor.open",
       undefined,
-      prefix,
+      prefill ?? prefix,
     );
 
     // Keep the new session reachable after its tab is gone: remember the

@@ -30,6 +30,11 @@ interface PanelDeps {
   output?: vscode.OutputChannel;
   /** Open the full detail view for an issue (e.g. its GitHub page). */
   openDetail?: (issueNumber: number) => void | Promise<void>;
+  /**
+   * "New Spec" header button: open a Claude session with `/spec-prepare <n>`
+   * prefilled. Absent on adapters with no backing repo (the demo board).
+   */
+  onCreateSpec?: () => void | Promise<void>;
 }
 
 const ACTIVE_PANELS = new Map<string, KanbanPanel>();
@@ -42,6 +47,7 @@ export class KanbanPanel implements vscode.Disposable {
   private readonly openDetail:
     | ((issueNumber: number) => void | Promise<void>)
     | undefined;
+  private readonly onCreateSpec: (() => void | Promise<void>) | undefined;
   private readonly disposables: vscode.Disposable[] = [];
   private readonly key: string;
 
@@ -55,6 +61,7 @@ export class KanbanPanel implements vscode.Disposable {
     this.extensionUri = deps.extensionUri;
     this.output = deps.output;
     this.openDetail = deps.openDetail;
+    this.onCreateSpec = deps.onCreateSpec;
     this.key = key;
   }
 
@@ -195,6 +202,20 @@ export class KanbanPanel implements vscode.Disposable {
         } catch (err) {
           this.log(
             `open-detail #${message.number} failed: ${(err as Error).message}`,
+          );
+        }
+        break;
+      case "create-spec":
+        if (!this.onCreateSpec) {
+          this.notify("info", "New Spec isn't available on this board.");
+          break;
+        }
+        try {
+          await this.onCreateSpec();
+        } catch (err) {
+          this.notify(
+            "error",
+            `Couldn't start the new spec: ${(err as Error).message}`,
           );
         }
         break;

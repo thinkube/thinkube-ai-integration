@@ -8,6 +8,7 @@ import styles from "./board.module.scss";
 import { ColumnList } from "./column-list";
 import { useGlobalState } from "../utils/context";
 import { handleDragEnd } from "../utils/drag";
+import { postToHost } from "../utils/vscode";
 import { ModeFlag } from "../types";
 
 export function Board({ mode }: { mode: ModeFlag }): JSX.Element {
@@ -20,6 +21,13 @@ export function Board({ mode }: { mode: ModeFlag }): JSX.Element {
         <header className={styles.header}>
           <h1>{state.scope || "Thinkube Kanban"}</h1>
           <span className="grow" />
+          <button
+            className={styles.newSpec}
+            title="Author a new Spec with Claude (/spec-prepare, next number auto-allocated)"
+            onClick={() => postToHost({ kind: "create-spec" })}
+          >
+            ＋ New Spec
+          </button>
           <ModeBadge mode={mode} />
         </header>
         <main className={styles.main}>

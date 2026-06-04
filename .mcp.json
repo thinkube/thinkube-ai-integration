@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "thinkube-kanban": {
+      "command": "node",
+      "args": [
+        "/home/thinkube/.local/share/code-server/User/globalStorage/thinkube.thinkube-ai-integration/extension-current/dist/mcp/kanbanMcpServer.js"
+      ],
+      "env": {
+        "THINKUBE_ALLOW_AI_WRITES": "true",
+        "THINKUBE_ROOTS": "/home/thinkube/apps:/home/thinkube/user-templates:/home/thinkube/thinkube-platform"
+      }
+    }
+  }
+}
