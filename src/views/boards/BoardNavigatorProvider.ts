@@ -61,7 +61,15 @@ export interface BundleStatusNode {
   error?: string;
 }
 
-export type BoardNode = RepoEntry | BundleStatusNode;
+/** A standalone message row — e.g. the board root is configured but missing. */
+export interface BoardMessageNode {
+  kind: "message";
+  text: string;
+  detail?: string;
+  icon: string;
+}
+
+export type BoardNode = RepoEntry | BundleStatusNode | BoardMessageNode;
 
 /**
  * Find git repos across the open workspace folders (depth-limited), marking
@@ -127,6 +135,24 @@ export function boardDirForRepo(repoPath: string): string {
       .get<string>("root")
       ?.trim() || undefined;
   return resolveBoardDir(repoPath, { folders, boardRoot });
+}
+
+export interface BoardRootStatus {
+  configured: boolean;
+  root?: string;
+  /** true unless a configured root is missing on disk. */
+  available: boolean;
+}
+
+/** Whether the central board root (if configured) is present on disk (SP-8). */
+export function boardRootStatus(): BoardRootStatus {
+  const root =
+    vscode.workspace
+      .getConfiguration("thinkube.boards")
+      .get<string>("root")
+      ?.trim() || undefined;
+  if (!root) return { configured: false, available: true };
+  return { configured: true, root, available: fs.existsSync(root) };
 }
 
 function walk(
@@ -222,6 +248,18 @@ export class BoardNavigatorProvider implements vscode.TreeDataProvider<BoardNode
 
   async getChildren(element?: BoardNode): Promise<BoardNode[]> {
     if (!element) {
+      const status = boardRootStatus();
+      if (status.configured && !status.available) {
+        // Don't silently show every space as disabled — say why (AC #6, SP-8).
+        return [
+          {
+            kind: "message",
+            text: "Board repo not available",
+            detail: `${status.root} not found — clone or mount the board repo, or clear thinkube.boards.root.`,
+            icon: "cloud-offline",
+          },
+        ];
+      }
       const repos = discoverRepos();
       return this._configuredOnly ? repos.filter((r) => r.enabled) : repos;
     }
@@ -247,6 +285,17 @@ export class BoardNavigatorProvider implements vscode.TreeDataProvider<BoardNode
 
   getTreeItem(node: BoardNode): vscode.TreeItem {
     if (node.kind === "bundle-status") return bundleStatusItem(node);
+    if (node.kind === "message") {
+      const item = new vscode.TreeItem(
+        node.text,
+        vscode.TreeItemCollapsibleState.None,
+      );
+      item.description = node.detail;
+      item.tooltip = node.detail;
+      item.iconPath = new vscode.ThemeIcon(node.icon);
+      item.contextValue = "tandemBoardUnavailable";
+      return item;
+    }
     // A linked worktree reads as "<repo> · <name>" labeled a worktree, not a
     // standalone repo (SP-5). It is still an enabled, openable board.
     const label = node.worktreeOf

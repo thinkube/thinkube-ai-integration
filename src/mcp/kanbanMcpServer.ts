@@ -214,6 +214,11 @@ export class BoardRegistry {
    * ambiguous).
    */
   resolve(boardArg: string | undefined): ThinkubeStore {
+    if (this.env.boardRoot && !fsSync.existsSync(this.env.boardRoot)) {
+      throw new Error(
+        `Board repo not available: thinkube.boards.root (${this.env.boardRoot}) does not exist — clone or mount the board repo.`,
+      );
+    }
     if (boardArg === undefined || boardArg.trim() === "") {
       if (!this.defaultBoardPath) {
         throw new Error(

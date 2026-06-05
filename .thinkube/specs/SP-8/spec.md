@@ -29,7 +29,7 @@ conflict-free ID change is SP-7.
 - [x] A Thinking Space whose board has moved out still works — the extension
       resolves its board via the Thinking-Space→namespace mapping, not an absent
       local `.thinkube/`.
-- [ ] When the board root is absent/unmounted, the extension surfaces a clear
+- [x] When the board root is absent/unmounted, the extension surfaces a clear
       "board repo not available" state rather than failing silently.
 
 ## Constraints
