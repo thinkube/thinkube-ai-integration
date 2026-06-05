@@ -1,13 +1,15 @@
 ---
 uid: migrate-an-existing-co-located-board-into-the-si
 parent: SP-8
-status: ready
+status: done
 depends_on:
   - SP-8_SL-1
   - SP-8_SL-2
 satisfies:
   - 4
   - 5
+verified_req_hash: 16a0c53e9dff89d8d5a6176b12909c6a22e2ea43
+commit: bbb39dd5475fb2920f43ac2fc137a632ed248dbe
 ---
 # Migrate an existing co-located board into the sidecar
 

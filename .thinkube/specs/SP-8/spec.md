@@ -12,24 +12,24 @@ conflict-free ID change is SP-7.
 
 ## Acceptance Criteria
 
-- [ ] With a board repo mounted at the configured central root, the navigator
+- [x] With a board repo mounted at the configured central root, the navigator
       shows each enabled Thinking Space's board read from
       `<board-root>/<thinking-space>/` — not from a co-located `.thinkube/` in
       the Thinking Space's repo.
-- [ ] Creating or moving a slice for a Thinking Space writes to that Thinking
+- [x] Creating or moving a slice for a Thinking Space writes to that Thinking
       Space's namespace under the board root; `git status` in the Thinking
       Space's own repo shows no `.thinkube/` change.
-- [ ] Boards for two different Thinking Spaces are visible together, each
+- [x] Boards for two different Thinking Spaces are visible together, each
       labeled by its Thinking Space, from the single board root (navigated one
       at a time — no merged pane in this Spec).
-- [ ] An existing co-located `.thinkube/` board migrates into the sidecar once,
+- [x] An existing co-located `.thinkube/` board migrates into the sidecar once,
       with no loss of specs / slices / retros / decisions; afterwards the
       Thinking Space's repo no longer carries a board `.thinkube/` (fully
       removed — no stub).
-- [ ] A Thinking Space whose board has moved out still works — the extension
+- [x] A Thinking Space whose board has moved out still works — the extension
       resolves its board via the Thinking-Space→namespace mapping, not an absent
       local `.thinkube/`.
-- [ ] When the board root is absent/unmounted, the extension surfaces a clear
+- [x] When the board root is absent/unmounted, the extension surfaces a clear
       "board repo not available" state rather than failing silently.
 
 ## Constraints
