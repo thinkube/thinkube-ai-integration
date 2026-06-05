@@ -81,6 +81,12 @@
         "icon": "$(add)"
       },
       {
+        "command": "thinkube.boards.migrate",
+        "title": "Migrate Board to Sidecar",
+        "category": "Thinkube Boards",
+        "icon": "$(cloud-upload)"
+      },
+      {
         "command": "thinkube.boards.showConfiguredOnly",
         "title": "Show Configured Thinking Spaces Only",
         "category": "Thinkube Boards",
@@ -310,6 +316,11 @@
           "command": "thinkube.boards.open",
           "when": "view == thinkubeBoards && viewItem == tandemBoardEnabled",
           "group": "inline"
+        },
+        {
+          "command": "thinkube.boards.migrate",
+          "when": "view == thinkubeBoards && viewItem =~ /tandemBoard/",
+          "group": "9_migration"
         },
         {
           "command": "thinkube.boards.newClaudeSession",

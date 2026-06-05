@@ -22,11 +22,11 @@ conflict-free ID change is SP-7.
 - [x] Boards for two different Thinking Spaces are visible together, each
       labeled by its Thinking Space, from the single board root (navigated one
       at a time — no merged pane in this Spec).
-- [ ] An existing co-located `.thinkube/` board migrates into the sidecar once,
+- [x] An existing co-located `.thinkube/` board migrates into the sidecar once,
       with no loss of specs / slices / retros / decisions; afterwards the
       Thinking Space's repo no longer carries a board `.thinkube/` (fully
       removed — no stub).
-- [ ] A Thinking Space whose board has moved out still works — the extension
+- [x] A Thinking Space whose board has moved out still works — the extension
       resolves its board via the Thinking-Space→namespace mapping, not an absent
       local `.thinkube/`.
 - [ ] When the board root is absent/unmounted, the extension surfaces a clear

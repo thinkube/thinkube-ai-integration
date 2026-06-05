@@ -21,6 +21,7 @@ import { LauncherService } from "../services/LauncherService";
 import { SessionLinkService } from "../services/SessionLinkService";
 import { listSessionsForFolder, SessionInfo } from "../services/sessionLinks";
 import { ThinkubeStore } from "../store/ThinkubeStore";
+import { migrateBoardDir } from "../store/boardMigration";
 import { WorktreeService } from "../services/WorktreeService";
 import { KanbanPanel } from "../views/kanban/host/Panel";
 import { ThinkubeFilesAdapter } from "../views/kanban/host/storage/ThinkubeFilesAdapter";
@@ -85,6 +86,9 @@ export function registerBoardCommands(
     ),
     vscode.commands.registerCommand("thinkube.boards.enable", (r: RepoEntry) =>
       enableHere(deps, r),
+    ),
+    vscode.commands.registerCommand("thinkube.boards.migrate", (r: RepoEntry) =>
+      migrateBoardToSidecar(deps, r),
     ),
     vscode.commands.registerCommand(
       "thinkube.boards.newClaudeSession",
@@ -204,6 +208,58 @@ async function openBoardFor(
       );
     },
   });
+}
+
+/**
+ * Migrate a Thinking Space's co-located `.thinkube/` board into the central
+ * sidecar at its namespace dir (SP-8). No-loss, no-stub; refuses when the
+ * central target already holds a board. The `.claude/`+`CLAUDE.md`+`.mcp.json`
+ * bundle files stay in the repo — only the board moves.
+ */
+async function migrateBoardToSidecar(
+  deps: BoardDeps,
+  r: RepoEntry,
+): Promise<void> {
+  const boardRoot = vscode.workspace
+    .getConfiguration("thinkube.boards")
+    .get<string>("root")
+    ?.trim();
+  if (!boardRoot) {
+    vscode.window.showErrorMessage(
+      "Set `thinkube.boards.root` before migrating a board to the sidecar.",
+    );
+    return;
+  }
+  const coLocated = path.join(r.path, ".thinkube");
+  const target = r.boardDir; // central namespace dir (boards.root is set)
+  if (path.resolve(target) === path.resolve(coLocated)) {
+    vscode.window.showErrorMessage(
+      `${r.name}: the board root resolves to the repo's own .thinkube/ — nothing to migrate.`,
+    );
+    return;
+  }
+  const hasCoLocated = await fs
+    .stat(coLocated)
+    .then((s) => s.isDirectory())
+    .catch(() => false);
+  if (!hasCoLocated) {
+    vscode.window.showInformationMessage(
+      `${r.name} has no co-located .thinkube/ board to migrate.`,
+    );
+    return;
+  }
+  try {
+    const { files } = await migrateBoardDir(coLocated, target);
+    deps.provider.refresh();
+    vscode.window.showInformationMessage(
+      `Migrated ${r.name}'s board (${files} files) to the sidecar at ${target}. ` +
+        `Commit the removal in the repo and the addition in the board repo.`,
+    );
+  } catch (err) {
+    vscode.window.showErrorMessage(
+      `Migrate ${r.name} failed: ${(err as Error).message}`,
+    );
+  }
 }
 
 async function enableHere(deps: BoardDeps, r: RepoEntry): Promise<void> {
