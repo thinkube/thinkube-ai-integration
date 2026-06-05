@@ -42,7 +42,7 @@ export interface DeliveredSlice {
 export type SpecNode =
   | {
       kind: "spec";
-      specNumber: number;
+      specNumber: string;
       title: string;
       file: string;
       delivered: DeliveredSlice[];
@@ -105,7 +105,7 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
     const coords = await detectRepoCoords(this.repo.path);
 
     const nodes: SpecNode[] = [];
-    for (const n of [...numbers].sort((a, b) => a - b)) {
+    for (const n of [...numbers].sort((a, b) => a.localeCompare(b))) {
       const rel = store.pathForSpecDoc(n);
       const doc = await store.getFile(rel);
       nodes.push({
@@ -122,7 +122,7 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
   /** Done slices under a Spec, in slice order, with their recorded commit/PR. */
   private async deliveredSlices(
     store: ThinkubeStore,
-    specNumber: number,
+    specNumber: string,
     coords: RepoCoords | undefined,
   ): Promise<DeliveredSlice[]> {
     const out: DeliveredSlice[] = [];

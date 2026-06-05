@@ -120,7 +120,6 @@ function buildSeed(): Board {
       description: t.description,
       columnId: t.columnId,
       colorSlug: paletteForEpic(t.epicNumber),
-      issueNumber: t.issueNumber,
       epicNumber: t.epicNumber,
     };
     tasksByColumn.get(t.columnId)?.push(t.id);

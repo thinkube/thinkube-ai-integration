@@ -26,12 +26,10 @@ export interface TaskCard {
   columnId: string;
   /** Discrete palette slug; see `utils/palette.ts`. */
   colorSlug?: string;
-  /** Optional reference back to the GitHub issue, populated by GitHubProjectsAdapter (chunk 7). */
-  issueNumber?: number;
   /** Optional epic ancestry (chunk 7 wires this through). */
   epicNumber?: number;
-  /** Parent Spec issue number — shown as an SP-{n} chip; drives card colour. */
-  parentNumber?: number;
+  /** Parent Spec id — shown as an SP-{id} chip; drives card colour (SP-7). */
+  parentId?: string;
   /** ISO timestamp of the issue's last update, for the card's "updated N ago". */
   updatedAt?: string;
   /** Parent Spec changed after this task was last touched → review badge. */
@@ -76,11 +74,11 @@ export type WebviewMessage =
   | { kind: "save"; board: Board }
   | { kind: "notify"; level: "info" | "warn" | "error"; text: string }
   /** Inline card edit — write the issue title (and/or body) back to GitHub. */
-  | { kind: "update-task"; number: number; title?: string; body?: string }
+  | { kind: "update-task"; id: string; title?: string; body?: string }
   /** Set or clear (null) a card's due date. */
-  | { kind: "set-due"; number: number; date: string | null }
+  | { kind: "set-due"; id: string; date: string | null }
   /** Open the full card-detail panel for an issue. */
-  | { kind: "open-detail"; number: number }
+  | { kind: "open-detail"; id: string }
   /** Open a commit/PR link in the user's browser (host guards to http(s)). */
   | { kind: "open-external"; url: string }
   /** "New Spec" header button — host opens a Claude session with /spec-prepare prefilled. */

@@ -33,7 +33,7 @@ export function Task({
   const [title, setTitle] = useState(task.description);
   const [body, setBody] = useState(task.body ?? "");
   const [due, setDue] = useState(task.dueDate ?? "");
-  const canEdit = task.issueNumber !== undefined;
+  const canEdit = task.id !== undefined;
 
   const startEdit = () => {
     setTitle(task.description);
@@ -43,24 +43,24 @@ export function Task({
   };
   const changeDue = (value: string) => {
     setDue(value);
-    if (task.issueNumber !== undefined) {
+    if (task.id) {
       postToHost({
         kind: "set-due",
-        number: task.issueNumber,
+        id: task.id,
         date: value || null,
       });
     }
   };
   const save = () => {
     setEditing(false);
-    if (task.issueNumber === undefined) return;
+    if (!task.id) return;
     const t = title.trim();
     const titleChanged = t && t !== task.description;
     const bodyChanged = body !== (task.body ?? "");
     if (!titleChanged && !bodyChanged) return;
     postToHost({
       kind: "update-task",
-      number: task.issueNumber,
+      id: task.id,
       ...(titleChanged ? { title: t } : {}),
       ...(bodyChanged ? { body } : {}),
     });
@@ -80,16 +80,13 @@ export function Task({
           }}
         >
           <header className={styles.header}>
-            {task.parentNumber !== undefined && (
+            {task.parentId !== undefined && (
               <span
                 className={styles.epic}
-                title={`Parent spec #${task.parentNumber}`}
+                title={`Parent spec SP-${task.parentId}`}
               >
-                SP-{task.parentNumber}
+                SP-{task.parentId}
               </span>
-            )}
-            {task.issueNumber !== undefined && (
-              <span className={styles.issue}>#{task.issueNumber}</span>
             )}
             {task.priority && (
               <span
@@ -111,7 +108,7 @@ export function Task({
                   onClick={() =>
                     postToHost({
                       kind: "open-detail",
-                      number: task.issueNumber!,
+                      id: task.id,
                     })
                   }
                 >

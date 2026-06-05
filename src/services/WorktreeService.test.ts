@@ -76,13 +76,13 @@ test("findSpecWorktree matches the spec/SP-{n} branch, or returns undefined", ()
     ].join("\n"),
   );
   assert.equal(
-    findSpecWorktree(entries, 5)?.path,
+    findSpecWorktree(entries, "5")?.path,
     "/home/u/repo-worktrees/SP-5",
   );
   // No false prefix match: SP-1 must not match SP-12.
-  assert.equal(findSpecWorktree(entries, 1), undefined);
+  assert.equal(findSpecWorktree(entries, "1"), undefined);
   assert.equal(
-    findSpecWorktree(entries, 12)?.path,
+    findSpecWorktree(entries, "12")?.path,
     "/home/u/repo-worktrees/SP-12",
   );
 });

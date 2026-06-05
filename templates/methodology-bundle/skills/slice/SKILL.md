@@ -48,7 +48,7 @@ Slicing **by layer/file** ("the models slice", "the endpoints slice", "the Redis
 
 ## Inputs
 
-- `$ARGUMENTS`: the Spec number `{n}` (integer).
+- `$ARGUMENTS`: the Spec id `{n}` — an opaque string (base36-epoch for new Specs, a legacy integer for old ones).
 
 ## Context discipline
 

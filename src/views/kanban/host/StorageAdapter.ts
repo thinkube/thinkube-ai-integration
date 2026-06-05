@@ -26,11 +26,11 @@ export interface StorageAdapter {
    * that don't back onto editable issues can omit it.
    */
   updateIssue?(
-    issueNumber: number,
+    id: string,
     fields: { title?: string; body?: string },
   ): Promise<void>;
   /** Set/clear a card's due date (board DATE field). Optional. */
-  setDueDate?(issueNumber: number, date: string | null): Promise<void>;
+  setDueDate?(id: string, date: string | null): Promise<void>;
   /** Optional event for adapters that observe out-of-band changes. */
   readonly onExternalChange?: vscode.Event<Board>;
   /** Adapter-supplied label used in the panel title. */

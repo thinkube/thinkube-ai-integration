@@ -25,12 +25,11 @@ import { buildCommitUrl, detectRepoCoords } from "../../../../github/gitRemote";
 import {
   buildSliceBoard,
   columnIdToStatus,
-  decodeCardNumber,
   SliceInput,
   sliceHandle,
 } from "./sliceBoard";
 
-const SLICE_PATH_RE = /specs\/SP-(\d+)\/SL-(\d+)\.md$/;
+const SLICE_PATH_RE = /specs\/SP-([A-Za-z0-9]+)\/SL-(\d+)\.md$/;
 
 export class ThinkubeFilesAdapter implements StorageAdapter {
   private readonly _onExternalChange = new vscode.EventEmitter<Board>();
@@ -58,7 +57,7 @@ export class ThinkubeFilesAdapter implements StorageAdapter {
 
   async load(): Promise<Board> {
     // Per-Spec requirement-hash, computed once per Spec (specs are few).
-    const reqHashBySpec = new Map<number, string>();
+    const reqHashBySpec = new Map<string, string>();
     for (const specNumber of await this.store.listSpecDirs()) {
       const doc = await this.store.getFile(
         this.store.pathForSpecDoc(specNumber),
@@ -75,7 +74,7 @@ export class ThinkubeFilesAdapter implements StorageAdapter {
     for (const rel of await this.store.listSlices()) {
       const m = SLICE_PATH_RE.exec(rel);
       if (!m) continue;
-      const specNumber = Number(m[1]);
+      const specNumber = m[1];
       const sliceNumber = Number(m[2]);
       const parsed = await this.store.getFile(rel);
       const fm: Frontmatter = parsed?.frontmatter ?? {};
@@ -106,7 +105,7 @@ export class ThinkubeFilesAdapter implements StorageAdapter {
     // Write-through: persist each card's column as its slice `status:`. Only
     // files whose status actually changed are rewritten.
     for (const card of Object.values(board.tasks)) {
-      const ref = this.refForCard(card.id, card.issueNumber);
+      const ref = this.refForCard(card.id);
       if (!ref) continue;
       const rel = this.store.pathForSlice(ref.specNumber, ref.sliceNumber);
       const parsed = await this.store.getFile(rel);
@@ -131,11 +130,12 @@ export class ThinkubeFilesAdapter implements StorageAdapter {
   }
 
   async updateIssue(
-    issueNumber: number,
+    id: string,
     fields: { title?: string; body?: string },
   ): Promise<void> {
-    const { specNumber, sliceNumber } = decodeCardNumber(issueNumber);
-    const rel = this.store.pathForSlice(specNumber, sliceNumber);
+    const ref = this.refForCard(id);
+    if (!ref) return;
+    const rel = this.store.pathForSlice(ref.specNumber, ref.sliceNumber);
     const parsed = await this.store.getFile(rel);
     if (!parsed) return;
     await this.store.writeFile(
@@ -145,9 +145,10 @@ export class ThinkubeFilesAdapter implements StorageAdapter {
     );
   }
 
-  async setDueDate(issueNumber: number, date: string | null): Promise<void> {
-    const { specNumber, sliceNumber } = decodeCardNumber(issueNumber);
-    const rel = this.store.pathForSlice(specNumber, sliceNumber);
+  async setDueDate(id: string, date: string | null): Promise<void> {
+    const ref = this.refForCard(id);
+    if (!ref) return;
+    const rel = this.store.pathForSlice(ref.specNumber, ref.sliceNumber);
     const parsed = await this.store.getFile(rel);
     if (!parsed) return;
     const fm: Frontmatter = { ...(parsed.frontmatter ?? {}) };
@@ -156,15 +157,13 @@ export class ThinkubeFilesAdapter implements StorageAdapter {
     await this.store.writeFile(rel, fm, parsed.body);
   }
 
-  /** Resolve a card to its (spec, slice) — prefer the handle, fall back to the number. */
+  /** Resolve a card to its (spec, slice) by parsing its string handle. */
   private refForCard(
     id: string,
-    issueNumber?: number,
-  ): { specNumber: number; sliceNumber: number } | undefined {
-    const m = /^SP-(\d+)_SL-(\d+)$/.exec(id);
-    if (m) return { specNumber: Number(m[1]), sliceNumber: Number(m[2]) };
-    if (issueNumber != null) return decodeCardNumber(issueNumber);
-    return undefined;
+  ): { specNumber: string; sliceNumber: number } | undefined {
+    const m = /^SP-([A-Za-z0-9]+)_SL-(\d+)$/.exec(id);
+    if (!m) return undefined;
+    return { specNumber: m[1], sliceNumber: Number(m[2]) };
   }
 
   private async fireReload(): Promise<void> {
