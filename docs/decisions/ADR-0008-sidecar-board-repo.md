@@ -61,8 +61,10 @@ deploy are one system. Repos are cloned over an SSH deploy key
 `User Templates` (`/home/thinkube/user-templates`), `Platform`
 (`/home/thinkube/thinkube-platform`) — and the extension is configured by a
 templated `User/settings.json`. A board repo therefore rides machinery that
-already exists; Gitea (the platform's internal Copier/Argo plumbing) is not
-involved — the user's code and board repos are on GitHub.
+already exists. The Thinking Spaces it serves **span git hosts**: Platform and
+User-Templates are on GitHub, while **Apps live in the user's Gitea** — so board
+identity must be host-agnostic. The board repo itself is a single GitHub repo
+(cloned via the deploy key), but it holds boards for code repos on either host.
 
 ## Decision
 
