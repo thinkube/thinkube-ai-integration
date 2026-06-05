@@ -541,9 +541,9 @@ const TOOL_DEFS = [
       type: "object",
       properties: {
         spec: {
-          type: "number",
+          type: "string",
           description:
-            "Parent Spec number {n} (the SP-{n} this slice belongs to).",
+            "Parent Spec id (the SP-{id} this slice belongs to) — an opaque string (base36-epoch for new Specs, a legacy integer for old ones).",
         },
         title: {
           type: "string",
@@ -655,7 +655,12 @@ async function dispatchTool(
     case "create_slice":
       writeGate(name);
       return createSlice(store, {
-        spec: asNumber(args, "spec"),
+        // Spec id is a string (base36-epoch); tolerate a numeric integer id
+        // from callers that still pass a number (legacy specs).
+        spec:
+          typeof args.spec === "number"
+            ? String(args.spec)
+            : asString(args, "spec"),
         title: asString(args, "title"),
         body: asString(args, "body"),
         depends_on: optStringArray(args, "depends_on"),
@@ -687,8 +692,8 @@ async function dispatchTool(
 
 // ─── Tool implementations ───────────────────────────────────────────────────
 
-const SLICE_PATH_RE = /specs\/SP-(\d+)\/SL-(\d+)\.md$/;
-const SLICE_HANDLE_RE = /^SP-(\d+)_SL-(\d+)$/;
+const SLICE_PATH_RE = /specs\/SP-([A-Za-z0-9]+)\/SL-(\d+)\.md$/;
+const SLICE_HANDLE_RE = /^SP-([A-Za-z0-9]+)_SL-(\d+)$/;
 const VALID_STATUSES = ["ready", "doing", "done"] as const;
 
 function listBoards(ctx: HandlerContext): unknown {
@@ -704,7 +709,7 @@ function listBoards(ctx: HandlerContext): unknown {
 
 /** Parse a slice handle (`SP-3_SL-42`) → its (spec, slice) numbers. */
 function parseSliceHandle(handle: string): {
-  specNumber: number;
+  specNumber: string;
   sliceNumber: number;
 } {
   const m = SLICE_HANDLE_RE.exec(handle.trim());
@@ -713,7 +718,7 @@ function parseSliceHandle(handle: string): {
       `Invalid slice handle "${handle}" — expected the form SP-{n}_SL-{m}.`,
     );
   }
-  return { specNumber: Number(m[1]), sliceNumber: Number(m[2]) };
+  return { specNumber: m[1], sliceNumber: Number(m[2]) };
 }
 
 /**
@@ -742,7 +747,7 @@ function sliceTitle(body: string | undefined, fallback: string): string {
  */
 async function listBoard(store: ThinkubeStore): Promise<unknown> {
   // Per-Spec requirement-hash, computed once per Spec (specs are few).
-  const reqHashBySpec = new Map<number, string>();
+  const reqHashBySpec = new Map<string, string>();
   for (const specNumber of await store.listSpecDirs()) {
     const doc = await store.getFile(store.pathForSpecDoc(specNumber));
     if (doc?.body) reqHashBySpec.set(specNumber, requirementHash(doc.body));
@@ -752,7 +757,7 @@ async function listBoard(store: ThinkubeStore): Promise<unknown> {
   for (const rel of await store.listSlices()) {
     const m = SLICE_PATH_RE.exec(rel);
     if (!m) continue;
-    const specNumber = Number(m[1]);
+    const specNumber = m[1];
     const sliceNumber = Number(m[2]);
     const parsed = await store.getFile(rel);
     const fm: Frontmatter = parsed?.frontmatter ?? {};
@@ -910,7 +915,7 @@ const TITLE_MAX = 70;
 async function createSlice(
   store: ThinkubeStore,
   args: {
-    spec: number;
+    spec: string;
     title: string;
     body: string;
     depends_on?: string[];
@@ -991,7 +996,7 @@ function hasNonEmptyAcceptanceCriteria(body: string | undefined): boolean {
 /** Slug uid from the title, unique among the Spec's existing slice uids. */
 async function uniqueSlug(
   store: ThinkubeStore,
-  spec: number,
+  spec: string,
   title: string,
 ): Promise<string> {
   const base =

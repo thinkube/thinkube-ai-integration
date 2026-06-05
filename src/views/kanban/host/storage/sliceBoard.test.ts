@@ -7,18 +7,21 @@ import assert from "node:assert/strict";
 
 import {
   buildSliceBoard,
-  cardNumberFor,
-  decodeCardNumber,
+  sliceHandle,
   columnIdToStatus,
   statusToColumnId,
   SliceInput,
 } from "./sliceBoard";
 
-test("card number is a reversible (spec, slice) composite", () => {
-  const n = cardNumberFor(3, 42);
-  assert.deepEqual(decodeCardNumber(n), { specNumber: 3, sliceNumber: 42 });
-  // distinct across specs even when the slice number repeats
-  assert.notEqual(cardNumberFor(3, 1), cardNumberFor(7, 1));
+test("the card's identity is its string handle (opaque spec id, SP-7)", () => {
+  assert.equal(sliceHandle("tw7n0g", 3), "SP-tw7n0g_SL-3");
+  const board = buildSliceBoard(
+    [{ specNumber: "tw7n0g", sliceNumber: 3, title: "a", status: "ready" }],
+    "demo",
+  );
+  const card = board.tasks["SP-tw7n0g_SL-3"];
+  assert.ok(card);
+  assert.equal(card.parentId, "tw7n0g"); // chip + colour by parent Spec id
 });
 
 test("status ↔ column mapping is total and round-trips the three columns", () => {
@@ -31,9 +34,9 @@ test("status ↔ column mapping is total and round-trips the three columns", () 
 
 test("buildSliceBoard lays out three columns and places slices by status", () => {
   const slices: SliceInput[] = [
-    { specNumber: 3, sliceNumber: 1, title: "a", status: "ready" },
-    { specNumber: 3, sliceNumber: 2, title: "b", status: "doing" },
-    { specNumber: 7, sliceNumber: 1, title: "c", status: "done" },
+    { specNumber: "3", sliceNumber: 1, title: "a", status: "ready" },
+    { specNumber: "3", sliceNumber: 2, title: "b", status: "doing" },
+    { specNumber: "7", sliceNumber: 1, title: "c", status: "done" },
   ];
   const board = buildSliceBoard(slices, "demo");
   assert.deepEqual(
@@ -43,16 +46,15 @@ test("buildSliceBoard lays out three columns and places slices by status", () =>
   const ready = board.columns.find((c) => c.title === "Ready")!;
   assert.deepEqual(ready.tasksIds, ["SP-3_SL-1"]);
   const card = board.tasks["SP-3_SL-1"];
-  assert.equal(card.issueNumber, cardNumberFor(3, 1));
-  assert.equal(card.parentNumber, 3); // grouped/coloured by parent Spec
+  assert.equal(card.parentId, "3"); // grouped/coloured by parent Spec id
   assert.equal(card.description, "a");
 });
 
 test("archived slices are excluded from the board", () => {
   const board = buildSliceBoard(
     [
-      { specNumber: 1, sliceNumber: 1, title: "live", status: "ready" },
-      { specNumber: 1, sliceNumber: 2, title: "dead", status: "archived" },
+      { specNumber: "1", sliceNumber: 1, title: "live", status: "ready" },
+      { specNumber: "1", sliceNumber: 2, title: "dead", status: "archived" },
     ],
     "demo",
   );
@@ -65,7 +67,7 @@ test("buildSliceBoard carries delivery provenance (commit/commitUrl/pr) onto the
   const board = buildSliceBoard(
     [
       {
-        specNumber: 2,
+        specNumber: "2",
         sliceNumber: 1,
         title: "delivered",
         status: "done",
@@ -75,7 +77,7 @@ test("buildSliceBoard carries delivery provenance (commit/commitUrl/pr) onto the
         pr: "https://github.com/cmxela/thinkube-ai-integration/pull/13",
       },
       // A slice with no provenance leaves the fields undefined.
-      { specNumber: 2, sliceNumber: 2, title: "pending", status: "ready" },
+      { specNumber: "2", sliceNumber: 2, title: "pending", status: "ready" },
     ],
     "demo",
   );
@@ -99,7 +101,7 @@ test("a slice whose stamped hash differs from the current Spec hash is stale", (
   const board = buildSliceBoard(
     [
       {
-        specNumber: 1,
+        specNumber: "1",
         sliceNumber: 1,
         title: "x",
         status: "done",
@@ -107,7 +109,7 @@ test("a slice whose stamped hash differs from the current Spec hash is stale", (
         currentReqHash: "new",
       },
       {
-        specNumber: 1,
+        specNumber: "1",
         sliceNumber: 2,
         title: "y",
         status: "done",

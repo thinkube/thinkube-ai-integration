@@ -123,7 +123,7 @@ export function linkedWorktreeInfo(dir: string): LinkedWorktree | undefined {
 /** The worktree entry checked out on branch `spec/SP-{n}`, or undefined. Pure. */
 export function findSpecWorktree(
   entries: WorktreeEntry[],
-  specNumber: number,
+  specNumber: string,
 ): WorktreeEntry | undefined {
   return entries.find((e) => e.branch === `spec/SP-${specNumber}`);
 }
@@ -161,7 +161,7 @@ export class WorktreeService {
    */
   async create(
     canonicalRepo: string,
-    specNumber: number,
+    specNumber: string,
     baseDir?: string,
   ): Promise<string> {
     const branch = `spec/SP-${specNumber}`;
@@ -191,7 +191,7 @@ export class WorktreeService {
    * a worktree deletes only its working directory — the branch ref survives, so
    * committed work is never lost. Returns the removed path.
    */
-  async remove(canonicalRepo: string, specNumber: number): Promise<string> {
+  async remove(canonicalRepo: string, specNumber: string): Promise<string> {
     const wt = findSpecWorktree(await this.list(canonicalRepo), specNumber);
     if (!wt) {
       throw new Error(

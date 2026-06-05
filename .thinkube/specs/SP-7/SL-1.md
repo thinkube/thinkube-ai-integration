@@ -1,11 +1,13 @@
 ---
 uid: board-handles-opaque-string-spec-ids
 parent: SP-7
-status: ready
+status: done
 satisfies:
   - 4
   - 5
   - 6
+verified_req_hash: 99f16fa9ff7616588e277f066503b2d49229c4c8
+commit: 442efe78e0ec79f6933db8df39d46e9db27a31d8
 ---
 # Board handles opaque string Spec ids
 

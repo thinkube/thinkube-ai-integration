@@ -8,6 +8,7 @@ satisfies:
 verified_req_hash: 16a0c53e9dff89d8d5a6176b12909c6a22e2ea43
 commit: 41e627bbe67666d182206e1fd14ad1bd9eba954f
 ---
+
 # Read a Thinking Space's board from the central root
 
 Add the `thinkube.boards.root` setting + env plumbing (KanbanMcpProvider/bundle.ts/vscodeStub), the host-agnostic namespace resolver (`<container>/<rel>` ↔ `<board-root>/<ns>/`), split ThinkubeStore's board-dir from repo-root, and redirect both discovery walks (navigator discoverRepos, MCP BoardRegistry) to enumerate boards under the central root.

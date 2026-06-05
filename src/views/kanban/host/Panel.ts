@@ -29,7 +29,7 @@ interface PanelDeps {
   adapter: StorageAdapter;
   output?: vscode.OutputChannel;
   /** Open the full detail view for an issue (e.g. its GitHub page). */
-  openDetail?: (issueNumber: number) => void | Promise<void>;
+  openDetail?: (id: string) => void | Promise<void>;
   /**
    * "New Spec" header button: open a Claude session with `/spec-prepare <n>`
    * prefilled. Absent on adapters with no backing repo (the demo board).
@@ -45,7 +45,7 @@ export class KanbanPanel implements vscode.Disposable {
   private readonly extensionUri: vscode.Uri;
   private readonly output: vscode.OutputChannel | undefined;
   private readonly openDetail:
-    | ((issueNumber: number) => void | Promise<void>)
+    | ((id: string) => void | Promise<void>)
     | undefined;
   private readonly onCreateSpec: (() => void | Promise<void>) | undefined;
   private readonly disposables: vscode.Disposable[] = [];
@@ -158,7 +158,7 @@ export class KanbanPanel implements vscode.Disposable {
           break;
         }
         try {
-          await this.adapter.updateIssue(message.number, {
+          await this.adapter.updateIssue(message.id, {
             title: message.title,
             body: message.body,
           });
@@ -167,11 +167,11 @@ export class KanbanPanel implements vscode.Disposable {
           this.post({ kind: "state", board, mode: readMode() });
         } catch (err) {
           this.log(
-            `update-task #${message.number} failed: ${(err as Error).message}`,
+            `update-task #${message.id} failed: ${(err as Error).message}`,
           );
           this.notify(
             "error",
-            `Couldn't update #${message.number}: ${(err as Error).message}`,
+            `Couldn't update #${message.id}: ${(err as Error).message}`,
           );
         }
         break;
@@ -182,13 +182,11 @@ export class KanbanPanel implements vscode.Disposable {
           break;
         }
         try {
-          await this.adapter.setDueDate(message.number, message.date);
+          await this.adapter.setDueDate(message.id, message.date);
           const board = await this.adapter.load();
           this.post({ kind: "state", board, mode: readMode() });
         } catch (err) {
-          this.log(
-            `set-due #${message.number} failed: ${(err as Error).message}`,
-          );
+          this.log(`set-due #${message.id} failed: ${(err as Error).message}`);
           this.notify(
             "error",
             `Couldn't set due date: ${(err as Error).message}`,
@@ -198,10 +196,10 @@ export class KanbanPanel implements vscode.Disposable {
       }
       case "open-detail":
         try {
-          await this.openDetail?.(message.number);
+          await this.openDetail?.(message.id);
         } catch (err) {
           this.log(
-            `open-detail #${message.number} failed: ${(err as Error).message}`,
+            `open-detail #${message.id} failed: ${(err as Error).message}`,
           );
         }
         break;

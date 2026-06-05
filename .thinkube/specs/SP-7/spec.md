@@ -18,11 +18,11 @@ integer-numbered Specs keep working unchanged.
       canonical repo to allocate a number (SP-5's SL-3 minting is removed).
 - [ ] A **single writer creating Specs back-to-back** never self-collides — IDs
       are monotonic per writer (it never reuses its own last second).
-- [ ] **Slices remain `SL-1..n`** within their Spec; handles stay short
+- [x] **Slices remain `SL-1..n`** within their Spec; handles stay short
       (`SP-<id>_SL-<m>`).
-- [ ] **Existing integer-numbered Specs keep working** — SP-1…SP-8 still read,
+- [x] **Existing integer-numbered Specs keep working** — SP-1…SP-8 still read,
       address, move, and verify on the board with no migration.
-- [ ] The ID is **path- and handle-safe verbatim** — the `SP-<id>/` directory,
+- [x] The ID is **path- and handle-safe verbatim** — the `SP-<id>/` directory,
       the `SP-<id>_SL-<m>` handle, and a `spec/SP-<id>` branch all use it
       unescaped.
 

@@ -9,6 +9,7 @@ satisfies:
   - 2
   - 3
 ---
+
 # Mint base36-epoch ids for new Specs
 
 nextSpecNumber mints a zero-padded base36 encoding of floor(Date.now()/1000), monotonic per writer (track the last-minted second in-process; bump +1s on a same-second repeat); delete SP-5's SL-3 canonical-repo round-trip in onCreateSpec (boards.ts) — epoch ids don't collide, so the WorktreeService.canonicalRepo dance goes.

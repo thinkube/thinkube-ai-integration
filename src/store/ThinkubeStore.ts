@@ -228,22 +228,23 @@ export class ThinkubeStore implements vscode.Disposable {
   //   .thinkube/specs/SP-{n}/SL-{m}.md    its Slices (numbered per-Spec)
 
   /** Path to a Spec's document under its folder. */
-  pathForSpecDoc(specNumber: number): string {
+  pathForSpecDoc(specNumber: string): string {
     return `${KIND_TO_DIR.spec}/SP-${specNumber}/spec.md`;
   }
 
   /** Path to a Slice file under its parent Spec's folder. */
-  pathForSlice(specNumber: number, sliceNumber: number): string {
+  pathForSlice(specNumber: string, sliceNumber: number): string {
     return `${KIND_TO_DIR.spec}/SP-${specNumber}/SL-${sliceNumber}.md`;
   }
 
-  /** The canonical human handle for a slice, e.g. `SP-3_SL-42`. */
-  sliceHandle(specNumber: number, sliceNumber: number): string {
+  /** The canonical human handle for a slice, e.g. `SP-tw7n0g_SL-3`. */
+  sliceHandle(specNumber: string, sliceNumber: number): string {
     return `SP-${specNumber}_SL-${sliceNumber}`;
   }
 
-  /** Spec numbers (the `SP-{n}` folders) under `specs/`, ascending. */
-  async listSpecDirs(): Promise<number[]> {
+  /** Spec ids (the `SP-{id}` folders) under `specs/`, sorted. Ids are opaque
+   *  strings — base36-epoch for new Specs, legacy integers for old ones. */
+  async listSpecDirs(): Promise<string[]> {
     const dir = path.join(this.thinkubeDir, KIND_TO_DIR.spec);
     let names: string[];
     try {
@@ -252,20 +253,20 @@ export class ThinkubeStore implements vscode.Disposable {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw err;
     }
-    const nums: number[] = [];
+    const ids: string[] = [];
     for (const n of names) {
       // Folders only: a legacy `SP-{n}.md` file has the `.md` extension.
-      const m = /^SP-(\d+)$/.exec(n);
-      if (m) nums.push(Number(m[1]));
+      const m = /^SP-([A-Za-z0-9]+)$/.exec(n);
+      if (m) ids.push(m[1]);
     }
-    return nums.sort((a, b) => a - b);
+    return ids.sort((a, b) => a.localeCompare(b));
   }
 
   /**
    * Slice file paths (relative) under one Spec, or across all Specs when
    * `specNumber` is omitted. Includes archived slices (their files are kept).
    */
-  async listSlices(specNumber?: number): Promise<string[]> {
+  async listSlices(specNumber?: string): Promise<string[]> {
     const specs = specNumber != null ? [specNumber] : await this.listSpecDirs();
     const out: string[] = [];
     for (const n of specs) {
@@ -289,14 +290,18 @@ export class ThinkubeStore implements vscode.Disposable {
   // Archive-don't-delete keeps every number claimed by a file, so `max + 1`
   // can never reuse a freed number (ADR-0007).
 
-  /** Next repo-wide Spec number = highest existing `SP-{n}` folder + 1. */
-  async nextSpecNumber(): Promise<number> {
-    const nums = await this.listSpecDirs();
-    return (nums.length ? Math.max(...nums) : 0) + 1;
+  /** Next repo-wide Spec id. SL-1 keeps `max+1` over the integer-valued ids and
+   *  returns it as a string; SP-7_SL-2 replaces this body with base36-epoch
+   *  minting (no allocator, no `listSpecDirs` read). */
+  async nextSpecNumber(): Promise<string> {
+    const nums = (await this.listSpecDirs())
+      .map((id) => Number(id))
+      .filter((n) => Number.isInteger(n));
+    return String((nums.length ? Math.max(...nums) : 0) + 1);
   }
 
   /** Next per-Spec Slice number = highest existing `SL-{m}` under that Spec + 1. */
-  async nextSliceNumber(specNumber: number): Promise<number> {
+  async nextSliceNumber(specNumber: string): Promise<number> {
     let max = 0;
     for (const rel of await this.listSlices(specNumber)) {
       const m = /SL-(\d+)\.md$/.exec(rel);

@@ -25,7 +25,6 @@ import { migrateBoardDir } from "../store/boardMigration";
 import { WorktreeService } from "../services/WorktreeService";
 import { KanbanPanel } from "../views/kanban/host/Panel";
 import { ThinkubeFilesAdapter } from "../views/kanban/host/storage/ThinkubeFilesAdapter";
-import { decodeCardNumber } from "../views/kanban/host/storage/sliceBoard";
 import {
   boardDirForRepo,
   BoardNavigatorProvider,
@@ -176,9 +175,10 @@ async function openBoardFor(
     adapter,
     output: deps.output,
     // A card's "detail" is its slice file open in the editor.
-    openDetail: async (issueNumber: number) => {
-      const { specNumber, sliceNumber } = decodeCardNumber(issueNumber);
-      const rel = store.pathForSlice(specNumber, sliceNumber);
+    openDetail: async (id: string) => {
+      const m = /^SP-([A-Za-z0-9]+)_SL-(\d+)$/.exec(id);
+      if (!m) return;
+      const rel = store.pathForSlice(m[1], Number(m[2]));
       await vscode.window.showTextDocument(
         vscode.Uri.file(path.join(store.thinkubeDir, rel)),
       );

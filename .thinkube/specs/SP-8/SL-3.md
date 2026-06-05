@@ -11,6 +11,7 @@ satisfies:
 verified_req_hash: 16a0c53e9dff89d8d5a6176b12909c6a22e2ea43
 commit: bbb39dd5475fb2920f43ac2fc137a632ed248dbe
 ---
+
 # Migrate an existing co-located board into the sidecar
 
 One-shot migration command: move `<repo>/.thinkube/` → `<board-root>/<ns>/`, committing the removal in the code repo and the addition in the board repo, and relocating the bundle stamp. The `.claude/`+`CLAUDE.md`+`.mcp.json` bundle files stay put.
