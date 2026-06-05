@@ -39,6 +39,10 @@ import "./installVscodeStub";
  *   THINKUBE_WORKSPACE        legacy single-board binding; honoured as a
  *                             fallback root / default board so `.mcp.json`
  *                             files from older bundle installs keep working.
+ *   THINKUBE_BOARD_ROOT       central board root (SP-8): boards live at
+ *                             <root>/<container>/<rel>, not co-located.
+ *   THINKUBE_FOLDERS          JSON [{name,path}] of workspace folders; the
+ *                             folder name supplies the namespace container.
  *
  * Logging: stderr only. VS Code captures it under the MCP server's output
  * channel; never print to stdout — that channel is the protocol stream.
@@ -54,6 +58,11 @@ import type { Frontmatter } from "../store/frontmatter";
 import { stampOnEnteringDone } from "../github/sliceProvenance";
 import { linkedWorktreeInfo } from "../services/WorktreeService";
 import {
+  boardDirForNamespace,
+  namespaceForRepo,
+  type WorkspaceFolderRef,
+} from "../store/boardNamespace";
+import {
   buildSliceBoard,
   SliceInput,
   sliceHandle,
@@ -61,6 +70,10 @@ import {
 
 interface ServerEnv {
   roots: string[];
+  /** Workspace folders with names — supply the namespace container (SP-8). */
+  folders: WorkspaceFolderRef[];
+  /** Central board root; when set, boards live at <root>/<container>/<rel>. */
+  boardRoot?: string;
   allowAIWrites: boolean;
   legacyWorkspace?: string;
 }
@@ -70,11 +83,27 @@ function readEnv(): ServerEnv {
     .split(path.delimiter)
     .map((r) => r.trim())
     .filter(Boolean);
+  let folders: WorkspaceFolderRef[] = [];
+  try {
+    const parsed = JSON.parse(process.env.THINKUBE_FOLDERS ?? "[]");
+    if (Array.isArray(parsed)) {
+      folders = parsed
+        .filter(
+          (f) => f && typeof f.name === "string" && typeof f.path === "string",
+        )
+        .map((f) => ({ name: f.name, path: f.path }));
+    }
+  } catch {
+    folders = [];
+  }
+  const boardRoot = (process.env.THINKUBE_BOARD_ROOT ?? "").trim() || undefined;
   const legacyWorkspace = (process.env.THINKUBE_WORKSPACE ?? "").trim();
   const allowAIWrites =
     (process.env.THINKUBE_ALLOW_AI_WRITES ?? "true").toLowerCase() === "true";
   return {
     roots,
+    folders,
+    boardRoot,
     allowAIWrites,
     legacyWorkspace: legacyWorkspace || undefined,
   };
@@ -120,6 +149,8 @@ export interface BoardInfo {
   name: string;
   /** Absolute repo path. */
   path: string;
+  /** The board dir (the `.thinkube`-equivalent) — central or co-located (SP-8). */
+  boardDir: string;
 }
 
 const DISCOVERY_TTL_MS = 10_000;
@@ -135,14 +166,16 @@ export class BoardRegistry {
   /** The session's own board: the enabled repo containing process.cwd(). */
   readonly defaultBoardPath: string | undefined;
 
+  private readonly env: ServerEnv;
   private readonly roots: string[];
   private readonly stores = new Map<string, ThinkubeStore>();
   private discovered: BoardInfo[] | undefined;
   private discoveredAt = 0;
 
   constructor(env: ServerEnv) {
+    this.env = env;
     this.defaultBoardPath =
-      findEnclosingBoard(process.cwd()) ??
+      findEnclosingBoard(process.cwd(), env) ??
       (env.legacyWorkspace && isBoard(env.legacyWorkspace)
         ? env.legacyWorkspace
         : undefined);
@@ -163,7 +196,7 @@ export class BoardRegistry {
     ) {
       const found = new Map<string, BoardInfo>();
       for (const root of this.roots) {
-        walkForBoards(root, 0, found);
+        walkForBoards(root, 0, found, this.env);
       }
       this.discovered = [...found.values()].sort((a, b) =>
         a.id.localeCompare(b.id),
@@ -187,22 +220,26 @@ export class BoardRegistry {
           "No default board: this session's cwd is not inside a repo with a committed .thinkube/. Pass `board` explicitly — call list_boards for the available ids.",
         );
       }
-      return this.storeFor(this.defaultBoardPath);
+      return this.storeFor(
+        this.defaultBoardPath,
+        boardDirOf(this.defaultBoardPath, this.env),
+      );
     }
 
     const arg = boardArg.trim();
     if (path.isAbsolute(arg)) {
-      if (!isBoard(arg)) {
+      const boardDir = boardDirOf(arg, this.env);
+      if (!fsSync.existsSync(boardDir)) {
         throw new Error(
-          `"${arg}" is not a board — no committed .thinkube/ directory there.`,
+          `"${arg}" is not a board — no board directory at ${boardDir}.`,
         );
       }
-      return this.storeFor(arg);
+      return this.storeFor(arg, boardDir);
     }
 
     const boards = this.list();
     const exact = boards.find((b) => b.id === normalizeId(arg));
-    if (exact) return this.storeFor(exact.path);
+    if (exact) return this.storeFor(exact.path, exact.boardDir);
 
     // Never resolve fuzzy/basename matches — suggest instead.
     const needle = arg.toLowerCase();
@@ -226,11 +263,11 @@ export class BoardRegistry {
     return this.defaultBoardPath ? boardId(this.defaultBoardPath) : undefined;
   }
 
-  private storeFor(absPath: string): ThinkubeStore {
-    let store = this.stores.get(absPath);
+  private storeFor(repoPath: string, boardDir: string): ThinkubeStore {
+    let store = this.stores.get(repoPath);
     if (!store) {
-      store = new ThinkubeStore(absPath);
-      this.stores.set(absPath, store);
+      store = new ThinkubeStore(repoPath, boardDir);
+      this.stores.set(repoPath, store);
     }
     return store;
   }
@@ -244,11 +281,31 @@ function isBoard(dir: string): boolean {
   }
 }
 
-/** Walk up from `start` to the enclosing repo with a committed .thinkube/. */
-function findEnclosingBoard(start: string): string | undefined {
+/**
+ * The board dir for a repo: central `<board-root>/<namespace>` when a board
+ * root is configured and the repo maps to a namespace, else the co-located
+ * `<repo>/.thinkube` (legacy default + fallback for unmapped paths). Mirrors
+ * the navigator's resolver (SP-8).
+ */
+function boardDirOf(repoPath: string, env: ServerEnv): string {
+  if (env.boardRoot) {
+    const ns = namespaceForRepo(repoPath, env.folders);
+    if (ns) return boardDirForNamespace(env.boardRoot, ns);
+  }
+  return path.join(repoPath, ".thinkube");
+}
+
+/**
+ * Walk up from `start` to the enclosing board: a repo (`.git`) whose board dir
+ * exists, or a legacy dir with a co-located `.thinkube/` even without `.git`.
+ */
+function findEnclosingBoard(start: string, env: ServerEnv): string | undefined {
   let dir = path.resolve(start);
   for (;;) {
-    if (isBoard(dir)) return dir;
+    const isRepo = fsSync.existsSync(path.join(dir, ".git"));
+    if ((isRepo && fsSync.existsSync(boardDirOf(dir, env))) || isBoard(dir)) {
+      return dir;
+    }
     const parent = path.dirname(dir);
     if (parent === dir) return undefined;
     dir = parent;
@@ -270,6 +327,7 @@ function walkForBoards(
   dir: string,
   depth: number,
   out: Map<string, BoardInfo>,
+  env: ServerEnv,
 ): void {
   let entries: fsSync.Dirent[];
   try {
@@ -277,26 +335,39 @@ function walkForBoards(
   } catch {
     return;
   }
-  const isRepo = entries.some((e) => e.isDirectory() && e.name === ".git");
-  if (isRepo || isBoard(dir)) {
-    if (isBoard(dir)) {
-      const abs = path.resolve(dir);
-      // A linked worktree (SP-5) is still addressable by its path (id), but it
-      // displays as a worktree of its canonical repo — not a rogue board named
-      // by its bare directory basename.
-      const wt = linkedWorktreeInfo(abs);
+  const gitEntry = entries.find((e) => e.name === ".git");
+  if (gitEntry) {
+    // A repo (`.git` dir) or a linked worktree (`.git` file) — a leaf. It is a
+    // board iff its (possibly central) board dir exists. A worktree (SP-5) is
+    // addressable by its path (id) but displays as a worktree of its canonical
+    // repo — not a rogue board named by its bare basename.
+    const abs = path.resolve(dir);
+    const boardDir = boardDirOf(abs, env);
+    if (fsSync.existsSync(boardDir)) {
+      const wt = gitEntry.isFile() ? linkedWorktreeInfo(abs) : undefined;
       const name = wt
         ? `${path.basename(wt.canonicalRepo)} · ${wt.name} worktree`
         : path.basename(abs);
-      out.set(abs, { id: boardId(abs), name, path: abs });
+      out.set(abs, { id: boardId(abs), name, path: abs, boardDir });
     }
     return; // a repo is a leaf — no nested boards
+  }
+  // Legacy: a co-located `.thinkube/` without a `.git` (e.g. a bare workspace).
+  if (isBoard(dir)) {
+    const abs = path.resolve(dir);
+    out.set(abs, {
+      id: boardId(abs),
+      name: path.basename(abs),
+      path: abs,
+      boardDir: path.join(abs, ".thinkube"),
+    });
+    return;
   }
   if (depth >= MAX_WALK_DEPTH) return;
   for (const e of entries) {
     if (!e.isDirectory()) continue;
     if (e.name === "node_modules" || e.name.startsWith(".")) continue;
-    walkForBoards(path.join(dir, e.name), depth + 1, out);
+    walkForBoards(path.join(dir, e.name), depth + 1, out, env);
   }
 }
 
