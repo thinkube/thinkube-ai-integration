@@ -21,6 +21,7 @@ import { parse as yamlParse, stringify as yamlStringify } from "yaml";
 export type Kind =
   | "spec"
   | "slice"
+  | "tep"
   | "decision"
   | "retro"
   // legacy GitHub-backed kinds — removed once their consumers go (migration phases 5–7)
@@ -37,8 +38,18 @@ export interface Frontmatter {
   parent?: string;
   /** Theme grouping tag (sits above the Spec; not a tier). */
   theme?: string;
-  /** Board column / lifecycle status. */
-  status?: "ready" | "doing" | "done" | "archived" | "draft" | "active";
+  /** Board column / lifecycle status. Slices use ready|doing|done|archived;
+   *  TEPs use proposed|accepted|superseded (TEP-0009); draft|active are legacy. */
+  status?:
+    | "ready"
+    | "doing"
+    | "done"
+    | "archived"
+    | "draft"
+    | "active"
+    | "proposed"
+    | "accepted"
+    | "superseded";
   /** Optional slice due date (yyyy-mm-dd). */
   due?: string;
   /** Optional slice priority. */
