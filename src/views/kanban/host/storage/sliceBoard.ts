@@ -13,6 +13,10 @@ import {
   classifySpecChange,
   SpecChangeKind,
 } from "../../../../methodology/specChange";
+import {
+  extractAcceptanceCriteria,
+  type AcceptanceItem,
+} from "../../../../methodology/qualityGates";
 
 export const TANDEM_COLUMNS: ReadonlyArray<{ id: string; title: string }> = [
   { id: "column-ready", title: "Ready" },
@@ -101,10 +105,47 @@ export interface SliceInput {
  * their files (to hold their numbers; archive-don't-delete) but don't appear on
  * the active board.
  */
-export function buildSliceBoard(slices: SliceInput[], scope: string): Board {
+export interface SpecMeta {
+  /** Spec frontmatter `accepted:` present — the human-accept was recorded. */
+  accepted: boolean;
+  /** Every acceptance criterion on the Spec is checked. */
+  allAcsChecked: boolean;
+  /** The Spec's `## Acceptance Criteria` as a checklist — shown on the card. */
+  criteria: AcceptanceItem[];
+}
+
+/**
+ * Derive a Spec's close-card state from its doc. `accepted` is true when the
+ * `accepted:` stamp is present (set by `accept_spec`); `allAcsChecked` requires
+ * at least one AC and every box checked (mirrors `gateSpecAcceptance`, which
+ * refuses a Spec with no `## Acceptance Criteria`); `criteria` is the checklist
+ * the card renders so the human sees what they're signing off. The I/O wrappers
+ * (the adapter, the MCP `list_board`) read the doc; this keeps the rule in one
+ * place.
+ */
+export function deriveSpecMeta(
+  frontmatter: { accepted?: unknown } | undefined,
+  body: string | undefined,
+): SpecMeta {
+  const accepted = frontmatter?.accepted != null && frontmatter.accepted !== "";
+  const criteria = extractAcceptanceCriteria(body ?? "");
+  return {
+    accepted,
+    allAcsChecked: criteria.length > 0 && criteria.every((i) => i.checked),
+    criteria,
+  };
+}
+
+export function buildSliceBoard(
+  slices: SliceInput[],
+  scope: string,
+  specMeta?: ReadonlyMap<string, SpecMeta>,
+): Board {
   const tasks: Record<string, TaskCard> = {};
   const byColumn = new Map<string, string[]>();
   for (const c of TANDEM_COLUMNS) byColumn.set(c.id, []);
+  // Per-Spec slice tally → the acceptance card's readiness.
+  const specSlices = new Map<string, { total: number; done: number }>();
 
   const ordered = [...slices].sort(
     (a, b) =>
@@ -138,6 +179,40 @@ export function buildSliceBoard(slices: SliceInput[], scope: string): Board {
       pr: s.pr,
     };
     tasks[id] = card;
+    byColumn.get(columnId)?.push(id);
+    const agg = specSlices.get(s.specNumber) ?? { total: 0, done: 0 };
+    agg.total++;
+    if ((s.status ?? "").toLowerCase() === "done") agg.done++;
+    specSlices.set(s.specNumber, agg);
+  }
+
+  // One close card per Spec that has slices (TEP-0010), auto-derived — not a
+  // slice file. It carries the Spec's acceptance-criteria checklist + slice
+  // progress so the human sees what they're signing off. An accepted Spec's card
+  // rests in Done (a record, kept not hidden); an unaccepted Spec's card sits in
+  // Ready, its "Approve & close" button gated by `acceptReady` (all slices Done
+  // AND all ACs checked). Historical Specs are stamped `accepted:` so they rest
+  // in Done rather than begging in Ready.
+  for (const [specId, agg] of specSlices) {
+    const meta = specMeta?.get(specId);
+    const accepted = meta?.accepted ?? false;
+    const acceptReady =
+      agg.total > 0 && agg.done === agg.total && (meta?.allAcsChecked ?? false);
+    const id = `SP-${specId}_accept`;
+    const columnId = accepted ? "column-done" : "column-ready";
+    tasks[id] = {
+      id,
+      description: `SP-${specId}`,
+      columnId,
+      colorSlug: paletteForParent(specId),
+      parentId: specId,
+      isAcceptance: true,
+      accepted,
+      acceptReady,
+      acceptanceCriteria: meta?.criteria ?? [],
+      slicesDone: agg.done,
+      slicesTotal: agg.total,
+    };
     byColumn.get(columnId)?.push(id);
   }
 

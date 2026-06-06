@@ -66,6 +66,110 @@ export function Task({
     });
   };
 
+  // Spec-level close card (TEP-0010): not a slice — it summarises the whole
+  // Spec. It shows the acceptance-criteria checklist (with each box's mark) and
+  // slice progress so the human sees exactly what they're signing off, then
+  // "Approve & close" — confirm the finished work, merge the Spec's one PR, and
+  // close the Spec. Not hand-dragged (the gate, not a drag, moves it to Done);
+  // an accepted Spec's card rests in Done as a record.
+  if (task.isAcceptance) {
+    const accepted = task.accepted ?? task.columnId === "column-done";
+    const criteria = task.acceptanceCriteria ?? [];
+    const checked = criteria.filter((c) => c.checked).length;
+    const slicesDone = task.slicesDone ?? 0;
+    const slicesTotal = task.slicesTotal ?? 0;
+    return (
+      <Draggable draggableId={task.id} index={index} isDragDisabled>
+        {(provided) => (
+          <li
+            ref={provided.innerRef}
+            {...provided.draggableProps}
+            {...provided.dragHandleProps}
+            className={`${styles.task} ${styles.accept}`}
+            style={{
+              ...provided.draggableProps.style,
+              ["--accent" as string]: palette.accent,
+            }}
+          >
+            <header className={styles.header}>
+              {task.parentId !== undefined && (
+                <span
+                  className={styles.epic}
+                  title={`Spec SP-${task.parentId}`}
+                >
+                  SP-{task.parentId}
+                </span>
+              )}
+              <span className="grow" />
+              <span className={styles.acceptTag}>
+                {accepted ? "closed" : "sign-off"}
+              </span>
+            </header>
+            <div className={styles.title}>Spec {task.description}</div>
+
+            <div className={styles.acceptProgress}>
+              <span title="Slices done / total">
+                ◧ {slicesDone}/{slicesTotal} slices done
+              </span>
+              <span title="Acceptance criteria checked / total">
+                ☑ {checked}/{criteria.length} criteria
+              </span>
+            </div>
+
+            {criteria.length > 0 && (
+              <ul className={styles.acceptChecklist}>
+                {criteria.map((c, i) => (
+                  <li
+                    key={i}
+                    className={c.checked ? styles.acDone : styles.acOpen}
+                  >
+                    <span className={styles.acBox}>
+                      {c.checked ? "☑" : "☐"}
+                    </span>
+                    <span className={styles.acLabel}>{c.label}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {accepted ? (
+              <div className={styles.acceptDone}>
+                <Check /> Approved &amp; closed
+              </div>
+            ) : (
+              <div className={styles.acceptRow}>
+                <button
+                  type="button"
+                  className={styles.acceptBtn}
+                  disabled={!task.acceptReady}
+                  title={
+                    task.acceptReady
+                      ? "Approve the finished implementation: merge the Spec's PR and close the Spec"
+                      : "Enabled once every slice is Done and every acceptance criterion is checked"
+                  }
+                  onClick={() =>
+                    task.parentId !== undefined &&
+                    postToHost({
+                      kind: "accept-spec",
+                      spec: task.parentId,
+                    })
+                  }
+                >
+                  Approve &amp; close
+                </button>
+                {!task.acceptReady && (
+                  <span className={styles.acceptHint}>
+                    all slices Done + all criteria checked
+                  </span>
+                )}
+              </div>
+            )}
+          </li>
+        )}
+      </Draggable>
+    );
+  }
+
   return (
     <Draggable draggableId={task.id} index={index} isDragDisabled={editing}>
       {(provided) => (

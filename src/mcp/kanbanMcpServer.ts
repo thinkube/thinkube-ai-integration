@@ -52,7 +52,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { requirementHash } from "../methodology/specChange";
-import { gateSliceSatisfiesToDone } from "../methodology/qualityGates";
+import {
+  gateSliceSatisfiesToDone,
+  gateSpecAcceptance,
+} from "../methodology/qualityGates";
 import { ThinkubeStore } from "../store/ThinkubeStore";
 import type { Frontmatter } from "../store/frontmatter";
 import { stampOnEnteringDone } from "../github/sliceProvenance";
@@ -64,8 +67,10 @@ import {
 } from "../store/boardNamespace";
 import {
   buildSliceBoard,
+  deriveSpecMeta,
   SliceInput,
   sliceHandle,
+  SpecMeta,
 } from "../views/kanban/host/storage/sliceBoard";
 
 interface ServerEnv {
@@ -539,6 +544,23 @@ const TOOL_DEFS = [
     },
   },
   {
+    name: "accept_spec",
+    description:
+      "Record the human acceptance of a Spec — the single end-of-Spec gate (TEP-0010). REFUSED unless every slice under the Spec is Done and every acceptance criterion is checked on the Spec (the error names the blocker). On success it stamps `accepted:` on the Spec, so the acceptance card may enter Done and the Spec's PR merge.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        spec: {
+          type: "string",
+          description: "The Spec id (SP-{id}) to accept.",
+        },
+        ...BOARD_PARAM,
+      },
+      required: ["spec"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "create_slice",
     description:
       "Create a new slice under a Spec in the canonical shape. The server allocates the SL number (per-Spec, archive-aware) and serializes the file (frontmatter + `# title` heading + detail body) — callers never pick numbers or format files. Refused when the parent Spec is missing or has an empty `## Acceptance Criteria` (the → Ready gate, enforced at creation). Title limit: 70 chars — detail belongs in the body.",
@@ -584,6 +606,29 @@ const TOOL_DEFS = [
         ...BOARD_PARAM,
       },
       required: ["spec", "title", "body"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "write_spec",
+    description:
+      "Write a Spec's document at `specs/SP-{id}/spec.md` in the board (the sidecar namespace), creating it if absent. Replaces the markdown body; existing frontmatter (e.g. `implements:`, `accepted:`) is preserved. This is the board-aware write path for `/spec-prepare` — use it instead of a raw file write, which would land outside the board.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        spec: {
+          type: "string",
+          description:
+            "Spec id (the SP-{id}) — an opaque string (base36-epoch for new Specs, a legacy integer for old ones).",
+        },
+        body: {
+          type: "string",
+          description:
+            "The full Spec markdown body (the `# title` heading + the four canonical sections). Frontmatter is managed separately and preserved.",
+        },
+        ...BOARD_PARAM,
+      },
+      required: ["spec", "body"],
       additionalProperties: false,
     },
   },
@@ -657,6 +702,14 @@ async function dispatchTool(
         asString(args, "slice"),
         asString(args, "status"),
       );
+    case "accept_spec":
+      writeGate(name);
+      return acceptSpec(
+        store,
+        typeof args.spec === "number"
+          ? String(args.spec)
+          : asString(args, "spec"),
+      );
     case "create_slice":
       writeGate(name);
       return createSlice(store, {
@@ -673,6 +726,15 @@ async function dispatchTool(
         satisfies: optNumberArray(args, "satisfies"),
         priority: optString(args, "priority"),
       });
+    case "write_spec":
+      writeGate(name);
+      return writeSpec(
+        store,
+        typeof args.spec === "number"
+          ? String(args.spec)
+          : asString(args, "spec"),
+        asString(args, "body"),
+      );
     case "update_slice":
       writeGate(name);
       return updateSlice(
@@ -753,9 +815,11 @@ function sliceTitle(body: string | undefined, fallback: string): string {
 async function listBoard(store: ThinkubeStore): Promise<unknown> {
   // Per-Spec requirement-hash, computed once per Spec (specs are few).
   const reqHashBySpec = new Map<string, string>();
+  const specMeta = new Map<string, SpecMeta>();
   for (const specNumber of await store.listSpecDirs()) {
     const doc = await store.getFile(store.pathForSpecDoc(specNumber));
     if (doc?.body) reqHashBySpec.set(specNumber, requirementHash(doc.body));
+    specMeta.set(specNumber, deriveSpecMeta(doc?.frontmatter, doc?.body));
   }
 
   const inputs: SliceInput[] = [];
@@ -781,7 +845,7 @@ async function listBoard(store: ThinkubeStore): Promise<unknown> {
 
   // Scope = the board's canonical id, so cross-board output is unambiguous.
   const scope = boardId(store.workspaceRoot);
-  const board = buildSliceBoard(inputs, scope);
+  const board = buildSliceBoard(inputs, scope, specMeta);
 
   const columns = board.columns.map((col) => ({
     id: col.id,
@@ -795,6 +859,23 @@ async function listBoard(store: ThinkubeStore): Promise<unknown> {
         specChange: card.specChange,
         priority: card.priority,
         due: card.dueDate,
+        // Close card (TEP-0010): present only on the auto-derived
+        // `SP-{id}_accept` card, so a reader can tell it from a slice and know
+        // the Spec's sign-off state — accepted/ready, slice progress, and how
+        // many criteria are checked.
+        ...(card.isAcceptance
+          ? {
+              isAcceptance: true,
+              accepted: card.accepted,
+              acceptReady: card.acceptReady,
+              slicesDone: card.slicesDone,
+              slicesTotal: card.slicesTotal,
+              criteriaChecked: (card.acceptanceCriteria ?? []).filter(
+                (c) => c.checked,
+              ).length,
+              criteriaTotal: (card.acceptanceCriteria ?? []).length,
+            }
+          : {}),
       };
     }),
   }));
@@ -908,6 +989,37 @@ async function moveSlice(
   };
 }
 
+/**
+ * Record the human acceptance of a Spec — TEP-0010's single end-of-Spec gate.
+ * Refuses unless every slice under the Spec is Done and every acceptance
+ * criterion is checked; on success stamps `accepted:` on the Spec doc so the
+ * acceptance card may enter Done and the Spec's PR merge.
+ */
+async function acceptSpec(
+  store: ThinkubeStore,
+  spec: string,
+): Promise<unknown> {
+  const specRel = store.pathForSpecDoc(spec);
+  const specDoc = await store.getFile(specRel);
+  if (!specDoc) {
+    throw new Error(`No spec at ${specRel} — nothing to accept.`);
+  }
+  const sliceStatuses: string[] = [];
+  for (const rel of await store.listSlices(spec)) {
+    const parsed = await store.getFile(rel);
+    sliceStatuses.push(String(parsed?.frontmatter?.status ?? ""));
+  }
+  const gate = gateSpecAcceptance({ specBody: specDoc.body, sliceStatuses });
+  if (!gate.ok) throw new Error(gate.reason);
+  const accepted = new Date().toISOString();
+  await store.writeFile(
+    specRel,
+    { ...specDoc.frontmatter, accepted },
+    specDoc.body,
+  );
+  return { ok: true, spec, accepted };
+}
+
 /** Card-title character limit for `create_slice` (detail belongs in the body). */
 const TITLE_MAX = 70;
 
@@ -1019,6 +1131,32 @@ async function uniqueSlug(
   let i = 2;
   while (taken.has(slug)) slug = `${base}-${i++}`;
   return slug;
+}
+
+/**
+ * Write a Spec's `specs/SP-{id}/spec.md` into the board (the sidecar namespace),
+ * creating it if absent. The board-aware write path for `/spec-prepare` (SP-tg7jnf
+ * SL-4): a raw file write resolves against the session cwd (the code repo), not
+ * the board, so spec authoring must go through the store like slice creation does.
+ * Existing frontmatter is preserved — only the markdown body is replaced.
+ */
+async function writeSpec(
+  store: ThinkubeStore,
+  spec: string,
+  body: string,
+): Promise<unknown> {
+  const trimmed = body.trim();
+  if (!trimmed) throw new Error("Spec body must not be empty.");
+  const rel = store.pathForSpecDoc(spec);
+  const existing = await store.getFile(rel);
+  const fm: Frontmatter = existing?.frontmatter ?? {};
+  await store.writeFile(rel, fm, `${trimmed}\n`);
+  return {
+    ok: true,
+    spec,
+    relativePath: rel,
+    created: existing === undefined,
+  };
 }
 
 async function updateSlice(

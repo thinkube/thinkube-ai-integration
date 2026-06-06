@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import {
   gateForTandemTransition,
   gateSliceSatisfiesToDone,
+  gateSpecAcceptance,
   runTandemGate,
 } from "./qualityGates";
 
@@ -35,6 +36,40 @@ const SPEC_NO_AC = `# A spec
 
 - something
 `;
+
+test("gateSpecAcceptance: refuses while a slice is not Done", () => {
+  const r = gateSpecAcceptance({
+    specBody: SPEC_ALL_CHECKED,
+    sliceStatuses: ["done", "ready"],
+  });
+  assert.equal(r.ok, false);
+  assert.match((r as { reason: string }).reason, /1 slice is not yet Done/);
+});
+
+test("gateSpecAcceptance: refuses while an AC is unchecked", () => {
+  const r = gateSpecAcceptance({
+    specBody: SPEC_PARTIAL,
+    sliceStatuses: ["done"],
+  });
+  assert.equal(r.ok, false);
+  assert.match((r as { reason: string }).reason, /unchecked/);
+});
+
+test("gateSpecAcceptance: refuses a Spec with no acceptance criteria", () => {
+  const r = gateSpecAcceptance({
+    specBody: SPEC_NO_AC,
+    sliceStatuses: ["done"],
+  });
+  assert.equal(r.ok, false);
+});
+
+test("gateSpecAcceptance: passes when all slices Done and all ACs checked", () => {
+  const r = gateSpecAcceptance({
+    specBody: SPEC_ALL_CHECKED,
+    sliceStatuses: ["done", "done"],
+  });
+  assert.equal(r.ok, true);
+});
 
 test("gates are keyed by destination: → Ready and → Done gated, → Doing ungated", () => {
   assert.equal(gateForTandemTransition("Ready"), "to-ready");
