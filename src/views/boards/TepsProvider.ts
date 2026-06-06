@@ -85,8 +85,8 @@ export class TepsProvider implements vscode.TreeDataProvider<TepNode> {
     }
 
     const store = new ThinkubeStore(this.repo.path, this.repo.boardDir);
-    const ids = await store.listTeps();
-    if (ids.length === 0) {
+    const teps = await store.listTeps();
+    if (teps.length === 0) {
       return [
         {
           kind: "placeholder",
@@ -96,8 +96,7 @@ export class TepsProvider implements vscode.TreeDataProvider<TepNode> {
     }
 
     const nodes: TepNode[] = [];
-    for (const id of [...ids].sort((a, b) => a.localeCompare(b))) {
-      const rel = store.pathForTep(id);
+    for (const { id, relativePath: rel } of teps) {
       const doc = await store.getFile(rel);
       const fm = doc?.frontmatter;
       const title =

@@ -258,15 +258,21 @@ export class ThinkubeStore implements vscode.Disposable {
   // ─── Tandem: TEPs (flat files, the orthogonal *why* axis — TEP-0009) ──────
   //   .thinkube/teps/TEP-{id}.md      one Tandem Enhancement Proposal per file
 
-  /** Path to a TEP document. Flat, like `specs/SP-{n}/spec.md` is nested. */
+  /** Canonical path for a NEW TEP document (slugless). Legacy TEPs may carry a
+   *  `-{slug}` suffix in the filename — use `findTep` to resolve those. */
   pathForTep(tepId: string): string {
     return `${KIND_TO_DIR.tep}/TEP-${tepId}.md`;
   }
 
-  /** TEP ids (the `TEP-{id}` files) under `teps/`, sorted. Ids are opaque
-   *  strings — base36-epoch for new TEPs, legacy sequential for the early ones.
-   *  The `TEP-TEMPLATE.md` scaffold is excluded — it isn't a proposal. */
-  async listTeps(): Promise<string[]> {
+  /** Match a TEP filename: `TEP-{id}.md` or legacy `TEP-{id}-{slug}.md`. The id
+   *  is the segment after `TEP-` up to the first `-` or `.md`. Excludes the
+   *  `TEP-TEMPLATE.md` scaffold. */
+  private static readonly TEP_FILE_RE = /^TEP-([A-Za-z0-9]+)(?:-.*)?\.md$/;
+
+  /** TEPs under `teps/` as `{ id, relativePath }`, sorted by id. Tolerates the
+   *  legacy `TEP-{id}-{slug}.md` names by returning the real file path (the id
+   *  alone can't reconstruct a slugged filename). */
+  async listTeps(): Promise<{ id: string; relativePath: string }[]> {
     const dir = path.join(this.thinkubeDir, KIND_TO_DIR.tep);
     let names: string[];
     try {
@@ -275,12 +281,21 @@ export class ThinkubeStore implements vscode.Disposable {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw err;
     }
-    const ids: string[] = [];
+    const out: { id: string; relativePath: string }[] = [];
     for (const n of names) {
-      const m = /^TEP-([A-Za-z0-9]+)\.md$/.exec(n);
-      if (m && m[1] !== "TEMPLATE") ids.push(m[1]);
+      const m = ThinkubeStore.TEP_FILE_RE.exec(n);
+      if (m && m[1] !== "TEMPLATE")
+        out.push({ id: m[1], relativePath: `${KIND_TO_DIR.tep}/${n}` });
     }
-    return ids.sort((a, b) => a.localeCompare(b));
+    return out.sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  /** Resolve a TEP id to its real file path (slugless or legacy slugged), or
+   *  undefined if absent. Used to open the TEP behind a spec's `implements:`. */
+  async findTep(tepId: string): Promise<string | undefined> {
+    for (const t of await this.listTeps())
+      if (t.id === tepId) return t.relativePath;
+    return undefined;
   }
 
   /** Spec ids (the `SP-{id}` folders) under `specs/`, sorted. Ids are opaque

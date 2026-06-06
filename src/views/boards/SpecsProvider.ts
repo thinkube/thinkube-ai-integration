@@ -138,15 +138,17 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
         typeof doc?.frontmatter?.implements === "string"
           ? doc.frontmatter.implements.trim()
           : "";
-      const implementsTep: ImplementsLink | undefined = impl
-        ? {
-            tepId: impl.replace(/^TEP-/i, ""),
-            file: path.join(
-              store.thinkubeDir,
-              store.pathForTep(impl.replace(/^TEP-/i, "")),
-            ),
-          }
-        : undefined;
+      let implementsTep: ImplementsLink | undefined;
+      if (impl) {
+        const tepId = impl.replace(/^TEP-/i, "");
+        // The real file may be slugged (`TEP-0009-...md`); fall back to the
+        // canonical slugless path so the row still renders if not found.
+        const tepRel = (await store.findTep(tepId)) ?? store.pathForTep(tepId);
+        implementsTep = {
+          tepId,
+          file: path.join(store.thinkubeDir, tepRel),
+        };
+      }
       nodes.push({
         kind: "spec",
         specNumber: n,
