@@ -266,6 +266,12 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "thinkube.teps.new",
+        "title": "New TEP",
+        "category": "Thinkube TEPs",
+        "icon": "$(add)"
+      },
+      {
         "command": "thinkube.specs.startWorktree",
         "title": "Start Spec in Worktree",
         "category": "Thinkube Specs",
@@ -311,9 +317,14 @@
           "group": "navigation@0"
         },
         {
-          "command": "thinkube.teps.refresh",
+          "command": "thinkube.teps.new",
           "when": "view == thinkubeTeps",
           "group": "navigation@0"
+        },
+        {
+          "command": "thinkube.teps.refresh",
+          "when": "view == thinkubeTeps",
+          "group": "navigation@1"
         }
       ],
       "view/item/context": [

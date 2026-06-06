@@ -25,6 +25,7 @@ import { ConfigTreeProvider } from "./views/sidebar/ConfigTreeProvider";
 import { BoardNavigatorProvider } from "./views/boards/BoardNavigatorProvider";
 import { SpecsProvider } from "./views/boards/SpecsProvider";
 import { TepsProvider } from "./views/boards/TepsProvider";
+import { ThinkubeStore } from "./store/ThinkubeStore";
 import { registerBoardCommands, seedBoardsFilter } from "./commands/boards";
 import { registerWorktreeCommands } from "./commands/worktree";
 
@@ -218,6 +219,27 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("thinkube.teps.refresh", () =>
       tepsProvider.refresh(),
     ),
+    // "+ New TEP" (TEP-0009): mint a conflict-free id from the selected space's
+    // board and open a Claude session with `/tep <id>` prefilled — mirrors
+    // "+ New Spec" → `/spec-prepare <n>`.
+    vscode.commands.registerCommand("thinkube.teps.new", async () => {
+      const repo = tepsProvider.repoEntry;
+      if (!repo || !repo.enabled) {
+        vscode.window.showInformationMessage(
+          "Select an enabled thinking space to add a TEP.",
+        );
+        return;
+      }
+      try {
+        const store = new ThinkubeStore(repo.path, repo.boardDir);
+        const id = await store.nextTepId();
+        await launcher.openHere(vscode.Uri.file(repo.path), `/tep ${id} `);
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          `Couldn't start a new TEP: ${(err as Error).message}`,
+        );
+      }
+    }),
   );
 
   // "Start Spec in Worktree": create the Spec's git worktree and open a session

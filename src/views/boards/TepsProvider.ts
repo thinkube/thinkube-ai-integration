@@ -45,6 +45,12 @@ export class TepsProvider implements vscode.TreeDataProvider<TepNode> {
 
   private repo: RepoEntry | undefined;
 
+  /** The currently-scoped thinking space — the "+ New TEP" command roots its
+   *  session here and mints the id from its board. */
+  get repoEntry(): RepoEntry | undefined {
+    return this.repo;
+  }
+
   /** The thinking space whose TEPs we list (undefined = none selected). */
   setRepo(repo: RepoEntry | undefined): void {
     if (this.repo?.path === repo?.path && this.repo?.enabled === repo?.enabled)
