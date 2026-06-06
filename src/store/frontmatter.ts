@@ -68,6 +68,9 @@ export interface Frontmatter {
   created?: string;
   /** Spec-level: ISO timestamp the human accepted the Spec (set by `accept_spec`, TEP-0010). */
   accepted?: string;
+  /** Spec/TEP-level: hidden from the nav by default when true; a manual, reversible
+   *  flag (TEP-tg86v7). Distinct from a slice's `status: archived` board column. */
+  archived?: boolean;
   /** Spec-level: the TEP this Spec implements, e.g. `TEP-0009` (TEP-0009 link). */
   implements?: string;
   /** TEP-level: the Specs that deliver this TEP, e.g. `["SP-tg7y99"]` (TEP-0009 link). */

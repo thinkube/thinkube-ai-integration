@@ -288,6 +288,54 @@
         "title": "Retire Spec Worktree",
         "category": "Thinkube Specs",
         "icon": "$(trash)"
+      },
+      {
+        "command": "thinkube.specs.archive",
+        "title": "Archive Spec",
+        "category": "Thinkube Specs",
+        "icon": "$(archive)"
+      },
+      {
+        "command": "thinkube.specs.unarchive",
+        "title": "Unarchive Spec",
+        "category": "Thinkube Specs",
+        "icon": "$(history)"
+      },
+      {
+        "command": "thinkube.specs.showArchived",
+        "title": "Show Archived Specs",
+        "category": "Thinkube Specs",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "thinkube.specs.hideArchived",
+        "title": "Hide Archived Specs",
+        "category": "Thinkube Specs",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "thinkube.teps.archive",
+        "title": "Archive TEP",
+        "category": "Thinkube TEPs",
+        "icon": "$(archive)"
+      },
+      {
+        "command": "thinkube.teps.unarchive",
+        "title": "Unarchive TEP",
+        "category": "Thinkube TEPs",
+        "icon": "$(history)"
+      },
+      {
+        "command": "thinkube.teps.showArchived",
+        "title": "Show Archived TEPs",
+        "category": "Thinkube TEPs",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "thinkube.teps.hideArchived",
+        "title": "Hide Archived TEPs",
+        "category": "Thinkube TEPs",
+        "icon": "$(eye)"
       }
     ],
     "menus": {
@@ -328,6 +376,16 @@
           "group": "navigation@1"
         },
         {
+          "command": "thinkube.specs.showArchived",
+          "when": "view == thinkubeSpecs && !thinkube.specs.showArchived",
+          "group": "navigation@2"
+        },
+        {
+          "command": "thinkube.specs.hideArchived",
+          "when": "view == thinkubeSpecs && thinkube.specs.showArchived",
+          "group": "navigation@2"
+        },
+        {
           "command": "thinkube.teps.new",
           "when": "view == thinkubeTeps",
           "group": "navigation@0"
@@ -336,6 +394,16 @@
           "command": "thinkube.teps.refresh",
           "when": "view == thinkubeTeps",
           "group": "navigation@1"
+        },
+        {
+          "command": "thinkube.teps.showArchived",
+          "when": "view == thinkubeTeps && !thinkube.teps.showArchived",
+          "group": "navigation@2"
+        },
+        {
+          "command": "thinkube.teps.hideArchived",
+          "when": "view == thinkubeTeps && thinkube.teps.showArchived",
+          "group": "navigation@2"
         }
       ],
       "view/item/context": [
@@ -346,8 +414,28 @@
         },
         {
           "command": "thinkube.specs.retireWorktree",
-          "when": "view == thinkubeSpecs && viewItem =~ /^spec-/",
+          "when": "view == thinkubeSpecs && (viewItem == spec-open || viewItem == spec-done)",
           "group": "inline@1"
+        },
+        {
+          "command": "thinkube.specs.archive",
+          "when": "view == thinkubeSpecs && (viewItem == spec-open || viewItem == spec-done)",
+          "group": "9_archive"
+        },
+        {
+          "command": "thinkube.specs.unarchive",
+          "when": "view == thinkubeSpecs && viewItem == spec-archived",
+          "group": "9_archive"
+        },
+        {
+          "command": "thinkube.teps.archive",
+          "when": "view == thinkubeTeps && viewItem == tep",
+          "group": "9_archive"
+        },
+        {
+          "command": "thinkube.teps.unarchive",
+          "when": "view == thinkubeTeps && viewItem == tep-archived",
+          "group": "9_archive"
         },
         {
           "command": "thinkube.boards.enable",
