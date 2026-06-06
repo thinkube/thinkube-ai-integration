@@ -242,6 +242,50 @@ export function gateSliceSatisfiesToDone(
   };
 }
 
+// ─── Spec acceptance gate (TEP-0010: the single human gate at the end) ───
+//
+// A Spec is "accepted" — its acceptance card reaches Done and the one PR merges —
+// only when (a) every slice under it is Done and (b) every acceptance criterion is
+// checked. The human-accept itself is the act of calling `accept_spec`; this gate
+// is the precondition the server enforces before recording it. Per TEP-0010 this
+// re-introduces a human sign-off, but only at Spec granularity — per-slice stays
+// automated via `gateSliceSatisfiesToDone`.
+
+export interface SpecAcceptanceGateInput {
+  /** Parent Spec body — its `## Acceptance Criteria` is read. */
+  specBody: string | null | undefined;
+  /** `status:` of every slice under the Spec (the acceptance card excluded). */
+  sliceStatuses: readonly string[];
+}
+
+export function gateSpecAcceptance(input: SpecAcceptanceGateInput): GateResult {
+  const notDone = input.sliceStatuses.filter(
+    (s) => (s ?? "").toLowerCase() !== "done",
+  ).length;
+  if (notDone > 0) {
+    return {
+      ok: false,
+      reason: `Cannot accept the Spec: ${notDone} slice${notDone === 1 ? " is" : "s are"} not yet Done.`,
+    };
+  }
+  const items = extractAcceptanceCriteria(input.specBody ?? "");
+  if (items.length === 0) {
+    return {
+      ok: false,
+      reason:
+        "Cannot accept the Spec: it has no `## Acceptance Criteria` to accept against.",
+    };
+  }
+  const unchecked = items.filter((i) => !i.checked).length;
+  if (unchecked > 0) {
+    return {
+      ok: false,
+      reason: `Cannot accept the Spec: ${unchecked} acceptance criterion${unchecked === 1 ? " is" : "ia are"} still unchecked on the Spec.`,
+    };
+  }
+  return { ok: true };
+}
+
 function clampLabel(label: string, max = 100): string {
   const s = label.trim();
   return s.length <= max ? s : `${s.slice(0, max - 1).trimEnd()}…`;

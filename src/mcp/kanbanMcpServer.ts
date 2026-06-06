@@ -52,7 +52,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { requirementHash } from "../methodology/specChange";
-import { gateSliceSatisfiesToDone } from "../methodology/qualityGates";
+import {
+  gateSliceSatisfiesToDone,
+  gateSpecAcceptance,
+} from "../methodology/qualityGates";
 import { ThinkubeStore } from "../store/ThinkubeStore";
 import type { Frontmatter } from "../store/frontmatter";
 import { stampOnEnteringDone } from "../github/sliceProvenance";
@@ -539,6 +542,23 @@ const TOOL_DEFS = [
     },
   },
   {
+    name: "accept_spec",
+    description:
+      "Record the human acceptance of a Spec — the single end-of-Spec gate (TEP-0010). REFUSED unless every slice under the Spec is Done and every acceptance criterion is checked on the Spec (the error names the blocker). On success it stamps `accepted:` on the Spec, so the acceptance card may enter Done and the Spec's PR merge.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        spec: {
+          type: "string",
+          description: "The Spec id (SP-{id}) to accept.",
+        },
+        ...BOARD_PARAM,
+      },
+      required: ["spec"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "create_slice",
     description:
       "Create a new slice under a Spec in the canonical shape. The server allocates the SL number (per-Spec, archive-aware) and serializes the file (frontmatter + `# title` heading + detail body) — callers never pick numbers or format files. Refused when the parent Spec is missing or has an empty `## Acceptance Criteria` (the → Ready gate, enforced at creation). Title limit: 70 chars — detail belongs in the body.",
@@ -656,6 +676,14 @@ async function dispatchTool(
         store,
         asString(args, "slice"),
         asString(args, "status"),
+      );
+    case "accept_spec":
+      writeGate(name);
+      return acceptSpec(
+        store,
+        typeof args.spec === "number"
+          ? String(args.spec)
+          : asString(args, "spec"),
       );
     case "create_slice":
       writeGate(name);
@@ -906,6 +934,37 @@ async function moveSlice(
     baselineStamped,
     ...(gateSkipped ? { gateSkipped } : {}),
   };
+}
+
+/**
+ * Record the human acceptance of a Spec — TEP-0010's single end-of-Spec gate.
+ * Refuses unless every slice under the Spec is Done and every acceptance
+ * criterion is checked; on success stamps `accepted:` on the Spec doc so the
+ * acceptance card may enter Done and the Spec's PR merge.
+ */
+async function acceptSpec(
+  store: ThinkubeStore,
+  spec: string,
+): Promise<unknown> {
+  const specRel = store.pathForSpecDoc(spec);
+  const specDoc = await store.getFile(specRel);
+  if (!specDoc) {
+    throw new Error(`No spec at ${specRel} — nothing to accept.`);
+  }
+  const sliceStatuses: string[] = [];
+  for (const rel of await store.listSlices(spec)) {
+    const parsed = await store.getFile(rel);
+    sliceStatuses.push(String(parsed?.frontmatter?.status ?? ""));
+  }
+  const gate = gateSpecAcceptance({ specBody: specDoc.body, sliceStatuses });
+  if (!gate.ok) throw new Error(gate.reason);
+  const accepted = new Date().toISOString();
+  await store.writeFile(
+    specRel,
+    { ...specDoc.frontmatter, accepted },
+    specDoc.body,
+  );
+  return { ok: true, spec, accepted };
 }
 
 /** Card-title character limit for `create_slice` (detail belongs in the body). */
