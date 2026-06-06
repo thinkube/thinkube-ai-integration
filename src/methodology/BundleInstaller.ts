@@ -15,7 +15,7 @@
  *   claudemd-block   insert / update the delimited methodology block in
  *                    the project's `CLAUDE.md`; idempotent
  *   stamp            record the install metadata (version, install time,
- *                    per-file source hashes) at `.thinkube/.bundle-version.json`
+ *                    per-file source hashes) at `.claude/.bundle-version.json`
  *                    for drift detection
  *
  * Status model (`getStatus`):
@@ -40,7 +40,12 @@ import * as crypto from "node:crypto";
 import * as path from "node:path";
 
 const BUNDLE_SUBDIR = "templates/methodology-bundle";
-const STAMP_RELATIVE = ".thinkube/.bundle-version.json";
+// The install stamp lives with the bundle's other code-repo files under
+// `.claude/`, NOT in `.thinkube/` — the board moved to the sidecar (TEP-0008)
+// and nothing should re-create a co-located `.thinkube/`. It tracks this repo's
+// bundle install (version + per-file hashes for drift), so it belongs next to
+// what it stamps. Gitignored (install-machine metadata, not source).
+const STAMP_RELATIVE = ".claude/.bundle-version.json";
 
 export type FileKind =
   | "copy"
