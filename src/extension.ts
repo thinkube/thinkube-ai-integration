@@ -216,6 +216,30 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("thinkube.specs.refresh", () =>
       specsProvider.refresh(),
     ),
+    // "+ New Spec" on the Specs section header — mint the next Spec id from the
+    // selected space's board and open `/spec-prepare <n>` (sidebar-consistent
+    // with "+ New TEP"; the kanban webview no longer owns this).
+    vscode.commands.registerCommand("thinkube.specs.new", async () => {
+      const repo = specsProvider.repoEntry;
+      if (!repo || !repo.enabled) {
+        vscode.window.showInformationMessage(
+          "Select an enabled thinking space to add a Spec.",
+        );
+        return;
+      }
+      try {
+        const store = new ThinkubeStore(repo.path, repo.boardDir);
+        const n = await store.nextSpecNumber();
+        await launcher.openHere(
+          vscode.Uri.file(repo.path),
+          `/spec-prepare ${n} `,
+        );
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          `Couldn't start a new spec: ${(err as Error).message}`,
+        );
+      }
+    }),
     vscode.commands.registerCommand("thinkube.teps.refresh", () =>
       tepsProvider.refresh(),
     ),

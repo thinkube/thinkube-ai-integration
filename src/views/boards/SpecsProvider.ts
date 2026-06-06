@@ -72,6 +72,12 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
 
   private repo: RepoEntry | undefined;
 
+  /** The currently-scoped thinking space — the "+ New Spec" command roots its
+   *  session here and mints the id from its board. */
+  get repoEntry(): RepoEntry | undefined {
+    return this.repo;
+  }
+
   /** The thinking space whose specs we list (undefined = none selected). */
   setRepo(repo: RepoEntry | undefined): void {
     if (this.repo?.path === repo?.path && this.repo?.enabled === repo?.enabled)

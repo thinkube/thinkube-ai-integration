@@ -92,8 +92,6 @@ export type WebviewMessage =
   | { kind: "open-detail"; id: string }
   /** Open a commit/PR link in the user's browser (host guards to http(s)). */
   | { kind: "open-external"; url: string }
-  /** "New Spec" header button — host opens a Claude session with /spec-prepare prefilled. */
-  | { kind: "create-spec" }
   /** Accept a Spec (TEP-0010): host runs the gate + accept_spec, then merges the PR. */
   | { kind: "accept-spec"; spec: string };
 
