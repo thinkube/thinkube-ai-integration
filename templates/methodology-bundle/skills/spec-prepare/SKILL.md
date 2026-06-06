@@ -1,5 +1,5 @@
 ---
-description: Walk the user through filling a Spec's body. Writes .thinkube/specs/SP-{n}/spec.md with the standard Tandem spec sections (acceptance criteria, constraints, design, file plan).
+description: Walk the user through filling a Spec's body. Writes specs/SP-{n}/spec.md with the standard Tandem spec sections (acceptance criteria, constraints, design, file plan).
 allowed-tools:
   [
     "Read",
@@ -16,11 +16,11 @@ thinkube-bundle: 0.0.1
 
 # /spec-prepare
 
-Fill in a Spec's body to the standard Tandem shape. The Spec lives as a committed file at `.thinkube/specs/SP-{n}/spec.md` — the single source of truth. After this skill runs, the → Ready gate passes (the Spec has a non-empty `## Acceptance Criteria`) and the Spec is ready for `/slice`.
+Fill in a Spec's body to the standard Tandem shape. The Spec lives as a committed file at `specs/SP-{n}/spec.md` — the single source of truth. After this skill runs, the → Ready gate passes (the Spec has a non-empty `## Acceptance Criteria`) and the Spec is ready for `/slice`.
 
 ## Mission
 
-Produce a fully-shaped `.thinkube/specs/SP-{n}/spec.md` containing the four canonical sections, with:
+Produce a fully-shaped `specs/SP-{n}/spec.md` containing the four canonical sections, with:
 
 - **Acceptance criteria** that the → Ready gate will accept (non-empty checklist) and that are **user-observable / verifiable**.
 - **Constraints** that bound the design (perf, compat, security, deadlines).
@@ -45,7 +45,7 @@ Gather the minimum, in the right order, and only after the governing document ex
 
 1. **Read methodology context** if not in session.
 2. **Fetch the spec file.** Use `get_thinkube_file specs/SP-{n}/spec.md`; if the file is non-empty, treat it as a draft to refine rather than rewriting from scratch. _(Action 1 — the only read before the skeleton.)_
-3. **Write the skeleton FIRST — never review in chat.** Chat is a bad reading surface (collapsed blocks, rendering that shifts between versions); the spec file is the review surface. Immediately `Write` `.thinkube/specs/SP-{n}/spec.md` in the exact shape of step 6 with placeholder bodies (`_(under discussion — see chat)_`), and tell the user to open it with **Markdown Preview to the side** (`Ctrl+K V`). _(Action 2 — then ask your first question.)_
+3. **Write the skeleton FIRST — never review in chat.** Chat is a bad reading surface (collapsed blocks, rendering that shifts between versions); the spec file is the review surface. Immediately `Write` `specs/SP-{n}/spec.md` in the exact shape of step 6 with placeholder bodies (`_(under discussion — see chat)_`), and tell the user to open it with **Markdown Preview to the side** (`Ctrl+K V`). _(Action 2 — then ask your first question.)_
 4. **Interview the user, section by section.** Ask questions in chat, but land every agreed draft into the FILE with `Edit` — the user reads the rendered preview, chat only steers. The user may edit the file directly at any time and their edits are authoritative: re-`Read` the file before every `Edit` and never clobber text you didn't write. **Acceptance criteria come first** — they scope the exploration in step 5.
    - **Acceptance criteria**: elicited **from the user** — there is no parent Story to inherit them from. They must be **user-observable outcomes**, framed so they can be verified, not implementation steps. Good: "A new user receives an email within 30s of submitting the form." / "Endpoint returns 401 when the token is expired and the body matches `{error: 'expired_token'}`." Bad: "Add a Redis session store" (that's work, it belongs in a slice).
    - **Constraints**: list. Performance budgets, browser support, dependency rules, deadlines.
@@ -92,7 +92,7 @@ Gather the minimum, in the right order, and only after the governing document ex
 
 ```
 ✅ SP-{n}: <title>
-   spec:    .thinkube/specs/SP-{n}/spec.md
+   spec:    specs/SP-{n}/spec.md
    ac:      <count> acceptance criteria
    files:   <count> in file plan
    next:    /slice {n}

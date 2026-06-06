@@ -1,5 +1,5 @@
 ---
-description: Decompose a Spec into coherent Slices, writing individual .thinkube/specs/SP-{n}/SL-{m}.md files directly. Each slice is one verifiable end-to-end change.
+description: Decompose a Spec into coherent Slices, writing individual specs/SP-{n}/SL-{m}.md files directly. Each slice is one verifiable end-to-end change.
 allowed-tools:
   [
     "Read",
@@ -18,11 +18,11 @@ thinkube-bundle: 0.0.1
 
 # /slice
 
-Read a fully-shaped Spec and cut it into **coherent slices** — each one an end-to-end change you can verify-and-commit as a single "done." Each slice is written **directly** as its own file at `.thinkube/specs/SP-{n}/SL-{m}.md` with `status: ready`. There is no checkbox-list intermediate, no materialiser, no issue minting — the files _are_ the board.
+Read a fully-shaped Spec and cut it into **coherent slices** — each one an end-to-end change you can verify-and-commit as a single "done." Each slice is written **directly** as its own file at `specs/SP-{n}/SL-{m}.md` with `status: ready`. There is no checkbox-list intermediate, no materialiser, no issue minting — the files _are_ the board.
 
 ## Mission
 
-Write one `.thinkube/specs/SP-{n}/SL-{m}.md` file per slice, where each slice:
+Write one `specs/SP-{n}/SL-{m}.md` file per slice, where each slice:
 
 - Is **one coherent, vertical, end-to-end change** — a thin cut through whatever layers the change touches that, once verified green and committed, leaves the system **observably more capable** (you could demo it).
 - Has a **single statable "done"** (one green from the verifier).
@@ -62,7 +62,7 @@ The parent Spec is your scope — gather only what it doesn't already give you:
 
 ## Procedure
 
-0. **Detect re-slicing (the Spec changed under existing slices).** If `.thinkube/specs/SP-{n}/` already holds `SL-*.md` files, this is a **change-review**, not a fresh decomposition — the board flags this with a stale badge (`specStale` / `specChange: "requirements"`) on done slices whose parent Spec was edited after they were verified. Do NOT overwrite blindly:
+0. **Detect re-slicing (the Spec changed under existing slices).** If `specs/SP-{n}/` already holds `SL-*.md` files, this is a **change-review**, not a fresh decomposition — the board flags this with a stale badge (`specStale` / `specChange: "requirements"`) on done slices whose parent Spec was edited after they were verified. Do NOT overwrite blindly:
    - Read the existing slice files (`get_slice` per handle, or `get_thinkube_file specs/SP-{n}/SL-{m}.md`) and their `status:` (`ready` / `doing` / `done` / `archived`).
    - Re-derive slices from the Spec's **current** Acceptance Criteria, then diff against what exists, classifying each as **keep** (still maps to an AC), **add** (an AC has no covering slice), or **obsolete** (no longer maps to any AC).
    - **The action depends on the slice's status — never react uniformly:**
@@ -104,7 +104,7 @@ The parent Spec is your scope — gather only what it doesn't already give you:
 ```
 ✅ SP-{n} sliced
    wrote:   SP-{n}_SL-1 … SP-{n}_SL-{m}  (<count> slices, all status: ready)
-   at:      .thinkube/specs/SP-{n}/SL-*.md
+   at:      specs/SP-{n}/SL-*.md
    ac-coverage: <covered>/<total> ✔
    next:    /pair-start {n}
 ```
