@@ -101,10 +101,23 @@ export interface SliceInput {
  * their files (to hold their numbers; archive-don't-delete) but don't appear on
  * the active board.
  */
-export function buildSliceBoard(slices: SliceInput[], scope: string): Board {
+export interface SpecMeta {
+  /** Spec frontmatter `accepted:` present — the human-accept was recorded. */
+  accepted: boolean;
+  /** Every acceptance criterion on the Spec is checked. */
+  allAcsChecked: boolean;
+}
+
+export function buildSliceBoard(
+  slices: SliceInput[],
+  scope: string,
+  specMeta?: ReadonlyMap<string, SpecMeta>,
+): Board {
   const tasks: Record<string, TaskCard> = {};
   const byColumn = new Map<string, string[]>();
   for (const c of TANDEM_COLUMNS) byColumn.set(c.id, []);
+  // Per-Spec slice tally → the acceptance card's readiness.
+  const specSlices = new Map<string, { total: number; done: number }>();
 
   const ordered = [...slices].sort(
     (a, b) =>
@@ -138,6 +151,36 @@ export function buildSliceBoard(slices: SliceInput[], scope: string): Board {
       pr: s.pr,
     };
     tasks[id] = card;
+    byColumn.get(columnId)?.push(id);
+    const agg = specSlices.get(s.specNumber) ?? { total: 0, done: 0 };
+    agg.total++;
+    if ((s.status ?? "").toLowerCase() === "done") agg.done++;
+    specSlices.set(s.specNumber, agg);
+  }
+
+  // One acceptance card per Spec with slices (TEP-0010), auto-derived — not a
+  // slice file. Accepted → Done; otherwise Ready, with `acceptReady` flipping
+  // once every slice is Done and every AC is checked.
+  for (const [specId, agg] of specSlices) {
+    const meta = specMeta?.get(specId);
+    const accepted = meta?.accepted ?? false;
+    const acceptReady =
+      agg.total > 0 && agg.done === agg.total && (meta?.allAcsChecked ?? false);
+    // Surface the acceptance card only when actionable — ready to accept (all
+    // slices Done + all ACs checked) or already accepted — not for every
+    // in-progress Spec.
+    if (!accepted && !acceptReady) continue;
+    const id = `SP-${specId}_accept`;
+    const columnId = accepted ? "column-done" : "column-ready";
+    tasks[id] = {
+      id,
+      description: `Accept SP-${specId}`,
+      columnId,
+      colorSlug: paletteForParent(specId),
+      parentId: specId,
+      isAcceptance: true,
+      acceptReady,
+    };
     byColumn.get(columnId)?.push(id);
   }
 

@@ -123,3 +123,31 @@ test("a slice whose stamped hash differs from the current Spec hash is stale", (
   assert.equal(board.tasks["SP-1_SL-1"].specChange, "requirements");
   assert.equal(board.tasks["SP-1_SL-2"].specStale, false);
 });
+
+test("acceptance card appears only when accept-ready or accepted (TEP-0010)", () => {
+  // Mid-progress Spec → no acceptance card.
+  const mid = buildSliceBoard(
+    [{ specNumber: "9", sliceNumber: 1, title: "x", status: "doing" }],
+    "demo",
+  );
+  assert.equal(mid.tasks["SP-9_accept"], undefined);
+
+  // All slices Done + all ACs checked → an accept-ready card in Ready.
+  const ready = buildSliceBoard(
+    [{ specNumber: "9", sliceNumber: 1, title: "x", status: "done" }],
+    "demo",
+    new Map([["9", { accepted: false, allAcsChecked: true }]]),
+  );
+  const card = ready.tasks["SP-9_accept"];
+  assert.ok(card?.isAcceptance);
+  assert.equal(card.acceptReady, true);
+  assert.equal(card.columnId, "column-ready");
+
+  // Accepted → card in Done.
+  const accepted = buildSliceBoard(
+    [{ specNumber: "9", sliceNumber: 1, title: "x", status: "done" }],
+    "demo",
+    new Map([["9", { accepted: true, allAcsChecked: true }]]),
+  );
+  assert.equal(accepted.tasks["SP-9_accept"].columnId, "column-done");
+});
