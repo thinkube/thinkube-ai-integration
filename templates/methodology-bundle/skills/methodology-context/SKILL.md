@@ -14,7 +14,7 @@ A reference document loaded by other bundle skills (`/spec-prepare`, `/slice`, `
 1. The team is **one human (navigator) + one AI (driver)** — not a group of humans.
 2. The **committed git repo is the single source of truth _and_ the board**.
 
-Consequences: the entire artifact set — specs, slices, **teps** (Tandem Enhancement Proposals), retros — lives as committed markdown in the **central Tandem sidecar board repo** (`thinkube-tandem`, TEP-0008), namespaced per Thinking Space — host-agnostic (the board repo can live on Gitea, GitHub, or offline; reinstall recovery is `git clone`). There is **no external issue tracker in the core loop**, and "done" is defined by an **automated verifier**, not human sign-off.
+Consequences: the entire artifact set — specs, slices, **teps** (Tandem Enhancement Proposals), retros — lives as committed markdown in the **central Tandem sidecar board repo** (`thinkube-tandem`, TEP-0008), namespaced per Thinking Space — host-agnostic (the board repo can live on Gitea, GitHub, or offline; reinstall recovery is `git clone`). There is **no external issue tracker in the core loop**. "Done" is defined in two layers (TEP-0010): each **slice** is done by an **automated verifier** (fast, no human sign-off), and each **Spec** is done by a **single human acceptance gate** at the end — the human approves the assembled result and the automated re-verify passes, then the Spec's one PR merges. The per-slice automated greens stay; the spec-level human accept is the lightest sign-off, placed exactly where per-slice greens miss integration/UX regressions.
 
 ## Hierarchy: Spec → Slice
 
@@ -97,14 +97,26 @@ Acceptance criteria are elicited from the **user** during `/spec-prepare` — th
 
 A Spec still being authored (no AC yet) is pre-board; its slices don't exist until it's sliced.
 
-## Quality gates (two; file checks)
+## Quality gates (three; file checks + server-enforced)
 
-| Transition      | Gate                                                                                                                                                                                |
-| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| → Ready (entry) | The slice's parent Spec has a non-empty `## Acceptance Criteria`.                                                                                                                   |
-| → Done          | Verifier green for the slice's change, and the AC it satisfies is checked on the Spec. **Reviewer + verifier both run inside this single gate** — no Review/Verify handoff columns. |
+| Transition             | Gate                                                                                                                                                                                                                                               |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Slice → Ready          | The slice's parent Spec has a non-empty `## Acceptance Criteria`.                                                                                                                                                                                  |
+| Slice → Done           | Verifier green for the slice's change, and the AC it satisfies is checked on the Spec. **Reviewer + verifier both run inside this single gate** — no Review/Verify handoff columns.                                                                |
+| Spec acceptance → Done | The acceptance card reaches Done only when **every slice is Done, every AC box is checked, and a human-accept is recorded** (`accept_spec`). The MCP server **refuses** otherwise, naming the blocker — like `move_slice` refuses an unchecked AC. |
 
-The slice **is** the verification boundary — "one green." (The old "≥1 comment" gate is gone: there is no second human to hand off to.)
+The slice **is** the per-slice verification boundary — "one green," automated. The **Spec** has one more, human gate on top: acceptance (below). (The old "≥1 comment" gate is gone: there is no second human to hand off to.)
+
+## Spec lifecycle: one branch, one PR, one acceptance gate (TEP-0010)
+
+A Spec runs on **one branch** `spec/SP-{n}` (a worktree when specs run in parallel, TEP-0008); every slice lands as **commits on that branch**, and the Spec produces **exactly one PR** — no per-slice branch or PR. Slices execute **consecutively and autonomously**: the human defines the goal up front (the Spec + its acceptance criteria) and `/pair-next` runs the Ready slices through Doing→Done to completion **without pausing between them**. The **only** human gate is **acceptance**, at the end:
+
+1. The AI **explains** the assembled implementation across the slices (ideally a real end-to-end demonstration).
+2. The human **approves** (or sends it back) — the session's single bless point.
+3. The AI runs the **acceptance card** (`accept_spec`: the automated all-ACs-checked + all-slices-Done re-verify).
+4. On pass → the Spec's **one PR merges/closes**. Spec done.
+
+The **acceptance card** is a spec-level card **auto-derived from the Spec's `## Acceptance Criteria`** (not hand-written) — the Spec graduating from document to a board card for its final step. It is the last card to reach Done. This re-introduces human sign-off **only at spec scope** — per-slice stays automated — because automated per-slice greens miss integration/UX regressions, and a bug can be _in an AC_ (so re-ticking boxes isn't enough; a human judging the assembled result is).
 
 ## Spec staleness (re-verify semantics)
 
@@ -130,6 +142,8 @@ Each **Thinking Space**'s board lives in the **central Tandem sidecar repo** (`t
 ## Write authority
 
 Inside an invoked skill, board bookkeeping — moving cards, checking the AC a slice satisfies, stamping provenance/verification — is the **AI's job**: it does it and **reports the result with evidence**. The human steers substance and **intervenes by exception**; the AI never asks the human to move a card or re-invoke a command merely to advance mechanics, and stops only at a marked **bless point**, a **gate refusal**, or a **failed precondition**. (In `navigator` mode this inverts per mode awareness — the AI proposes, the human writes.)
+
+Within a Spec, the marked **bless point is acceptance** (TEP-0010) — there is no mid-spec pick-bless or per-slice move confirmation. `/pair-next` runs the Spec's slices to completion autonomously and stops for the human only to **approve the assembled Spec before it merges**. The two human inputs per Spec are **define** (the Spec + ACs, up front) and **accept** (at the end); everything between is the AI advancing mechanics + the human intervening by exception.
 
 ## Slice creation (`/slice`)
 
