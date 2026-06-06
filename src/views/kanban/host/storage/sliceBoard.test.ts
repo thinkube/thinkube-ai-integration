@@ -45,7 +45,11 @@ test("buildSliceBoard lays out three columns and places slices by status", () =>
     ["Ready", "Doing", "Done"],
   );
   const ready = board.columns.find((c) => c.title === "Ready")!;
-  assert.deepEqual(ready.tasksIds, ["SP-3_SL-1"]);
+  // Slice cards only — each Spec also gets an auto-derived `_accept` close card.
+  assert.deepEqual(
+    ready.tasksIds.filter((id) => !id.endsWith("_accept")),
+    ["SP-3_SL-1"],
+  );
   const card = board.tasks["SP-3_SL-1"];
   assert.equal(card.parentId, "3"); // grouped/coloured by parent Spec id
   assert.equal(card.description, "a");
@@ -59,7 +63,12 @@ test("archived slices are excluded from the board", () => {
     ],
     "demo",
   );
-  assert.equal(Object.keys(board.tasks).length, 1);
+  // One slice card (the archived one excluded); the Spec's `_accept` close card
+  // is also present but isn't a slice.
+  const sliceCards = Object.keys(board.tasks).filter(
+    (id) => !id.endsWith("_accept"),
+  );
+  assert.equal(sliceCards.length, 1);
   assert.ok(board.tasks["SP-1_SL-1"]);
   assert.equal(board.tasks["SP-1_SL-2"], undefined);
 });
@@ -125,42 +134,79 @@ test("a slice whose stamped hash differs from the current Spec hash is stale", (
   assert.equal(board.tasks["SP-1_SL-2"].specStale, false);
 });
 
-test("acceptance card appears only when accept-ready or accepted (TEP-0010)", () => {
-  // Mid-progress Spec → no acceptance card.
-  const mid = buildSliceBoard(
-    [{ specNumber: "9", sliceNumber: 1, title: "x", status: "doing" }],
-    "demo",
-  );
-  assert.equal(mid.tasks["SP-9_accept"], undefined);
+test("close card: one per Spec with slices, carrying checklist + progress (TEP-0010)", () => {
+  const crit = [
+    { label: "one", checked: true },
+    { label: "two", checked: false },
+  ];
 
-  // All slices Done + all ACs checked → an accept-ready card in Ready.
+  // Mid-progress Spec (not accepted) → a card in Ready, NOT accept-ready,
+  // carrying the criteria checklist + slice progress.
+  const mid = buildSliceBoard(
+    [
+      { specNumber: "9", sliceNumber: 1, title: "x", status: "done" },
+      { specNumber: "9", sliceNumber: 2, title: "y", status: "doing" },
+    ],
+    "demo",
+    new Map([["9", { accepted: false, allAcsChecked: false, criteria: crit }]]),
+  );
+  const card = mid.tasks["SP-9_accept"];
+  assert.ok(card?.isAcceptance);
+  assert.equal(card.columnId, "column-ready");
+  assert.equal(card.acceptReady, false);
+  assert.equal(card.slicesDone, 1);
+  assert.equal(card.slicesTotal, 2);
+  assert.deepEqual(card.acceptanceCriteria, crit);
+
+  // All slices Done + all ACs checked → accept-ready, still in Ready.
   const ready = buildSliceBoard(
     [{ specNumber: "9", sliceNumber: 1, title: "x", status: "done" }],
     "demo",
-    new Map([["9", { accepted: false, allAcsChecked: true }]]),
+    new Map([
+      [
+        "9",
+        {
+          accepted: false,
+          allAcsChecked: true,
+          criteria: [{ label: "one", checked: true }],
+        },
+      ],
+    ]),
   );
-  const card = ready.tasks["SP-9_accept"];
-  assert.ok(card?.isAcceptance);
-  assert.equal(card.acceptReady, true);
-  assert.equal(card.columnId, "column-ready");
+  assert.equal(ready.tasks["SP-9_accept"].acceptReady, true);
+  assert.equal(ready.tasks["SP-9_accept"].columnId, "column-ready");
 
-  // Accepted → card in Done.
+  // Accepted → card rests in Done (kept as a record, not hidden).
   const accepted = buildSliceBoard(
     [{ specNumber: "9", sliceNumber: 1, title: "x", status: "done" }],
     "demo",
-    new Map([["9", { accepted: true, allAcsChecked: true }]]),
+    new Map([
+      [
+        "9",
+        {
+          accepted: true,
+          allAcsChecked: true,
+          criteria: [{ label: "one", checked: true }],
+        },
+      ],
+    ]),
   );
   assert.equal(accepted.tasks["SP-9_accept"].columnId, "column-done");
+  assert.equal(accepted.tasks["SP-9_accept"].accepted, true);
 });
 
-test("deriveSpecMeta reads the accepted stamp and all-ACs-checked from a Spec doc", () => {
+test("deriveSpecMeta reads accepted, all-ACs-checked, and the criteria checklist", () => {
   const allChecked = `## Acceptance Criteria\n- [x] one\n- [x] two\n`;
   const someUnchecked = `## Acceptance Criteria\n- [x] one\n- [ ] two\n`;
 
-  // No stamp, every box checked.
+  // No stamp, every box checked — criteria returned as a checklist.
   assert.deepEqual(deriveSpecMeta(undefined, allChecked), {
     accepted: false,
     allAcsChecked: true,
+    criteria: [
+      { label: "one", checked: true },
+      { label: "two", checked: true },
+    ],
   });
   // A non-empty `accepted:` stamp flips accepted; an empty string does not.
   assert.equal(
@@ -168,12 +214,17 @@ test("deriveSpecMeta reads the accepted stamp and all-ACs-checked from a Spec do
     true,
   );
   assert.equal(deriveSpecMeta({ accepted: "" }, allChecked).accepted, false);
-  // Any unchecked box → not all-checked.
-  assert.equal(deriveSpecMeta(undefined, someUnchecked).allAcsChecked, false);
-  // No `## Acceptance Criteria` at all → not all-checked (vacuous truth refused,
-  // mirroring gateSpecAcceptance).
+  // Any unchecked box → not all-checked, but still surfaced in the checklist.
+  const partial = deriveSpecMeta(undefined, someUnchecked);
+  assert.equal(partial.allAcsChecked, false);
+  assert.deepEqual(partial.criteria, [
+    { label: "one", checked: true },
+    { label: "two", checked: false },
+  ]);
+  // No `## Acceptance Criteria` at all → not all-checked, empty checklist.
   assert.equal(
     deriveSpecMeta(undefined, "no criteria here").allAcsChecked,
     false,
   );
+  assert.deepEqual(deriveSpecMeta(undefined, "no criteria here").criteria, []);
 });

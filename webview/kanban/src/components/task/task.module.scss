@@ -255,6 +255,48 @@
   border: 1px solid currentColor;
   color: var(--accent, var(--vscode-textLink-foreground));
 }
+.acceptProgress {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}
+.acceptChecklist {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  li {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 12px;
+    line-height: 1.35;
+  }
+}
+.acBox {
+  flex: none;
+  font-size: 12px;
+}
+.acLabel {
+  flex: 1;
+}
+.acDone .acBox {
+  color: var(--vscode-charts-green, #4caf50);
+}
+.acDone .acLabel {
+  color: var(--vscode-foreground);
+}
+.acOpen .acBox {
+  color: var(--vscode-descriptionForeground);
+}
+.acOpen .acLabel {
+  color: var(--vscode-descriptionForeground);
+}
 .acceptRow {
   display: flex;
   align-items: center;

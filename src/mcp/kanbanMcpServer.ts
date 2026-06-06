@@ -859,11 +859,22 @@ async function listBoard(store: ThinkubeStore): Promise<unknown> {
         specChange: card.specChange,
         priority: card.priority,
         due: card.dueDate,
-        // Acceptance card (TEP-0010): present only on the auto-derived
-        // `SP-{id}_accept` card, so a reader can tell it from a slice and
-        // know whether `accept_spec` is unblocked.
+        // Close card (TEP-0010): present only on the auto-derived
+        // `SP-{id}_accept` card, so a reader can tell it from a slice and know
+        // the Spec's sign-off state — accepted/ready, slice progress, and how
+        // many criteria are checked.
         ...(card.isAcceptance
-          ? { isAcceptance: true, acceptReady: card.acceptReady }
+          ? {
+              isAcceptance: true,
+              accepted: card.accepted,
+              acceptReady: card.acceptReady,
+              slicesDone: card.slicesDone,
+              slicesTotal: card.slicesTotal,
+              criteriaChecked: (card.acceptanceCriteria ?? []).filter(
+                (c) => c.checked,
+              ).length,
+              criteriaTotal: (card.acceptanceCriteria ?? []).length,
+            }
           : {}),
       };
     }),

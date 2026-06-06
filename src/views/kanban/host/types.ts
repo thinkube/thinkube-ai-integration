@@ -31,10 +31,17 @@ export interface TaskCard {
   commitUrl?: string;
   /** Pull-request URL carrying the slice. */
   pr?: string;
-  /** Spec-level acceptance card (TEP-0010), auto-derived — not a slice file. */
+  /** Spec-level close card (TEP-0010), auto-derived — not a slice file. */
   isAcceptance?: boolean;
-  /** Acceptance card only: every slice Done + every AC checked → ready to accept. */
+  /** Close card only: the Spec has been accepted (rests in Done as a record). */
+  accepted?: boolean;
+  /** Close card only: every slice Done + every AC checked → "Approve & close" enabled. */
   acceptReady?: boolean;
+  /** Close card only: the Spec's `## Acceptance Criteria` as a checklist. */
+  acceptanceCriteria?: { label: string; checked: boolean }[];
+  /** Close card only: slices Done / total, for the progress line. */
+  slicesDone?: number;
+  slicesTotal?: number;
 }
 
 export interface BoardColumn {

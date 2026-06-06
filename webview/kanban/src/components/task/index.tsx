@@ -66,12 +66,18 @@ export function Task({
     });
   };
 
-  // Spec-level acceptance card (TEP-0010): not a slice — it carries no body or
-  // provenance and isn't hand-dragged (the accept gate, not a drag, moves it to
-  // Done). Render a distinct card whose only action is Accept, enabled once the
-  // Spec is accept-ready (all slices Done + all ACs checked).
+  // Spec-level close card (TEP-0010): not a slice — it summarises the whole
+  // Spec. It shows the acceptance-criteria checklist (with each box's mark) and
+  // slice progress so the human sees exactly what they're signing off, then
+  // "Approve & close" — confirm the finished work, merge the Spec's one PR, and
+  // close the Spec. Not hand-dragged (the gate, not a drag, moves it to Done);
+  // an accepted Spec's card rests in Done as a record.
   if (task.isAcceptance) {
-    const accepted = task.columnId === "column-done";
+    const accepted = task.accepted ?? task.columnId === "column-done";
+    const criteria = task.acceptanceCriteria ?? [];
+    const checked = criteria.filter((c) => c.checked).length;
+    const slicesDone = task.slicesDone ?? 0;
+    const slicesTotal = task.slicesTotal ?? 0;
     return (
       <Draggable draggableId={task.id} index={index} isDragDisabled>
         {(provided) => (
@@ -89,18 +95,46 @@ export function Task({
               {task.parentId !== undefined && (
                 <span
                   className={styles.epic}
-                  title={`Parent spec SP-${task.parentId}`}
+                  title={`Spec SP-${task.parentId}`}
                 >
                   SP-{task.parentId}
                 </span>
               )}
               <span className="grow" />
-              <span className={styles.acceptTag}>acceptance</span>
+              <span className={styles.acceptTag}>
+                {accepted ? "closed" : "sign-off"}
+              </span>
             </header>
-            <div className={styles.title}>{task.description}</div>
+            <div className={styles.title}>Spec {task.description}</div>
+
+            <div className={styles.acceptProgress}>
+              <span title="Slices done / total">
+                ◧ {slicesDone}/{slicesTotal} slices done
+              </span>
+              <span title="Acceptance criteria checked / total">
+                ☑ {checked}/{criteria.length} criteria
+              </span>
+            </div>
+
+            {criteria.length > 0 && (
+              <ul className={styles.acceptChecklist}>
+                {criteria.map((c, i) => (
+                  <li
+                    key={i}
+                    className={c.checked ? styles.acDone : styles.acOpen}
+                  >
+                    <span className={styles.acBox}>
+                      {c.checked ? "☑" : "☐"}
+                    </span>
+                    <span className={styles.acLabel}>{c.label}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
             {accepted ? (
               <div className={styles.acceptDone}>
-                <Check /> Accepted — Spec done
+                <Check /> Approved &amp; closed
               </div>
             ) : (
               <div className={styles.acceptRow}>
@@ -110,8 +144,8 @@ export function Task({
                   disabled={!task.acceptReady}
                   title={
                     task.acceptReady
-                      ? "Accept the Spec: re-verify, merge its PR, close it out"
-                      : "Blocked: every slice must be Done and every acceptance criterion checked"
+                      ? "Approve the finished implementation: merge the Spec's PR and close the Spec"
+                      : "Enabled once every slice is Done and every acceptance criterion is checked"
                   }
                   onClick={() =>
                     task.parentId !== undefined &&
@@ -121,11 +155,11 @@ export function Task({
                     })
                   }
                 >
-                  Accept Spec
+                  Approve &amp; close
                 </button>
                 {!task.acceptReady && (
                   <span className={styles.acceptHint}>
-                    slices Done + all AC checked
+                    all slices Done + all criteria checked
                   </span>
                 )}
               </div>
