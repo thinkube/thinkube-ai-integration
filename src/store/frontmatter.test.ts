@@ -13,7 +13,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { scanForSecrets } from "./frontmatter";
+import {
+  scanForSecrets,
+  parseFrontmatter,
+  serializeFrontmatter,
+} from "./frontmatter";
 
 test("a 40-char hex digest in frontmatter is not flagged as an AWS key", () => {
   // A real SHA-1 hex digest (what requirementHash produces), stamped as a
@@ -47,4 +51,21 @@ test("an AWS access key id is still flagged by its own rule", () => {
   const text = "key: AKIAIOSFODNN7EXAMPLE\n";
   const hits = scanForSecrets(text);
   assert.ok(hits.some((h) => h.pattern === "aws-access-key"));
+});
+
+// ── archive flag (TEP-tg86v7) ──
+
+test("the archived flag round-trips through serialize → parse", () => {
+  const text = serializeFrontmatter({
+    frontmatter: { implements: "TEP-tg86v7", archived: true },
+    body: "# A Spec\n",
+  });
+  assert.equal(parseFrontmatter(text).frontmatter?.archived, true);
+});
+
+test("a file with no archived key parses as not-archived (back-compat)", () => {
+  const text = ["---", "implements: TEP-0009", "---", "", "# A Spec"].join(
+    "\n",
+  );
+  assert.equal(parseFrontmatter(text).frontmatter?.archived, undefined);
 });

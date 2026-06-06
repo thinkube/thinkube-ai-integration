@@ -33,6 +33,8 @@ export type TepNode =
       file: string;
       /** Specs delivering this TEP (`implemented_by:` frontmatter). */
       implementedBy: ImplementingSpec[];
+      /** Hidden from the default nav; revealed (marked) under "Show archived" (TEP-tg86v7). */
+      archived: boolean;
     }
   | { kind: "implementing-spec"; spec: ImplementingSpec }
   | { kind: "placeholder"; text: string };
@@ -45,6 +47,9 @@ export class TepsProvider implements vscode.TreeDataProvider<TepNode> {
 
   private repo: RepoEntry | undefined;
 
+  /** Whether archived TEPs are shown (TEP-tg86v7); default hides them. */
+  private showArchived = false;
+
   /** The currently-scoped thinking space — the "+ New TEP" command roots its
    *  session here and mints the id from its board. */
   get repoEntry(): RepoEntry | undefined {
@@ -56,6 +61,13 @@ export class TepsProvider implements vscode.TreeDataProvider<TepNode> {
     if (this.repo?.path === repo?.path && this.repo?.enabled === repo?.enabled)
       return;
     this.repo = repo;
+    this.refresh();
+  }
+
+  /** Toggle whether archived TEPs appear in the list (TEP-tg86v7). */
+  setShowArchived(value: boolean): void {
+    if (this.showArchived === value) return;
+    this.showArchived = value;
     this.refresh();
   }
 
@@ -99,6 +111,9 @@ export class TepsProvider implements vscode.TreeDataProvider<TepNode> {
     for (const { id, relativePath: rel } of teps) {
       const doc = await store.getFile(rel);
       const fm = doc?.frontmatter;
+      // Manual archive flag (TEP-tg86v7): hidden unless "Show archived" is on.
+      const archived = fm?.archived === true;
+      if (archived && !this.showArchived) continue;
       const title =
         typeof fm?.title === "string"
           ? fm.title
@@ -129,6 +144,7 @@ export class TepsProvider implements vscode.TreeDataProvider<TepNode> {
         status: typeof fm?.status === "string" ? fm.status : "",
         file: path.join(store.thinkubeDir, rel),
         implementedBy,
+        archived,
       });
     }
     return nodes;
@@ -168,12 +184,14 @@ export class TepsProvider implements vscode.TreeDataProvider<TepNode> {
         ? vscode.TreeItemCollapsibleState.Collapsed
         : vscode.TreeItemCollapsibleState.None,
     );
-    item.description = node.status
-      ? `${node.status} · ${node.title}`
-      : node.title;
-    item.tooltip = node.file;
-    item.iconPath = new vscode.ThemeIcon("lightbulb");
-    item.contextValue = "tep";
+    const base = node.status ? `${node.status} · ${node.title}` : node.title;
+    item.description = node.archived ? `archived · ${base}` : base;
+    item.tooltip = node.archived ? `(archived)\n${node.file}` : node.file;
+    item.iconPath = new vscode.ThemeIcon(
+      node.archived ? "archive" : "lightbulb",
+    );
+    // Archived TEPs get a distinct contextValue so Unarchive (not Archive) shows.
+    item.contextValue = node.archived ? "tep-archived" : "tep";
     item.command = {
       command: "vscode.open",
       title: "Open TEP",

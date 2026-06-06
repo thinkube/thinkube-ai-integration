@@ -59,6 +59,8 @@ export type SpecNode =
       repoPath: string;
       /** Any ready/doing slice — gates the Start-in-Worktree action (SP-9). */
       hasOpenWork: boolean;
+      /** Hidden from the default nav; revealed (marked) under "Show archived" (TEP-tg86v7). */
+      archived: boolean;
     }
   | { kind: "delivered"; slice: DeliveredSlice }
   | { kind: "implements"; link: ImplementsLink }
@@ -72,6 +74,9 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
 
   private repo: RepoEntry | undefined;
 
+  /** Whether archived specs are shown (TEP-tg86v7); default hides them. */
+  private showArchived = false;
+
   /** The currently-scoped thinking space — the "+ New Spec" command roots its
    *  session here and mints the id from its board. */
   get repoEntry(): RepoEntry | undefined {
@@ -83,6 +88,13 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
     if (this.repo?.path === repo?.path && this.repo?.enabled === repo?.enabled)
       return;
     this.repo = repo;
+    this.refresh();
+  }
+
+  /** Toggle whether archived specs appear in the list (TEP-tg86v7). */
+  setShowArchived(value: boolean): void {
+    if (this.showArchived === value) return;
+    this.showArchived = value;
     this.refresh();
   }
 
@@ -134,6 +146,9 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
     for (const n of [...numbers].sort((a, b) => a.localeCompare(b))) {
       const rel = store.pathForSpecDoc(n);
       const doc = await store.getFile(rel);
+      // Manual archive flag (TEP-tg86v7): hidden unless "Show archived" is on.
+      const archived = doc?.frontmatter?.archived === true;
+      if (archived && !this.showArchived) continue;
       const { delivered, hasOpenWork } = await this.specRollup(
         store,
         n,
@@ -164,6 +179,7 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
         implementsTep,
         repoPath: this.repo.path,
         hasOpenWork,
+        archived,
       });
     }
     return nodes;
@@ -224,10 +240,16 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
         ? vscode.TreeItemCollapsibleState.Collapsed
         : vscode.TreeItemCollapsibleState.None,
     );
-    item.description = node.title;
-    item.tooltip = node.file;
-    item.iconPath = new vscode.ThemeIcon("book");
-    item.contextValue = node.hasOpenWork ? "spec-open" : "spec-done";
+    item.description = node.archived ? `archived · ${node.title}` : node.title;
+    item.tooltip = node.archived ? `(archived)\n${node.file}` : node.file;
+    item.iconPath = new vscode.ThemeIcon(node.archived ? "archive" : "book");
+    // Archived specs get a distinct contextValue so Unarchive (not Archive, nor
+    // the worktree actions) shows on them (TEP-tg86v7).
+    item.contextValue = node.archived
+      ? "spec-archived"
+      : node.hasOpenWork
+        ? "spec-open"
+        : "spec-done";
     item.command = {
       command: "vscode.open",
       title: "Open spec",

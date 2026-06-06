@@ -27,6 +27,10 @@ import { SpecsProvider } from "./views/boards/SpecsProvider";
 import { TepsProvider } from "./views/boards/TepsProvider";
 import { ThinkubeStore } from "./store/ThinkubeStore";
 import { registerBoardCommands, seedBoardsFilter } from "./commands/boards";
+import {
+  registerArchiveCommands,
+  seedArchivedFilters,
+} from "./commands/archive";
 import { registerWorktreeCommands } from "./commands/worktree";
 
 export function activate(context: vscode.ExtensionContext) {
@@ -265,6 +269,11 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
   );
+
+  // Archive / unarchive Specs + TEPs and the per-view "Show archived" toggle
+  // (TEP-tg86v7); seed both toggles from persisted state, like the boards filter.
+  registerArchiveCommands(context, { specsProvider, tepsProvider });
+  seedArchivedFilters(context, { specsProvider, tepsProvider });
 
   // "Start Spec in Worktree": create the Spec's git worktree and open a session
   // rooted there, so parallel Specs never share a working tree (SP-5).
