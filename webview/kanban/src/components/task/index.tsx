@@ -126,7 +126,11 @@ export function Task({
                     <span className={styles.acBox}>
                       {c.checked ? "☑" : "☐"}
                     </span>
-                    <span className={styles.acLabel}>{c.label}</span>
+                    <span className={styles.acLabel}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {c.label}
+                      </ReactMarkdown>
+                    </span>
                   </li>
                 ))}
               </ul>

@@ -31,11 +31,6 @@ interface PanelDeps {
   /** Open the full detail view for an issue (e.g. its GitHub page). */
   openDetail?: (id: string) => void | Promise<void>;
   /**
-   * "New Spec" header button: open a Claude session with `/spec-prepare <n>`
-   * prefilled. Absent on adapters with no backing repo (the demo board).
-   */
-  onCreateSpec?: () => void | Promise<void>;
-  /**
    * Acceptance card's "Accept Spec" button (TEP-0010): run the acceptance gate,
    * stamp `accepted:`, and merge the Spec's single PR. Throws (with a reason) on
    * a gate refusal or merge failure. Absent on adapters with no backing repo.
@@ -53,7 +48,6 @@ export class KanbanPanel implements vscode.Disposable {
   private readonly openDetail:
     | ((id: string) => void | Promise<void>)
     | undefined;
-  private readonly onCreateSpec: (() => void | Promise<void>) | undefined;
   private readonly onAcceptSpec:
     | ((spec: string) => void | Promise<void>)
     | undefined;
@@ -70,7 +64,6 @@ export class KanbanPanel implements vscode.Disposable {
     this.extensionUri = deps.extensionUri;
     this.output = deps.output;
     this.openDetail = deps.openDetail;
-    this.onCreateSpec = deps.onCreateSpec;
     this.onAcceptSpec = deps.onAcceptSpec;
     this.key = key;
   }
@@ -220,20 +213,6 @@ export class KanbanPanel implements vscode.Disposable {
           await vscode.env.openExternal(vscode.Uri.parse(message.url));
         } else {
           this.log(`open-external refused non-http(s) url: ${message.url}`);
-        }
-        break;
-      case "create-spec":
-        if (!this.onCreateSpec) {
-          this.notify("info", "New Spec isn't available on this board.");
-          break;
-        }
-        try {
-          await this.onCreateSpec();
-        } catch (err) {
-          this.notify(
-            "error",
-            `Couldn't start the new spec: ${(err as Error).message}`,
-          );
         }
         break;
       case "accept-spec": {

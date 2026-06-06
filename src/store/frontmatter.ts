@@ -21,6 +21,7 @@ import { parse as yamlParse, stringify as yamlStringify } from "yaml";
 export type Kind =
   | "spec"
   | "slice"
+  | "tep"
   | "decision"
   | "retro"
   // legacy GitHub-backed kinds — removed once their consumers go (migration phases 5–7)
@@ -37,8 +38,18 @@ export interface Frontmatter {
   parent?: string;
   /** Theme grouping tag (sits above the Spec; not a tier). */
   theme?: string;
-  /** Board column / lifecycle status. */
-  status?: "ready" | "doing" | "done" | "archived" | "draft" | "active";
+  /** Board column / lifecycle status. Slices use ready|doing|done|archived;
+   *  TEPs use proposed|accepted|superseded (TEP-0009); draft|active are legacy. */
+  status?:
+    | "ready"
+    | "doing"
+    | "done"
+    | "archived"
+    | "draft"
+    | "active"
+    | "proposed"
+    | "accepted"
+    | "superseded";
   /** Optional slice due date (yyyy-mm-dd). */
   due?: string;
   /** Optional slice priority. */
@@ -57,6 +68,10 @@ export interface Frontmatter {
   created?: string;
   /** Spec-level: ISO timestamp the human accepted the Spec (set by `accept_spec`, TEP-0010). */
   accepted?: string;
+  /** Spec-level: the TEP this Spec implements, e.g. `TEP-0009` (TEP-0009 link). */
+  implements?: string;
+  /** TEP-level: the Specs that deliver this TEP, e.g. `["SP-tg7y99"]` (TEP-0009 link). */
+  implemented_by?: string[];
   /** `owner/name`; the repo this board belongs to. */
   repo?: string;
   // ── legacy GitHub-backed model (removed once consumers go, phases 5–7) ──

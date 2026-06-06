@@ -42,13 +42,21 @@ import {
   scanForSecrets,
   serializeFrontmatter,
 } from "./frontmatter";
+import { mintEpochId } from "./ids";
 
-export type ListableKind = "epic" | "story" | "spec" | "decision" | "retro";
+export type ListableKind =
+  | "epic"
+  | "story"
+  | "spec"
+  | "tep"
+  | "decision"
+  | "retro";
 
 const KIND_TO_DIR: Record<ListableKind, string> = {
   epic: "epics",
   story: "stories",
   spec: "specs",
+  tep: "teps",
   decision: "decisions",
   retro: "retros",
 };
@@ -57,6 +65,7 @@ const KIND_TO_PREFIX: Record<Exclude<ListableKind, "retro">, string> = {
   epic: "EP",
   story: "ST",
   spec: "SP",
+  tep: "TEP",
   decision: "ADR",
 };
 
@@ -246,6 +255,49 @@ export class ThinkubeStore implements vscode.Disposable {
     return `SP-${specNumber}_SL-${sliceNumber}`;
   }
 
+  // ─── Tandem: TEPs (flat files, the orthogonal *why* axis — TEP-0009) ──────
+  //   .thinkube/teps/TEP-{id}.md      one Tandem Enhancement Proposal per file
+
+  /** Canonical path for a NEW TEP document (slugless). Legacy TEPs may carry a
+   *  `-{slug}` suffix in the filename — use `findTep` to resolve those. */
+  pathForTep(tepId: string): string {
+    return `${KIND_TO_DIR.tep}/TEP-${tepId}.md`;
+  }
+
+  /** Match a TEP filename: `TEP-{id}.md` or legacy `TEP-{id}-{slug}.md`. The id
+   *  is the segment after `TEP-` up to the first `-` or `.md`. Excludes the
+   *  `TEP-TEMPLATE.md` scaffold. */
+  private static readonly TEP_FILE_RE = /^TEP-([A-Za-z0-9]+)(?:-.*)?\.md$/;
+
+  /** TEPs under `teps/` as `{ id, relativePath }`, sorted by id. Tolerates the
+   *  legacy `TEP-{id}-{slug}.md` names by returning the real file path (the id
+   *  alone can't reconstruct a slugged filename). */
+  async listTeps(): Promise<{ id: string; relativePath: string }[]> {
+    const dir = path.join(this.thinkubeDir, KIND_TO_DIR.tep);
+    let names: string[];
+    try {
+      names = await fs.readdir(dir);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw err;
+    }
+    const out: { id: string; relativePath: string }[] = [];
+    for (const n of names) {
+      const m = ThinkubeStore.TEP_FILE_RE.exec(n);
+      if (m && m[1] !== "TEMPLATE")
+        out.push({ id: m[1], relativePath: `${KIND_TO_DIR.tep}/${n}` });
+    }
+    return out.sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  /** Resolve a TEP id to its real file path (slugless or legacy slugged), or
+   *  undefined if absent. Used to open the TEP behind a spec's `implements:`. */
+  async findTep(tepId: string): Promise<string | undefined> {
+    for (const t of await this.listTeps())
+      if (t.id === tepId) return t.relativePath;
+    return undefined;
+  }
+
   /** Spec ids (the `SP-{id}` folders) under `specs/`, sorted. Ids are opaque
    *  strings — base36-epoch for new Specs, legacy integers for old ones. */
   async listSpecDirs(): Promise<string[]> {
@@ -299,10 +351,21 @@ export class ThinkubeStore implements vscode.Disposable {
    *  independent writers never collide; the in-process monotonic guard keeps a
    *  single writer from reusing its own last second. */
   async nextSpecNumber(): Promise<string> {
-    let epoch = Math.floor(Date.now() / 1000);
-    if (epoch <= lastMintedEpoch) epoch = lastMintedEpoch + 1;
+    const { id, epoch } = mintEpochId(Date.now(), lastMintedEpoch);
     lastMintedEpoch = epoch;
-    return epoch.toString(36).padStart(6, "0");
+    return id;
+  }
+
+  /** Next TEP id: a zero-padded base36 epoch (TEP-0009), minted exactly like a
+   *  Spec id and sharing the same process-wide monotonic guard — so a shared
+   *  sidecar never collides across collaborators, and a single writer never
+   *  reuses a second across spec/TEP mints. The id parser (`listTeps`, and the
+   *  `TEP-<id>` regex) already accepts both this epoch form and the legacy
+   *  sequential `TEP-0009` form, as it does for specs. */
+  async nextTepId(): Promise<string> {
+    const { id, epoch } = mintEpochId(Date.now(), lastMintedEpoch);
+    lastMintedEpoch = epoch;
+    return id;
   }
 
   /** Next per-Spec Slice number = highest existing `SL-{m}` under that Spec + 1. */

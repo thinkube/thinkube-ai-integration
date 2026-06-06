@@ -651,17 +651,30 @@ const TOOL_DEFS = [
     },
   },
   {
-    name: "write_decision",
+    name: "write_tep",
     description:
-      "Append a new ADR at `.thinkube/decisions/ADR-{n}.md` (n is auto-incremented).",
+      "Write a Tandem Enhancement Proposal at `teps/TEP-<id>.md` in the board (the sidecar namespace), creating it if absent (TEP-0009). The board-aware write path for `/tep` — use it instead of a raw file write. Omit `tep` to mint a conflict-free base36-epoch id; pass it to update an existing TEP. On create, the body defaults to the `TEP-TEMPLATE.md` scaffold and canonical frontmatter (kind/id/status/created/implemented_by) is filled; on update, existing frontmatter is preserved. `title`/`status` set those fields.",
     inputSchema: {
       type: "object",
       properties: {
-        title: { type: "string" },
-        body: { type: "string" },
+        tep: {
+          type: "string",
+          description:
+            "TEP id (with or without the `TEP-` prefix). Omit to mint a new base36-epoch id.",
+        },
+        title: { type: "string", description: "TEP title (frontmatter)." },
+        status: {
+          type: "string",
+          description: "Lifecycle status: proposed | accepted | superseded.",
+        },
+        body: {
+          type: "string",
+          description:
+            "The TEP markdown body. Omit on create to scaffold from TEP-TEMPLATE.md.",
+        },
         ...BOARD_PARAM,
       },
-      required: ["title", "body"],
+      required: [],
       additionalProperties: false,
     },
   },
@@ -742,13 +755,14 @@ async function dispatchTool(
         asString(args, "slice"),
         asString(args, "body"),
       );
-    case "write_decision":
+    case "write_tep":
       writeGate(name);
-      return writeDecision(
-        store,
-        asString(args, "title"),
-        asString(args, "body"),
-      );
+      return writeTep(store, {
+        tep: optString(args, "tep"),
+        title: optString(args, "title"),
+        status: optString(args, "status"),
+        body: optString(args, "body"),
+      });
     case "write_retro_note":
       writeGate(name);
       return writeRetroNote(store, asString(args, "body"));
@@ -1193,27 +1207,55 @@ async function updateSlice(
   };
 }
 
-async function writeDecision(
+/**
+ * Write a TEP into the board (TEP-0009) — the board-aware path for `/tep`.
+ * Omit `tep` to mint a conflict-free base36-epoch id; pass it to update an
+ * existing one. On create the body defaults to the `TEP-TEMPLATE.md` scaffold
+ * and canonical frontmatter is filled; on update existing frontmatter is
+ * preserved (only `title`/`status` are overlaid).
+ */
+async function writeTep(
   store: ThinkubeStore,
-  title: string,
-  body: string,
+  args: { tep?: string; title?: string; status?: string; body?: string },
 ): Promise<unknown> {
-  // Find the next ADR number — list existing decisions, pick max + 1.
-  const existing = await store.listKind("decision");
-  const max = existing
-    .map((p) => /ADR-(\d+)\.md$/.exec(p))
-    .map((m) => (m ? Number(m[1]) : 0))
-    .reduce((a, b) => Math.max(a, b), 0);
-  const n = max + 1;
-  const rel = store.pathFor("decision", n);
-  const frontmatter = {
-    kind: "decision" as const,
-    status: "active" as const,
-    created: new Date().toISOString().slice(0, 10),
+  const provided = args.tep?.trim().replace(/^TEP-/i, "");
+  const tepId =
+    provided && provided.length ? provided : await store.nextTepId();
+  const rel = store.pathForTep(tepId);
+  const existing = await store.getFile(rel);
+
+  // Body: explicit > existing > template scaffold (create only).
+  let body = args.body?.trim();
+  if (!body) {
+    if (existing?.body) body = existing.body;
+    else {
+      const tmpl = await store.getFile(store.pathForTep("TEMPLATE"));
+      body = tmpl?.body ?? `# TEP-${tepId} — <title>\n`;
+    }
+  }
+
+  // Frontmatter: preserve on update; scaffold canonical fields on create.
+  const fm: Frontmatter = existing?.frontmatter
+    ? { ...existing.frontmatter }
+    : {
+        kind: "tep",
+        id: `TEP-${tepId}`,
+        status: "proposed",
+        created: new Date().toISOString().slice(0, 10),
+        implemented_by: [],
+      };
+  if (!fm.kind) fm.kind = "tep";
+  if (!fm.id) fm.id = `TEP-${tepId}`;
+  if (args.title) fm.title = args.title;
+  if (args.status) fm.status = args.status as Frontmatter["status"];
+
+  await store.writeFile(rel, fm, body.endsWith("\n") ? body : `${body}\n`);
+  return {
+    ok: true,
+    tep: `TEP-${tepId}`,
+    relativePath: rel,
+    created: existing === undefined,
   };
-  const fileBody = `# ${title}\n\n${body}\n`;
-  await store.writeFile(rel, frontmatter, fileBody);
-  return { relativePath: rel, number: n };
 }
 
 async function writeRetroNote(

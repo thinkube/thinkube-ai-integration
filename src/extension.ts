@@ -24,6 +24,8 @@ import { SessionLinkService } from "./services/SessionLinkService";
 import { ConfigTreeProvider } from "./views/sidebar/ConfigTreeProvider";
 import { BoardNavigatorProvider } from "./views/boards/BoardNavigatorProvider";
 import { SpecsProvider } from "./views/boards/SpecsProvider";
+import { TepsProvider } from "./views/boards/TepsProvider";
+import { ThinkubeStore } from "./store/ThinkubeStore";
 import { registerBoardCommands, seedBoardsFilter } from "./commands/boards";
 import { registerWorktreeCommands } from "./commands/worktree";
 
@@ -185,9 +187,17 @@ export function activate(context: vscode.ExtensionContext) {
   const specsView = vscode.window.createTreeView("thinkubeSpecs", {
     treeDataProvider: specsProvider,
   });
+  // TEPs section (TEP-0009): peer to Specs, lists the selected space's
+  // teps/TEP-{id}.md; clicking opens the proposal. Scoped by the same
+  // navigator selection that scopes Specs.
+  const tepsProvider = new TepsProvider();
+  const tepsView = vscode.window.createTreeView("thinkubeTeps", {
+    treeDataProvider: tepsProvider,
+  });
   context.subscriptions.push(
     boardsView,
     specsView,
+    tepsView,
     boardsView.onDidChangeSelection((e) => {
       const node = e.selection[0];
       const repo =
@@ -199,11 +209,61 @@ export function activate(context: vscode.ExtensionContext) {
       if (repo) {
         specsProvider.setRepo(repo);
         specsView.description = repo.name;
+        tepsProvider.setRepo(repo);
+        tepsView.description = repo.name;
       }
     }),
     vscode.commands.registerCommand("thinkube.specs.refresh", () =>
       specsProvider.refresh(),
     ),
+    // "+ New Spec" on the Specs section header — mint the next Spec id from the
+    // selected space's board and open `/spec-prepare <n>` (sidebar-consistent
+    // with "+ New TEP"; the kanban webview no longer owns this).
+    vscode.commands.registerCommand("thinkube.specs.new", async () => {
+      const repo = specsProvider.repoEntry;
+      if (!repo || !repo.enabled) {
+        vscode.window.showInformationMessage(
+          "Select an enabled thinking space to add a Spec.",
+        );
+        return;
+      }
+      try {
+        const store = new ThinkubeStore(repo.path, repo.boardDir);
+        const n = await store.nextSpecNumber();
+        await launcher.openHere(
+          vscode.Uri.file(repo.path),
+          `/spec-prepare ${n} `,
+        );
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          `Couldn't start a new spec: ${(err as Error).message}`,
+        );
+      }
+    }),
+    vscode.commands.registerCommand("thinkube.teps.refresh", () =>
+      tepsProvider.refresh(),
+    ),
+    // "+ New TEP" (TEP-0009): mint a conflict-free id from the selected space's
+    // board and open a Claude session with `/tep <id>` prefilled — mirrors
+    // "+ New Spec" → `/spec-prepare <n>`.
+    vscode.commands.registerCommand("thinkube.teps.new", async () => {
+      const repo = tepsProvider.repoEntry;
+      if (!repo || !repo.enabled) {
+        vscode.window.showInformationMessage(
+          "Select an enabled thinking space to add a TEP.",
+        );
+        return;
+      }
+      try {
+        const store = new ThinkubeStore(repo.path, repo.boardDir);
+        const id = await store.nextTepId();
+        await launcher.openHere(vscode.Uri.file(repo.path), `/tep ${id} `);
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          `Couldn't start a new TEP: ${(err as Error).message}`,
+        );
+      }
+    }),
   );
 
   // "Start Spec in Worktree": create the Spec's git worktree and open a session

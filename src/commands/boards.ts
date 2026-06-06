@@ -183,19 +183,8 @@ async function openBoardFor(
         vscode.Uri.file(path.join(store.thinkubeDir, rel)),
       );
     },
-    // "New Spec" header button: mint the next Spec id and open a Claude session
-    // rooted in the repo with /spec-prepare prefilled — spec authoring is a
-    // conversation (ADR-0003), so the button only starts it in the right place
-    // with the right id. SP-7: ids are conflict-free base36-epoch strings, so
-    // the SP-5 canonical-repo round-trip (which existed only to keep `max+1`
-    // unique across worktrees) is gone.
-    onCreateSpec: async () => {
-      const n = await store.nextSpecNumber();
-      await deps.launcher.openHere(
-        vscode.Uri.file(r.path),
-        `/spec-prepare ${n} `,
-      );
-    },
+    // ("+ New Spec" now lives on the sidebar Specs section header, consistent
+    // with "+ New TEP" — see thinkube.specs.new in extension.ts.)
     // Acceptance card's "Accept Spec" (TEP-0010): the single human gate at the
     // end of a Spec. Re-run the acceptance gate (every slice Done + every AC
     // checked), stamp `accepted:` on the Spec doc, then merge the Spec's one PR.
