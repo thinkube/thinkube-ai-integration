@@ -11,6 +11,7 @@ import {
   gateForTandemTransition,
   gateSliceSatisfiesToDone,
   gateSpecAcceptance,
+  resolveDocsObligation,
   runTandemGate,
 } from "./qualityGates";
 
@@ -152,4 +153,44 @@ test("satisfies gate: an out-of-range ordinal is refused, not silently passed", 
   });
   assert.equal(r.ok, false);
   assert.match((r as { reason: string }).reason, /#9/);
+});
+
+// ── docs obligation (TEP-tgh6iy) ───────────────────────────────────────────
+
+test("docs obligation: defaults to required when omitted (fail closed)", () => {
+  const r = resolveDocsObligation({});
+  assert.equal(r.ok, true);
+  assert.deepEqual((r as { value: unknown }).value, { docs: "required" });
+});
+
+test("docs obligation: explicit required ignores any stray reason", () => {
+  const r = resolveDocsObligation({ docs: "required", docs_reason: "x" });
+  assert.equal(r.ok, true);
+  assert.deepEqual((r as { value: unknown }).value, { docs: "required" });
+});
+
+test("docs obligation: n/a with a reason is accepted and carries it", () => {
+  const r = resolveDocsObligation({ docs: "n/a", docs_reason: "test-only change" });
+  assert.equal(r.ok, true);
+  assert.deepEqual((r as { value: unknown }).value, {
+    docs: "n/a",
+    docs_reason: "test-only change",
+  });
+});
+
+test("docs obligation: n/a without a reason is refused", () => {
+  const r = resolveDocsObligation({ docs: "n/a" });
+  assert.equal(r.ok, false);
+  assert.match((r as { reason: string }).reason, /docs_reason/);
+});
+
+test("docs obligation: n/a with a blank reason is refused", () => {
+  const r = resolveDocsObligation({ docs: "n/a", docs_reason: "   " });
+  assert.equal(r.ok, false);
+});
+
+test("docs obligation: an invalid value is refused", () => {
+  const r = resolveDocsObligation({ docs: "maybe" });
+  assert.equal(r.ok, false);
+  assert.match((r as { reason: string }).reason, /expected "required" or "n\/a"/);
 });

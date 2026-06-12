@@ -28,6 +28,7 @@ Quality gates (file checks, enforced by the kanban panel):
 
 - → Ready: the slice's parent Spec has a non-empty `## Acceptance Criteria`.
 - → Done: verifier green for the slice, and the AC it satisfies is checked on the Spec. (Reviewer + verifier both run in this one gate — no Review/Verify handoff.)
+- → Done (docs, TEP-tgh6iy): a slice carries a `docs:` obligation — `required` (the default for **user-facing** work: a feature, CLI, API, config surface, install/upgrade step, or template behavior a reader can observe) or `n/a` + a one-line `docs_reason`. A `docs: required` slice can't reach Done until its documentation is updated; `/slice` stamps `docs:` per slice and the server rejects an `n/a` with no reason, so skipping docs is always visible and deliberate. Docs live **with the code** (docs-with-code): the `.adoc` module ships in the same repo and commit as the change, aggregated into the site by the docs playbook.
 
 Rules:
 

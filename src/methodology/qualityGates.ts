@@ -300,3 +300,39 @@ export class GateFailedError extends Error {
     this.name = "GateFailedError";
   }
 }
+
+// ── Documentation obligation (TEP-tgh6iy) ──────────────────────────────────
+
+export type DocsObligation = { docs: "required" | "n/a"; docs_reason?: string };
+
+/**
+ * Normalize + validate a slice's documentation obligation (TEP-tgh6iy).
+ * Default is `required` — fail closed: user-facing work is assumed unless the
+ * slicer declares `n/a`, which must carry a one-line reason so skipping docs is
+ * a visible, deliberate choice, never silent. Pure: returns a result, never
+ * throws — the caller decides how to surface a rejection.
+ */
+export function resolveDocsObligation(input: {
+  docs?: string | undefined;
+  docs_reason?: string | undefined;
+}): { ok: true; value: DocsObligation } | { ok: false; reason: string } {
+  const docs = (input.docs ?? "required").trim();
+  if (docs !== "required" && docs !== "n/a") {
+    return {
+      ok: false,
+      reason: `Invalid docs "${input.docs}" — expected "required" or "n/a".`,
+    };
+  }
+  const docs_reason = input.docs_reason?.trim() || undefined;
+  if (docs === "n/a" && !docs_reason) {
+    return {
+      ok: false,
+      reason:
+        "docs: n/a requires a one-line docs_reason justifying why this slice needs no documentation (TEP-tgh6iy) — skipping docs must be a visible, deliberate choice.",
+    };
+  }
+  return {
+    ok: true,
+    value: docs === "n/a" ? { docs, docs_reason } : { docs: "required" },
+  };
+}

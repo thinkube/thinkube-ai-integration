@@ -55,6 +55,7 @@ import { requirementHash } from "../methodology/specChange";
 import {
   gateSliceSatisfiesToDone,
   gateSpecAcceptance,
+  resolveDocsObligation,
 } from "../methodology/qualityGates";
 import { ThinkubeStore } from "../store/ThinkubeStore";
 import type { Frontmatter } from "../store/frontmatter";
@@ -599,6 +600,17 @@ const TOOL_DEFS = [
           description:
             "1-based AC ordinals this slice delivers (positions in the parent Spec's `## Acceptance Criteria`). Arms the → Done gate: the slice can't reach Done until each listed criterion is checked on the Spec.",
         },
+        docs: {
+          type: "string",
+          enum: ["required", "n/a"],
+          description:
+            "Documentation obligation (TEP-tgh6iy). `required` (default) arms the → Done docs gate for user-facing work; `n/a` skips it but requires `docs_reason`. Internal refactors / test-only / infra are `n/a`.",
+        },
+        docs_reason: {
+          type: "string",
+          description:
+            "One-line justification, required when `docs: n/a` — why this slice needs no documentation.",
+        },
         priority: {
           type: "string",
           enum: ["P0", "P1", "P2", "P3"],
@@ -737,6 +749,8 @@ async function dispatchTool(
         depends_on: optStringArray(args, "depends_on"),
         parallel: optBoolean(args, "parallel"),
         satisfies: optNumberArray(args, "satisfies"),
+        docs: optString(args, "docs"),
+        docs_reason: optString(args, "docs_reason"),
         priority: optString(args, "priority"),
       });
     case "write_spec":
@@ -1055,6 +1069,8 @@ async function createSlice(
     parallel?: boolean;
     satisfies?: number[];
     priority?: string;
+    docs?: string;
+    docs_reason?: string;
   },
 ): Promise<unknown> {
   const title = args.title.trim();
@@ -1082,6 +1098,14 @@ async function createSlice(
     }
   }
 
+  // Documentation obligation (TEP-tgh6iy). Default `required` (fail closed);
+  // `n/a` must justify. The rule lives in the methodology gates module.
+  const docsResult = resolveDocsObligation({
+    docs: args.docs,
+    docs_reason: args.docs_reason,
+  });
+  if (!docsResult.ok) throw new Error(docsResult.reason);
+
   // Creation-time → Ready gate: parent Spec present with non-empty AC.
   const specDoc = await store.getFile(store.pathForSpecDoc(args.spec));
   if (!specDoc) {
@@ -1106,6 +1130,9 @@ async function createSlice(
   if (args.parallel) fm.parallel = true;
   if (args.satisfies?.length)
     fm.satisfies = [...new Set(args.satisfies)].sort((a, b) => a - b);
+  fm.docs = docsResult.value.docs;
+  if (docsResult.value.docs_reason)
+    fm.docs_reason = docsResult.value.docs_reason;
   if (args.priority) fm.priority = args.priority as Frontmatter["priority"];
 
   const rel = store.pathForSlice(args.spec, sliceNumber);

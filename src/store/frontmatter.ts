@@ -64,6 +64,12 @@ export interface Frontmatter {
   depends_on?: string[];
   /** 1-based AC ordinals this slice delivers; the → Done gate checks each is ticked on the parent Spec. */
   satisfies?: number[];
+  /** Documentation obligation (TEP-tgh6iy). `required` (default for user-facing
+   *  work) arms the → Done docs gate; `n/a` skips it but must carry `docs_reason`. */
+  docs?: "required" | "n/a";
+  /** One-line justification, required when `docs: n/a` — so skipping docs is a
+   *  visible, deliberate choice, never silent (TEP-tgh6iy). */
+  docs_reason?: string;
   /** ISO date the file was created. */
   created?: string;
   /** Spec-level: ISO timestamp the human accepted the Spec (set by `accept_spec`, TEP-0010). */
