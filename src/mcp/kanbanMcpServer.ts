@@ -55,7 +55,9 @@ import { requirementHash } from "../methodology/specChange";
 import {
   gateSliceSatisfiesToDone,
   gateSpecAcceptance,
+  gateSliceDocsToDone,
   resolveDocsObligation,
+  type DocsGateMode,
 } from "../methodology/qualityGates";
 import { ThinkubeStore } from "../store/ThinkubeStore";
 import type { Frontmatter } from "../store/frontmatter";
@@ -81,6 +83,8 @@ interface ServerEnv {
   /** Central board root; when set, boards live at <root>/<container>/<rel>. */
   boardRoot?: string;
   allowAIWrites: boolean;
+  /** → Done docs gate mode (TEP-tgh6iy): advisory warns, blocking refuses. */
+  docsGateMode: DocsGateMode;
   legacyWorkspace?: string;
 }
 
@@ -106,11 +110,16 @@ function readEnv(): ServerEnv {
   const legacyWorkspace = (process.env.THINKUBE_WORKSPACE ?? "").trim();
   const allowAIWrites =
     (process.env.THINKUBE_ALLOW_AI_WRITES ?? "true").toLowerCase() === "true";
+  const docsGateMode: DocsGateMode =
+    (process.env.THINKUBE_DOCS_GATE_MODE ?? "").toLowerCase() === "blocking"
+      ? "blocking"
+      : "advisory";
   return {
     roots,
     folders,
     boardRoot,
     allowAIWrites,
+    docsGateMode,
     legacyWorkspace: legacyWorkspace || undefined,
   };
 }
@@ -526,7 +535,7 @@ const TOOL_DEFS = [
   {
     name: "move_slice",
     description:
-      "Move a slice to a different column by setting its `status:` frontmatter. Status must be one of: Ready, Doing, Done. Moving to Done is REFUSED unless every acceptance criterion the slice lists in `satisfies` is checked on the parent Spec (the error names the offending criterion); slices with no `satisfies` are not gated. On a successful Done it stamps the slice's `verified_req_hash` from the parent Spec so a later requirement edit re-flags it stale.",
+      "Move a slice to a different column by setting its `status:` frontmatter. Status must be one of: Ready, Doing, Done. Moving to Done is REFUSED unless every acceptance criterion the slice lists in `satisfies` is checked on the parent Spec (the error names the offending criterion); slices with no `satisfies` are not gated. The → Done **docs gate** (TEP-tgh6iy) also applies: a `docs: required` slice must have its documentation done — pass `docs_done: true` once you've updated the doc module. In blocking mode an unsatisfied obligation is refused; in advisory mode (default) the move returns a `docsWarning`. On a successful Done it stamps the slice's `verified_req_hash` from the parent Spec so a later requirement edit re-flags it stale.",
     inputSchema: {
       type: "object",
       properties: {
@@ -537,6 +546,11 @@ const TOOL_DEFS = [
         status: {
           type: "string",
           enum: ["Ready", "Doing", "Done"],
+        },
+        docs_done: {
+          type: "boolean",
+          description:
+            "Attest that a `docs: required` slice's documentation was updated in this slice (TEP-tgh6iy). Satisfies the → Done docs gate; persisted as `docs_done` on the slice. Only meaningful when moving to Done.",
         },
         ...BOARD_PARAM,
       },
@@ -722,11 +736,10 @@ async function dispatchTool(
       return getThinkubeFile(store, asString(args, "relative_path"));
     case "move_slice":
       writeGate(name);
-      return moveSlice(
-        store,
-        asString(args, "slice"),
-        asString(args, "status"),
-      );
+      return moveSlice(store, asString(args, "slice"), asString(args, "status"), {
+        docsGateMode: ctx.env.docsGateMode,
+        docsDone: optBoolean(args, "docs_done"),
+      });
     case "accept_spec":
       writeGate(name);
       return acceptSpec(
@@ -942,6 +955,9 @@ async function moveSlice(
   store: ThinkubeStore,
   handle: string,
   status: string,
+  opts: { docsGateMode: DocsGateMode; docsDone?: boolean } = {
+    docsGateMode: "advisory",
+  },
 ): Promise<unknown> {
   const target = status.trim().toLowerCase() as (typeof VALID_STATUSES)[number];
   if (!VALID_STATUSES.includes(target)) {
@@ -955,9 +971,13 @@ async function moveSlice(
   if (!parsed) throw new Error(`No slice file at ${store.thinkubeDir}/${rel}`);
 
   const fm: Frontmatter = { ...(parsed.frontmatter ?? {}), status: target };
+  // Attest the documentation obligation (TEP-tgh6iy): a caller updating the doc
+  // module in this slice passes docs_done so the gate below is satisfied.
+  if (opts.docsDone === true) fm.docs_done = true;
 
   let baselineStamped = false;
   let gateSkipped: string | undefined;
+  let docsWarning: string | undefined;
   if (target === "done") {
     // Read the parent Spec once — both the → Done gate and the baseline stamp
     // need its body. A read failure leaves `specBody` undefined; the gate then
@@ -983,6 +1003,17 @@ async function moveSlice(
     });
     if (!gate.ok) throw new Error(gate.reason);
     gateSkipped = gate.gateSkipped;
+
+    // → Done docs gate (TEP-tgh6iy): a `docs: required` slice must have its docs
+    // done. Blocking mode refuses (throws before any write); advisory mode lets
+    // the move through but returns a warning to surface in /pair-next.
+    const docsGate = gateSliceDocsToDone({
+      docs: typeof fm.docs === "string" ? fm.docs : undefined,
+      docsDone: fm.docs_done === true,
+      mode: opts.docsGateMode,
+    });
+    if (!docsGate.ok) throw new Error(docsGate.reason);
+    docsWarning = docsGate.warning;
 
     // Stamp the verification baseline so a later requirement edit re-flags this
     // slice stale. Best-effort — never fail the (already-gated) move on a
@@ -1016,6 +1047,7 @@ async function moveSlice(
     status: target,
     baselineStamped,
     ...(gateSkipped ? { gateSkipped } : {}),
+    ...(docsWarning ? { docsWarning } : {}),
   };
 }
 

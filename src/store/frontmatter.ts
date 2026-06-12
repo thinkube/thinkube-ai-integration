@@ -70,6 +70,9 @@ export interface Frontmatter {
   /** One-line justification, required when `docs: n/a` — so skipping docs is a
    *  visible, deliberate choice, never silent (TEP-tgh6iy). */
   docs_reason?: string;
+  /** Set true when a `docs: required` slice's documentation has been updated;
+   *  the → Done docs gate (TEP-tgh6iy) checks this — like a verifier-green stamp. */
+  docs_done?: boolean;
   /** ISO date the file was created. */
   created?: string;
   /** Spec-level: ISO timestamp the human accepted the Spec (set by `accept_spec`, TEP-0010). */

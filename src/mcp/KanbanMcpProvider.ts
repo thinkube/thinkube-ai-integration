@@ -55,7 +55,8 @@ export class KanbanMcpProvider implements vscode.McpServerDefinitionProvider<vsc
     const settingsListener = vscode.workspace.onDidChangeConfiguration((e) => {
       if (
         e.affectsConfiguration("thinkube.kanban.allowAIWrites") ||
-        e.affectsConfiguration("thinkube.kanban.mode")
+        e.affectsConfiguration("thinkube.kanban.mode") ||
+        e.affectsConfiguration("thinkube.kanban.docsGateMode")
       ) {
         provider.refresh();
       }
@@ -118,9 +119,14 @@ export class KanbanMcpProvider implements vscode.McpServerDefinitionProvider<vsc
       .getConfiguration("thinkube.boards")
       .get<string>("root")
       ?.trim();
+    // → Done docs gate mode (TEP-tgh6iy): advisory (default) warns, blocking
+    // refuses. Flipped to blocking once docs-with-code distribution is trusted.
+    const docsGateMode =
+      cfg.get<string>("docsGateMode") === "blocking" ? "blocking" : "advisory";
     const env: Record<string, string | number | null> = {
       THINKUBE_ALLOW_AI_WRITES: allowWrites ? "true" : "false",
       THINKUBE_MODE: mode,
+      THINKUBE_DOCS_GATE_MODE: docsGateMode,
     };
     if (roots) env.THINKUBE_ROOTS = roots;
     // Folder names carry the namespace container (Apps/Platform/…), so pass the

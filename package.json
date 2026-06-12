@@ -584,6 +584,15 @@
           "default": "both",
           "description": "Pair-programming role assignment. `navigator`: AI reads and proposes only (writes are blocked). `driver`: AI can write (typical when AI is leading implementation). `both`: either party can write at will (default)."
         },
+        "thinkube.kanban.docsGateMode": {
+          "type": "string",
+          "enum": [
+            "advisory",
+            "blocking"
+          ],
+          "default": "advisory",
+          "description": "→ Done documentation gate (TEP-tgh6iy). A slice marked `docs: required` must have its docs updated (pass `docs_done`) before reaching Done. `advisory` (default): the move is allowed but returns a warning — for rolling the gate out. `blocking`: an unsatisfied docs obligation refuses the move."
+        },
         "thinkube.worktree.baseDir": {
           "type": "string",
           "default": "",

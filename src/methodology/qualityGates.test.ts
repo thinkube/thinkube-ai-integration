@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 
 import {
   gateForTandemTransition,
+  gateSliceDocsToDone,
   gateSliceSatisfiesToDone,
   gateSpecAcceptance,
   resolveDocsObligation,
@@ -193,4 +194,33 @@ test("docs obligation: an invalid value is refused", () => {
   const r = resolveDocsObligation({ docs: "maybe" });
   assert.equal(r.ok, false);
   assert.match((r as { reason: string }).reason, /expected "required" or "n\/a"/);
+});
+
+// ── → Done docs gate (TEP-tgh6iy) ──────────────────────────────────────────
+
+test("docs gate: n/a slice is ungated in both modes", () => {
+  assert.equal(gateSliceDocsToDone({ docs: "n/a", mode: "blocking" }).ok, true);
+  assert.equal(gateSliceDocsToDone({ docs: "n/a", mode: "advisory" }).ok, true);
+});
+
+test("docs gate: a legacy slice (no docs field) is ungated", () => {
+  assert.equal(gateSliceDocsToDone({ mode: "blocking" }).ok, true);
+});
+
+test("docs gate: required + docs_done passes in blocking mode", () => {
+  const r = gateSliceDocsToDone({ docs: "required", docsDone: true, mode: "blocking" });
+  assert.equal(r.ok, true);
+  assert.equal((r as { warning?: string }).warning, undefined);
+});
+
+test("docs gate: required + unsatisfied is REFUSED in blocking mode", () => {
+  const r = gateSliceDocsToDone({ docs: "required", docsDone: false, mode: "blocking" });
+  assert.equal(r.ok, false);
+  assert.match((r as { reason: string }).reason, /docs_done/);
+});
+
+test("docs gate: required + unsatisfied PASSES with a warning in advisory mode", () => {
+  const r = gateSliceDocsToDone({ docs: "required", mode: "advisory" });
+  assert.equal(r.ok, true);
+  assert.match((r as { warning?: string }).warning ?? "", /advisory/);
 });

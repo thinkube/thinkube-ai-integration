@@ -336,3 +336,30 @@ export function resolveDocsObligation(input: {
     value: docs === "n/a" ? { docs, docs_reason } : { docs: "required" },
   };
 }
+
+export type DocsGateMode = "advisory" | "blocking";
+
+/**
+ * → Done docs gate (TEP-tgh6iy). A slice declaring `docs: required` must have
+ * its documentation done before it reaches Done. In `blocking` mode an
+ * unsatisfied obligation **refuses** the move; in `advisory` mode it **passes
+ * with a warning** so the gate can roll out before it bites. A slice that is
+ * `n/a`, or a legacy slice with no `docs` field, is ungated.
+ *
+ * Pure: no I/O. The caller reads `docs`/`docs_done` off the slice frontmatter
+ * and the mode off config, then surfaces `reason` (refusal) or `warning`.
+ */
+export function gateSliceDocsToDone(input: {
+  docs?: string | undefined;
+  docsDone?: boolean | undefined;
+  mode: DocsGateMode;
+}): { ok: true; warning?: string } | { ok: false; reason: string } {
+  // n/a or legacy/unset → ungated (mirrors the satisfies gate's skip).
+  if (input.docs !== "required") return { ok: true };
+  if (input.docsDone === true) return { ok: true };
+  const msg =
+    "docs: required — update this slice's documentation (docs-with-code) and pass docs_done before → Done (TEP-tgh6iy).";
+  return input.mode === "blocking"
+    ? { ok: false, reason: msg }
+    : { ok: true, warning: `${msg} [advisory — allowed, but please confirm]` };
+}
