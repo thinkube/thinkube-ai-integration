@@ -60,6 +60,13 @@
 .epic {
   font-weight: 600;
 }
+.slice {
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--vscode-badge-background, rgba(127, 127, 127, 0.25));
+  color: var(--vscode-badge-foreground, inherit);
+}
 .priority {
   font-weight: 700;
   font-size: 9px;

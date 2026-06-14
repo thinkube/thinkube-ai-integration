@@ -1184,7 +1184,9 @@ async function createSlice(
   fm.docs = docsResult.value.docs;
   if (docsResult.value.docs_reason)
     fm.docs_reason = docsResult.value.docs_reason;
-  if (args.priority) fm.priority = args.priority as Frontmatter["priority"];
+  // Priority is a mandatory slice attribute (always shown on the card) — default
+  // to P2 (normal) when the caller doesn't triage one explicitly.
+  fm.priority = (args.priority ?? "P2") as Frontmatter["priority"];
 
   const rel = store.pathForSlice(args.spec, sliceNumber);
   await store.writeFile(rel, fm, `# ${title}\n\n${args.body.trim()}\n`);

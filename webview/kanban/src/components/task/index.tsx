@@ -34,6 +34,12 @@ export function Task({
   const [body, setBody] = useState(task.body ?? "");
   const [due, setDue] = useState(task.dueDate ?? "");
   const canEdit = task.id !== undefined;
+  // The card id IS the handle SP-{n}_SL-{m}; surface the slice number as its own
+  // chip (the spec is already shown by the SP- chip).
+  const sliceNo = /_SL-(\d+)$/.exec(task.id)?.[1];
+  // Priority is a mandatory slice attribute — always render a chip; P2 (normal)
+  // stands in for any slice that predates the default.
+  const priority = task.priority ?? "P2";
 
   const startEdit = () => {
     setTitle(task.description);
@@ -196,15 +202,18 @@ export function Task({
                 SP-{task.parentId}
               </span>
             )}
-            {task.priority && (
-              <span
-                className={styles.priority}
-                data-level={task.priority}
-                title={`Priority ${task.priority}`}
-              >
-                {task.priority}
+            {sliceNo && (
+              <span className={styles.slice} title={`Slice ${task.id}`}>
+                SL-{sliceNo}
               </span>
             )}
+            <span
+              className={styles.priority}
+              data-level={priority}
+              title={`Priority ${priority}`}
+            >
+              {priority}
+            </span>
             <span className="grow" />
             {canEdit && !editing && (
               <>
