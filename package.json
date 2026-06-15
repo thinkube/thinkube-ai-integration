@@ -641,6 +641,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@octokit/rest": "^19.0.13",
+    "node-pty": "^1.0.0",
     "yaml": "^2.9.0"
   }
 }
