@@ -206,6 +206,10 @@ export class TmuxRegistry {
         return this.sendKeys(p);
       case "kill-session":
         return this.killSession(p);
+      case "kill-pane":
+        return this.killPane(p);
+      case "kill-window":
+        return this.killWindow(p);
       case "has-session":
         return this.hasSession(p);
       case "list-panes":
@@ -323,6 +327,29 @@ export class TmuxRegistry {
       }
     }
     this.sessions.delete(name);
+    return ok();
+  }
+
+  private killPane(p: ParsedTmux): DispatchResult {
+    // Claude ends a single teammate with `kill-pane -t %N` — dispose that pane's
+    // PTY + VS Code terminal so it doesn't linger as an empty shell prompt.
+    const id = this.normPane(p.opts["-t"] ?? "");
+    const entry = this.panes.get(id);
+    if (entry?.pane) {
+      entry.pane.kill();
+      this.panes.delete(id);
+    }
+    return ok();
+  }
+
+  private killWindow(p: ParsedTmux): DispatchResult {
+    const win = this.windowForTarget(p.opts["-t"]);
+    for (const [id, e] of [...this.panes]) {
+      if (e.windowId === win && e.pane) {
+        e.pane.kill();
+        this.panes.delete(id);
+      }
+    }
     return ok();
   }
 

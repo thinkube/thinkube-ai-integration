@@ -237,6 +237,20 @@ test("an unrecognised subcommand is logged and no-op'd", () => {
   assert.match(logs[0], /unrecognised tmux subcommand/);
 });
 
+test("kill-pane disposes the specific teammate pane (ends an agent)", () => {
+  const { factory, reg } = fixture();
+  reg.dispatch([...S, "split-window", "-t", "%0", "-P", "-F", "#{pane_id}"]); // %1
+  reg.dispatch([...S, "split-window", "-t", "%1", "-P", "-F", "#{pane_id}"]); // %2
+  reg.dispatch([...S, "kill-pane", "-t", "%1"]);
+  assert.equal(factory.byId("%1")!.killed, true);
+  assert.equal(factory.byId("%2")!.killed, false);
+  // %1 gone from the window; %0 (leader) + %2 remain.
+  assert.equal(
+    reg.dispatch([...S, "list-panes", "-t", "@0", "-F", "#{pane_id}"]).stdout,
+    "%0\n%2",
+  );
+});
+
 test("kill-session disposes a team session's panes (never the leader)", () => {
   const { factory, reg } = fixture();
   reg.dispatch([
