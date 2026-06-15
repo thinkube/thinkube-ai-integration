@@ -38,6 +38,7 @@ import {
   prependToPath,
   splitPath,
 } from "./tmuxShimInstall";
+import { createTmuxShimServer } from "./ipcServer";
 
 const COMPETING_TMUX_TOAST_KEY = "thinkube.tmuxShim.competingToastShown";
 
@@ -93,36 +94,9 @@ export class AgentTeamsShimServer implements vscode.Disposable {
       this.output.appendLine(`[tmux-shim] ${m}`),
     );
 
-    this.server = net.createServer((conn) => {
-      let buf = "";
-      conn.on("data", (chunk) => {
-        buf += chunk.toString("utf8");
-        const nl = buf.indexOf("\n");
-        if (nl === -1) return; // wait for the full request line
-        const line = buf.slice(0, nl);
-        let argv: string[] = [];
-        try {
-          const req = JSON.parse(line) as { argv?: unknown };
-          if (Array.isArray(req.argv)) argv = req.argv.map(String);
-        } catch {
-          this.output.appendLine(`[tmux-shim] bad request: ${line}`);
-        }
-        let res: { stdout: string; exitCode: number };
-        try {
-          res = registry.dispatch(argv);
-        } catch (err) {
-          // A handler fault must not take down Claude's display — log-and-no-op.
-          this.output.appendLine(
-            `[tmux-shim] dispatch error for ${argv.join(" ")}: ${(err as Error).message}`,
-          );
-          res = { stdout: "", exitCode: 0 };
-        }
-        conn.end(JSON.stringify(res) + "\n");
-      });
-      conn.on("error", () => {
-        /* client went away mid-request; nothing to clean up */
-      });
-    });
+    this.server = createTmuxShimServer(registry, (m) =>
+      this.output.appendLine(`[tmux-shim] ${m}`),
+    );
 
     await new Promise<void>((resolve, reject) => {
       this.server!.once("error", reject);
