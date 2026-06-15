@@ -1,9 +1,8 @@
 /**
- * Unit tests for the pure agent-teams `tmux` dispatcher (SP-tgnb5o_SL-1).
- * Run via `npm test`. No vscode/node-pty — a fake PaneFactory records spawns
- * and writes, so the reverse-engineered command surface (AC#2), the
- * `client_control_mode` probe (AC#3), and the log-and-no-op contract are all
- * verifiable headlessly.
+ * Unit tests for the pure agent-teams `tmux` dispatcher (SP-tgnb5o).
+ * Run via `npm test`. A fake PaneFactory records spawns + writes, so the
+ * CAPTURED command surface (global `-S`, leader/window model, shell panes, the
+ * split → send-keys teammate-launch flow) is verifiable headlessly.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -32,8 +31,8 @@ class FakeFactory implements PaneFactory {
       spec,
       writes: [],
       killed: false,
-      write(data: string) {
-        this.writes.push(data);
+      write(d) {
+        this.writes.push(d);
       },
       kill() {
         this.killed = true;
@@ -41,6 +40,9 @@ class FakeFactory implements PaneFactory {
     };
     this.panes.push(pane);
     return pane;
+  }
+  byId(id: string): FakePane | undefined {
+    return this.panes.find((p) => p.id === id);
   }
 }
 
@@ -52,194 +54,210 @@ function fixture() {
   return { factory, logs, reg };
 }
 
-test("parseTmuxArgs splits subcommand, value flags, booleans, and post-`--`", () => {
-  const p = parseTmuxArgs([
-    "new-session",
-    "-d",
-    "-s",
-    "team1",
-    "-P",
-    "-F",
-    "#{pane_id}",
-    "--",
-    "/usr/bin/node",
-    "teammate.js",
-    "--role=builder",
-  ]);
-  assert.equal(p.subcommand, "new-session");
-  assert.equal(p.opts["-s"], "team1");
+// The real socket prefix Claude passes before every subcommand.
+const S = ["-S", "/tmp/tmux-1000/default"];
+
+test("parseTmuxArgs skips the global -S flag to find the subcommand", () => {
+  const p = parseTmuxArgs([...S, "list-panes", "-t", "@0", "-F", "#{pane_id}"]);
+  assert.equal(p.subcommand, "list-panes");
+  assert.equal(p.opts["-t"], "@0");
   assert.equal(p.opts["-F"], "#{pane_id}");
-  assert.equal(p.opts["-d"], ""); // boolean flag
-  assert.equal(p.opts["-P"], "");
-  assert.deepEqual(p.rest, ["/usr/bin/node", "teammate.js", "--role=builder"]);
 });
 
-// AC#2: the subset is implemented and returns `#{pane_id}` handles.
-test("new-session spawns a teammate and returns the minted pane id via -F", () => {
-  const { factory, reg } = fixture();
-  const res = reg.dispatch([
-    "new-session",
-    "-d",
-    "-s",
-    "team1",
-    "-P",
-    "-F",
-    "#{pane_id}",
-    "--",
-    "node",
-    "teammate.js",
-  ]);
-  assert.equal(res.exitCode, 0);
-  assert.equal(res.stdout, "%0"); // first minted id, format-rendered
-  assert.equal(factory.panes.length, 1);
-  assert.deepEqual(factory.panes[0].spec.command, "node");
-  assert.deepEqual(factory.panes[0].spec.args, ["teammate.js"]);
-  assert.equal(factory.panes[0].spec.sessionName, "team1");
-});
-
-test("split-window adds a second pane to the session", () => {
-  const { factory, reg } = fixture();
-  reg.dispatch(["new-session", "-s", "t", "-P", "-F", "#{pane_id}", "--", "a"]);
-  const res = reg.dispatch([
+test("parseTmuxArgs treats -l as a size value for split-window (no stray positional)", () => {
+  const p = parseTmuxArgs([
+    ...S,
     "split-window",
     "-t",
-    "t",
+    "%0",
+    "-h",
+    "-l",
+    "70%",
     "-P",
     "-F",
     "#{pane_id}",
+  ]);
+  assert.equal(p.subcommand, "split-window");
+  assert.equal(p.opts["-l"], "70%"); // consumed as a value, not a command
+  assert.deepEqual(p.command, []);
+  assert.deepEqual(p.positionals, []);
+});
+
+test("parseTmuxArgs treats -l as boolean for send-keys; command is post-`--`", () => {
+  const p = parseTmuxArgs([
+    ...S,
+    "send-keys",
+    "-t",
+    "%1",
+    "-l",
     "--",
-    "b",
+    "cd /x && run",
   ]);
-  assert.equal(res.stdout, "%1");
-  assert.equal(factory.panes.length, 2);
-  assert.equal(reg.paneCount(), 2);
+  assert.equal(p.subcommand, "send-keys");
+  assert.equal(p.opts["-l"], "");
+  assert.deepEqual(p.command, ["cd /x && run"]);
 });
 
-// AC#2: send-keys literal + Enter route to the right pane's PTY.
-test("send-keys -l writes literal text and Enter writes a carriage return", () => {
+test("parseTmuxArgs keeps bare positionals (the Enter key) separate", () => {
+  const p = parseTmuxArgs([...S, "send-keys", "-t", "%1", "Enter"]);
+  assert.deepEqual(p.positionals, ["Enter"]);
+  assert.deepEqual(p.command, []);
+});
+
+// The captured teammate-create flow: split the leader → empty shell pane → type.
+test("split-window off the leader opens a shell pane and returns its id", () => {
   const { factory, reg } = fixture();
-  reg.dispatch(["new-session", "-s", "t", "-P", "-F", "#{pane_id}", "--", "a"]);
-  reg.dispatch(["send-keys", "-t", "t:0.%0", "-l", "--", "hello world"]);
-  reg.dispatch(["send-keys", "-t", "%0", "Enter"]);
-  assert.deepEqual(factory.panes[0].writes, ["hello world", "\r"]);
-});
-
-test("has-session reflects live sessions (exit 0 / 1)", () => {
-  const { reg } = fixture();
-  reg.dispatch(["new-session", "-s", "live", "-F", "#{pane_id}", "--", "a"]);
-  assert.equal(reg.dispatch(["has-session", "-t", "live"]).exitCode, 0);
-  assert.equal(reg.dispatch(["has-session", "-t", "ghost"]).exitCode, 1);
-});
-
-test("list-panes enumerates pane ids for a session", () => {
-  const { reg } = fixture();
-  reg.dispatch(["new-session", "-s", "t", "-F", "#{pane_id}", "--", "a"]);
-  reg.dispatch(["split-window", "-t", "t", "-F", "#{pane_id}", "--", "b"]);
-  const res = reg.dispatch(["list-panes", "-t", "t", "-F", "#{pane_id}"]);
-  assert.deepEqual(res.stdout.split("\n").sort(), ["%0", "%1"]);
-});
-
-test("kill-session disposes every pane in the session", () => {
-  const { factory, reg } = fixture();
-  reg.dispatch(["new-session", "-s", "t", "-F", "#{pane_id}", "--", "a"]);
-  reg.dispatch(["split-window", "-t", "t", "-F", "#{pane_id}", "--", "b"]);
-  reg.dispatch(["kill-session", "-t", "t"]);
-  assert.ok(factory.panes.every((p) => p.killed));
-  assert.equal(reg.paneCount(), 0);
-  assert.equal(reg.dispatch(["has-session", "-t", "t"]).exitCode, 1);
-});
-
-// AC#3: the iTerm2 control-mode probe must come back empty.
-test("display-message #{client_control_mode} returns empty (stays off the -CC path)", () => {
-  const { reg } = fixture();
-  const res = reg.dispatch(["display-message", "-p", "#{client_control_mode}"]);
-  assert.equal(res.exitCode, 0);
-  assert.equal(res.stdout, "");
-});
-
-test("display-message with -F also resolves client_control_mode to empty", () => {
-  const { reg } = fixture();
   const res = reg.dispatch([
-    "display-message",
-    "-p",
+    ...S,
+    "split-window",
+    "-t",
+    "%0",
+    "-h",
+    "-l",
+    "70%",
+    "-P",
     "-F",
-    "#{client_control_mode}",
+    "#{pane_id}",
   ]);
-  assert.equal(res.stdout, "");
+  assert.equal(res.stdout, "%1"); // %0 is the leader; first teammate is %1
+  assert.equal(factory.panes.length, 1);
+  // No command ⇒ the factory will spawn a shell (command undefined here).
+  assert.equal(factory.panes[0].spec.command, undefined);
 });
 
-// Constraint: unrecognised invocations are logged and no-op'd (never crash).
-test("unrecognised subcommand is logged and returns exit 0", () => {
-  const { logs, reg } = fixture();
-  const res = reg.dispatch(["capture-pane", "-t", "%0", "-p"]);
-  assert.equal(res.exitCode, 0);
-  assert.equal(res.stdout, "");
-  assert.equal(logs.length, 1);
-  assert.match(logs[0], /unrecognised tmux subcommand/);
-});
-
-test("cosmetic subcommands are silent no-ops", () => {
-  const { logs, reg } = fixture();
-  for (const sub of ["select-pane", "set-option", "resize-pane"]) {
-    assert.equal(reg.dispatch([sub, "-t", "%0"]).exitCode, 0);
-  }
-  assert.equal(logs.length, 0);
-});
-
-// Claude resolves its own current pane/window via display-message; empty here
-// caused "Could not determine current tmux pane/window" live (spike).
-test("display-message resolves a current pane/window context", () => {
+test("list-panes -t @0 reports the leader plus spawned teammate panes", () => {
   const { reg } = fixture();
   assert.equal(
-    reg.dispatch(["display-message", "-p", "#{pane_id}"]).stdout,
+    reg.dispatch([...S, "list-panes", "-t", "@0", "-F", "#{pane_id}"]).stdout,
+    "%0",
+  );
+  reg.dispatch([...S, "split-window", "-t", "%0", "-P", "-F", "#{pane_id}"]);
+  reg.dispatch([
+    ...S,
+    "split-window",
+    "-t",
+    "%1",
+    "-v",
+    "-P",
+    "-F",
+    "#{pane_id}",
+  ]);
+  assert.equal(
+    reg.dispatch([...S, "list-panes", "-t", "@0", "-F", "#{pane_id}"]).stdout,
+    "%0\n%1\n%2",
+  );
+});
+
+test("send-keys -l types the launch command into the pane; Enter sends a CR", () => {
+  const { factory, reg } = fixture();
+  reg.dispatch([...S, "split-window", "-t", "%0", "-P", "-F", "#{pane_id}"]);
+  const launch =
+    "cd /home/x && env CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 claude --agent-id a@duo";
+  reg.dispatch([...S, "send-keys", "-t", "%1", "-l", "--", launch]);
+  reg.dispatch([...S, "send-keys", "-t", "%1", "Enter"]);
+  assert.deepEqual(factory.byId("%1")!.writes, [launch, "\r"]);
+});
+
+test("send-keys to the leader pane (%0) is a no-op (it's a phantom)", () => {
+  const { factory, reg } = fixture();
+  reg.dispatch([...S, "send-keys", "-t", "%0", "-l", "--", "nope"]);
+  assert.equal(factory.panes.length, 0);
+});
+
+test("display-message resolves the leader's own pane/window context", () => {
+  const { reg } = fixture();
+  assert.equal(
+    reg.dispatch([...S, "display-message", "-t", "%0", "-p", "#{window_id}"])
+      .stdout,
+    "@0",
+  );
+  assert.equal(
+    reg.dispatch([...S, "display-message", "-p", "#{pane_id}"]).stdout,
     "%0",
   );
   assert.equal(
-    reg.dispatch([
-      "display-message",
-      "-p",
-      "#{session_name}:#{window_index}.#{pane_index}",
-    ]).stdout,
-    "default:0.0",
+    reg.dispatch([...S, "display-message", "-p", "#{client_control_mode}"])
+      .stdout,
+    "",
   );
 });
 
-// Init-probe surface the pane backend runs before committing to tmux (spike).
-test("tmux -V reports a version so the availability gate passes", () => {
+test("has-session: leader 'default' exists; unknown sessions don't", () => {
+  const { reg } = fixture();
+  assert.equal(
+    reg.dispatch([...S, "has-session", "-t", "default"]).exitCode,
+    0,
+  );
+  assert.equal(reg.dispatch([...S, "has-session", "-t", "ghost"]).exitCode, 1);
+});
+
+test("tmux -V passes the availability gate", () => {
   const { reg } = fixture();
   const res = reg.dispatch(["-V"]);
   assert.equal(res.exitCode, 0);
   assert.match(res.stdout, /tmux \d/);
 });
 
-test("show -gv focus-events / -Av mouse answer a non-'on' value", () => {
+test("config probes answer plausibly (mouse/focus off, prefix C-b)", () => {
   const { reg } = fixture();
   assert.equal(
-    reg.dispatch(["show", "-gv", "focus-events"]).stdout.trim(),
+    reg.dispatch([...S, "show", "-gv", "focus-events"]).stdout.trim(),
     "off",
   );
-  // -Av includes -v (value-only), so just the value comes back.
-  assert.equal(reg.dispatch(["show", "-Av", "mouse"]).stdout.trim(), "off");
-});
-
-test("show-options -g prefix returns the tmux default C-b", () => {
-  const { reg } = fixture();
+  assert.equal(
+    reg.dispatch([...S, "show", "-Av", "mouse"]).stdout.trim(),
+    "off",
+  );
   assert.match(
-    reg.dispatch(["show-options", "-g", "prefix"]).stdout,
+    reg.dispatch([...S, "show-options", "-g", "prefix"]).stdout,
     /prefix\s+C-b/,
   );
 });
 
-test("switch-client / attach-session / load-buffer are recognised no-ops", () => {
+test("styling/layout/attach commands are recognised no-ops (not drift)", () => {
   const { logs, reg } = fixture();
   for (const c of [
-    ["switch-client", "-t", "team"],
-    ["attach-session", "-t", "team"],
+    ["select-pane", "-t", "%1", "-T", "agent-1"],
+    ["set-option", "-p", "-t", "%1", "pane-border-style", "fg=blue"],
+    ["select-layout", "-t", "@0", "main-vertical"],
+    ["resize-pane", "-t", "%0", "-x", "30%"],
+    ["switch-client", "-t", "default"],
+    ["attach-session", "-t", "default"],
     ["load-buffer", "-"],
   ]) {
-    assert.equal(reg.dispatch(c).exitCode, 0);
+    assert.equal(reg.dispatch([...S, ...c]).exitCode, 0);
   }
-  assert.equal(logs.length, 0, "should be recognised, not logged as drift");
+  assert.equal(logs.length, 0, "all recognised — none logged as drift");
+});
+
+test("an unrecognised subcommand is logged and no-op'd", () => {
+  const { logs, reg } = fixture();
+  const res = reg.dispatch([...S, "capture-pane", "-t", "%0", "-p"]);
+  assert.equal(res.exitCode, 0);
+  assert.match(logs[0], /unrecognised tmux subcommand/);
+});
+
+test("kill-session disposes a team session's panes (never the leader)", () => {
+  const { factory, reg } = fixture();
+  reg.dispatch([
+    ...S,
+    "new-session",
+    "-s",
+    "duo",
+    "-P",
+    "-F",
+    "#{pane_id}",
+    "--",
+    "a",
+  ]);
+  reg.dispatch([...S, "kill-session", "-t", "duo"]);
+  assert.ok(factory.panes.every((p) => p.killed));
+  assert.equal(reg.dispatch([...S, "has-session", "-t", "duo"]).exitCode, 1);
+  // Leader survives.
+  assert.equal(
+    reg.dispatch([...S, "has-session", "-t", "default"]).exitCode,
+    0,
+  );
 });
 
 test("renderFormat resolves known tokens and empties unknown ones", () => {

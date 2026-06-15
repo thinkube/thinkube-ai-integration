@@ -69,56 +69,55 @@ test("shim CLI round-trips through the socket and routes send-keys to the right 
     }
   };
 
+  // Claude prefixes the socket before every subcommand (captured).
+  const G = ["-S", "/tmp/tmux-1000/default"];
   try {
-    // Two teammates in one session, like an agent team forming.
-    const p0 = (
-      await run([
-        "new-session",
-        "-d",
-        "-s",
-        "team",
-        "-P",
-        "-F",
-        "#{pane_id}",
-        "--",
-        "node",
-        "-e",
-        "",
-      ])
-    ).stdout.trim();
+    // Real flow: split the leader (%0) into empty shell panes for the teammates.
     const p1 = (
       await run([
+        ...G,
         "split-window",
         "-t",
-        "team",
+        "%0",
+        "-h",
+        "-l",
+        "70%",
         "-P",
         "-F",
         "#{pane_id}",
-        "--",
-        "node",
-        "-e",
-        "",
       ])
     ).stdout.trim();
-    assert.equal(p0, "%0");
-    assert.equal(p1, "%1");
+    const p2 = (
+      await run([
+        ...G,
+        "split-window",
+        "-t",
+        "%1",
+        "-v",
+        "-P",
+        "-F",
+        "#{pane_id}",
+      ])
+    ).stdout.trim();
+    assert.equal(p1, "%1"); // %0 is the leader; teammates are %1, %2
+    assert.equal(p2, "%2");
 
-    // Route literal input + Enter to teammate 1 specifically (AC#4).
-    await run(["send-keys", "-t", `team:0.${p1}`, "-l", "--", "hello %1"]);
-    await run(["send-keys", "-t", p1, "Enter"]);
-    // And something to teammate 0, to prove they don't cross.
-    await run(["send-keys", "-t", p0, "-l", "--", "for %0"]);
+    // Type each teammate's launch command into its pane (the real mechanism).
+    await run([...G, "send-keys", "-t", "%1", "-l", "--", "launch agent-1"]);
+    await run([...G, "send-keys", "-t", "%1", "Enter"]);
+    await run([...G, "send-keys", "-t", "%2", "-l", "--", "launch agent-2"]);
 
-    assert.deepEqual(factory.panes.get("%1")!.writes, ["hello %1", "\r"]);
-    assert.deepEqual(factory.panes.get("%0")!.writes, ["for %0"]);
+    assert.deepEqual(factory.panes.get("%1")!.writes, ["launch agent-1", "\r"]);
+    assert.deepEqual(factory.panes.get("%2")!.writes, ["launch agent-2"]);
 
-    // has-session reflects the live team through the CLI.
-    assert.equal((await run(["has-session", "-t", "team"])).code, 0);
-    assert.equal((await run(["has-session", "-t", "ghost"])).code, 1);
+    // has-session over the wire: the leader session exists; a ghost doesn't.
+    assert.equal((await run([...G, "has-session", "-t", "default"])).code, 0);
+    assert.equal((await run([...G, "has-session", "-t", "ghost"])).code, 1);
 
-    // client_control_mode stays empty over the wire (AC#3, end-to-end).
+    // client_control_mode stays empty over the wire (stays off iTerm2 -CC).
     assert.equal(
-      (await run(["display-message", "-p", "#{client_control_mode}"])).stdout,
+      (await run([...G, "display-message", "-p", "#{client_control_mode}"]))
+        .stdout,
       "",
     );
   } finally {

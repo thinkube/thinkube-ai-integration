@@ -1,77 +1,59 @@
 /**
- * The documented agent-teams `tmux` command surface (SP-tgnb5o, AC#6/AC#7).
+ * The agent-teams `tmux` command surface (SP-tgnb5o, AC#6/AC#7).
  *
- * A representative sequence of the `tmux` invocations Claude Code's experimental
- * agent teams make when forming and driving a 2-teammate team. This is the
- * single source the conformance drift-guard (SL-4) replays and the internals
- * doc (SL-5) describes.
+ * CAPTURED from a real tmux session driving Claude Code 2.1.177 agent teams
+ * (logging-wrapper capture, 2026-06-15) — this is the actual choreography, not
+ * a guess. Replayed by the conformance drift-guard (SL-4) and described in the
+ * internals doc (SL-5). Note the global `-S <socket>` before each subcommand and
+ * the empty-pane-then-`send-keys` teammate launch.
  *
- * IMPORTANT — provenance: this fixture is derived from the **documented**
- * surface (the Spec + TEP-tgnb5h + docs/claude-code-internals.md), NOT yet from
- * a live capture against Claude Code. So the conformance test below guards
- * against regressions in *our* shim and pins the surface we claim to support;
- * it does NOT by itself prove parity with a live Claude Code release. Live
- * parity ("a real team forms and both teammates reach idle") is the recorded
- * acceptance-gate check (TEP-tgnvkw exception on this Spec). When the surface is
- * captured live (the §7 re-verify playbook), update this fixture to match.
+ * Re-verify with the §7 capture recipe after Claude Code updates and update this.
  */
 
 /** One `tmux` invocation as argv (without the leading "tmux"). */
 export type TmuxInvocation = string[];
 
-/**
- * Representative invocations for a 2-teammate team: probe control-mode, open
- * the session + a second pane, drive each teammate, enumerate, then tear down.
- * `%0`/`%1` are the pane ids our shim mints in order.
- */
+// Claude passes the server socket (from $TMUX) before every session-scoped call.
+const G = ["-S", "/tmp/tmux-1000/default"];
+const LAUNCH1 =
+  "cd /home/x && env CLAUDECODE=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 claude --agent-id agent-1@duo --agent-name agent-1 --team-name duo";
+const LAUNCH2 =
+  "cd /home/x && env CLAUDECODE=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 claude --agent-id agent-2@duo --agent-name agent-2 --team-name duo";
+
+/** The real 2-teammate sequence: probes → split leader → style → type launch. */
 export const AGENT_TEAMS_TMUX_FIXTURE: TmuxInvocation[] = [
-  // Availability gate + config-detection probes the pane backend runs first
-  // (live capture, Claude Code 2.1.177 — SP-tgnb5o spike).
-  ["-V"],
-  ["display-message", "-p", "#{client_termtype}"],
-  ["show", "-Av", "mouse"],
+  // Config-detection probes (no socket yet).
   ["show", "-gv", "focus-events"],
-  ["show-options", "-g", "prefix"],
-  // Claude probes whether it's an iTerm2 control-mode client (must be empty).
-  ["display-message", "-p", "#{client_control_mode}"],
-  // First teammate: a detached session, pane id read back via -P -F.
+  ["display-message", "-p", "#{client_termtype}"],
+  // Locate the leader's window + count panes.
+  [...G, "display-message", "-t", "%0", "-p", "#{window_id}"],
+  [...G, "list-panes", "-t", "@0", "-F", "#{pane_id}"],
+  // Teammate 1: split the leader pane into an empty pane, style it, then type.
   [
-    "new-session",
-    "-d",
-    "-s",
-    "team",
-    "-P",
-    "-F",
-    "#{pane_id}",
-    "--",
-    "node",
-    "teammate.js",
-    "0",
-  ],
-  // Second teammate: split the session window.
-  [
+    ...G,
     "split-window",
     "-t",
-    "team",
+    "%0",
+    "-h",
+    "-l",
+    "70%",
     "-P",
     "-F",
     "#{pane_id}",
-    "--",
-    "node",
-    "teammate.js",
-    "1",
   ],
-  // Drive teammate 0: literal text then Enter.
-  ["send-keys", "-t", "team:0.%0", "-l", "--", "do the thing"],
-  ["send-keys", "-t", "team:0.%0", "Enter"],
-  // Drive teammate 1.
-  ["send-keys", "-t", "team:0.%1", "-l", "--", "and the other thing"],
-  ["send-keys", "-t", "team:0.%1", "Enter"],
-  // Housekeeping Claude does between turns.
-  ["has-session", "-t", "team"],
-  ["list-panes", "-t", "team", "-F", "#{pane_id}"],
-  ["select-pane", "-t", "team:0.%1"],
-  ["switch-client", "-t", "team"],
-  // Tear the team down.
-  ["kill-session", "-t", "team"],
+  [...G, "select-pane", "-t", "%1", "-P", "bg=default,fg=blue"],
+  [...G, "set-option", "-p", "-t", "%1", "pane-border-style", "fg=blue"],
+  [...G, "select-pane", "-t", "%1", "-T", "agent-1"],
+  [...G, "list-panes", "-t", "@0", "-F", "#{pane_id}"],
+  [...G, "set-option", "-w", "-t", "@0", "pane-border-status", "top"],
+  [...G, "send-keys", "-t", "%1", "-l", "--", LAUNCH1],
+  [...G, "send-keys", "-t", "%1", "Enter"],
+  // Teammate 2: split again, style, lay out, type.
+  [...G, "split-window", "-t", "%1", "-v", "-P", "-F", "#{pane_id}"],
+  [...G, "select-pane", "-t", "%2", "-P", "bg=default,fg=green"],
+  [...G, "select-pane", "-t", "%2", "-T", "agent-2"],
+  [...G, "select-layout", "-t", "@0", "main-vertical"],
+  [...G, "resize-pane", "-t", "%0", "-x", "30%"],
+  [...G, "send-keys", "-t", "%2", "-l", "--", LAUNCH2],
+  [...G, "send-keys", "-t", "%2", "Enter"],
 ];

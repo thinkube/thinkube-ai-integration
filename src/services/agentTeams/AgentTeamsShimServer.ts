@@ -253,7 +253,15 @@ export class AgentTeamsShimServer implements vscode.Disposable {
       return { id: spec.paneId, write: () => {}, kill: () => {} };
     }
 
-    const proc = pty.spawn(spec.command, spec.args, {
+    // Agent-teams opens an EMPTY pane (no command) and launches the teammate
+    // later by typing the command via send-keys — so a command-less pane runs
+    // the user's default shell, ready to receive that input.
+    const shell =
+      process.env.SHELL ||
+      (process.platform === "win32" ? "powershell.exe" : "/bin/bash");
+    const file = spec.command && spec.command.length ? spec.command : shell;
+    const args = spec.command && spec.command.length ? spec.args : [];
+    const proc = pty.spawn(file, args, {
       name: "xterm-256color",
       cols: 80,
       rows: 24,
