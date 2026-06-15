@@ -78,6 +78,24 @@ export class AgentTeamsShimServer implements vscode.Disposable {
 
   /** Start the IPC server and publish its socket path to child processes. */
   async activate(): Promise<void> {
+    // Opt-out switch: when disabled, do nothing — no flag, no shim, no server.
+    const enabled = vscode.workspace
+      .getConfiguration("thinkube")
+      .get<boolean>("agentTeams.enableExperimental", true);
+    if (!enabled) {
+      this.output.appendLine(
+        "[tmux-shim] agent teams disabled (thinkube.agentTeams.enableExperimental=false)",
+      );
+      return;
+    }
+
+    // Turn on Claude Code's experimental agent teams for sessions launched from
+    // this host (inherited by the `claude` child, like THINKUBE_TMUX_SHIM_SOCK).
+    // Don't override an explicit value the user already set.
+    if (!process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS) {
+      process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1";
+    }
+
     const stateDir = this.context.globalStorageUri.fsPath;
     await fs.promises.mkdir(stateDir, { recursive: true });
     this.socketPath =
@@ -112,6 +130,15 @@ export class AgentTeamsShimServer implements vscode.Disposable {
     );
 
     await this.installShimOnPath();
+
+    // process.env (above) reaches children the *extension* spawns (claude-vscode
+    // → claude). To also cover `claude` run from an integrated VS Code terminal,
+    // mirror the agent-teams env into the window's terminal environment.
+    const shimDir = this.context.asAbsolutePath(path.join("dist", "wrapper"));
+    const envColl = this.context.environmentVariableCollection;
+    envColl.replace("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1");
+    envColl.replace(SHIM_SOCK_ENV, this.socketPath);
+    envColl.prepend("PATH", shimDir + path.delimiter);
   }
 
   /**
