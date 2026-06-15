@@ -19,6 +19,8 @@
     "src/services/WorktreeService.test.ts",
     "src/services/agentTeams/tmuxDispatcher.ts",
     "src/services/agentTeams/tmuxDispatcher.test.ts",
+    "src/services/agentTeams/tmuxShimInstall.ts",
+    "src/services/agentTeams/tmuxShimInstall.test.ts",
     "src/github/specMerge.ts",
     "src/github/specMerge.test.ts",
     "src/mcp/boardDetection.ts",

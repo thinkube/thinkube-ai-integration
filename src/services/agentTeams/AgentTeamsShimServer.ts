@@ -31,6 +31,15 @@ import {
   type PaneFactory,
   type TeammateSpec,
 } from "./tmuxDispatcher";
+import {
+  decideTmuxTakeover,
+  findExistingTmuxDir,
+  isExecutable,
+  prependToPath,
+  splitPath,
+} from "./tmuxShimInstall";
+
+const COMPETING_TMUX_TOAST_KEY = "thinkube.tmuxShim.competingToastShown";
 
 export const SHIM_SOCK_ENV = "THINKUBE_TMUX_SHIM_SOCK";
 
@@ -127,6 +136,64 @@ export class AgentTeamsShimServer implements vscode.Disposable {
     this.output.appendLine(
       `[tmux-shim] listening on ${this.socketPath} (${SHIM_SOCK_ENV})`,
     );
+
+    await this.installShimOnPath();
+  }
+
+  /**
+   * Put our `tmux` shim dir on PATH ahead of any system tmux so the `claude`
+   * child (spawned by claude-vscode) resolves `tmux` to us (SP-tgnb5o_SL-2,
+   * AC#5). Takeover policy mirrors LauncherService: free/ours → install; an
+   * unknown third-party tmux → one-time confirmation, never silent clobber.
+   */
+  private async installShimOnPath(): Promise<void> {
+    const shimDir = this.context.asAbsolutePath(path.join("dist", "wrapper"));
+    const pathEntries = splitPath(process.env.PATH);
+    const existingTmuxDir = findExistingTmuxDir(
+      pathEntries,
+      shimDir,
+      isExecutable,
+    );
+    const decision = decideTmuxTakeover({
+      pathEntries,
+      shimDir,
+      existingTmuxDir,
+    });
+    switch (decision) {
+      case "already-installed":
+        return;
+      case "install":
+        process.env.PATH = prependToPath(process.env.PATH, shimDir);
+        this.output.appendLine(
+          `[tmux-shim] installed on PATH ahead of ${existingTmuxDir ?? "(no system tmux)"}`,
+        );
+        return;
+      case "needs-confirmation":
+        await this.confirmTakeover(shimDir, existingTmuxDir as string);
+        return;
+      case "skip":
+        return;
+    }
+  }
+
+  private async confirmTakeover(
+    shimDir: string,
+    competingDir: string,
+  ): Promise<void> {
+    if (this.context.globalState.get<boolean>(COMPETING_TMUX_TOAST_KEY)) return;
+    await this.context.globalState.update(COMPETING_TMUX_TOAST_KEY, true);
+    const choice = await vscode.window.showWarningMessage(
+      `Thinkube agent teams: a tmux is already on PATH ("${competingDir}"). ` +
+        `Use Thinkube's tmux shim so Claude Code agent teams render in VS Code panes?`,
+      "Use Thinkube shim",
+      "Keep existing",
+    );
+    if (choice === "Use Thinkube shim") {
+      process.env.PATH = prependToPath(process.env.PATH, shimDir);
+      this.output.appendLine(
+        `[tmux-shim] installed on PATH (user-confirmed over ${competingDir})`,
+      );
+    }
   }
 
   /** Socket path child processes connect to (for the shim CLI / tests). */
