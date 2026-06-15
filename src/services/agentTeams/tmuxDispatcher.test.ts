@@ -186,6 +186,44 @@ test("cosmetic subcommands are silent no-ops", () => {
   assert.equal(logs.length, 0);
 });
 
+// Init-probe surface the pane backend runs before committing to tmux (spike).
+test("tmux -V reports a version so the availability gate passes", () => {
+  const { reg } = fixture();
+  const res = reg.dispatch(["-V"]);
+  assert.equal(res.exitCode, 0);
+  assert.match(res.stdout, /tmux \d/);
+});
+
+test("show -gv focus-events / -Av mouse answer a non-'on' value", () => {
+  const { reg } = fixture();
+  assert.equal(
+    reg.dispatch(["show", "-gv", "focus-events"]).stdout.trim(),
+    "off",
+  );
+  // -Av includes -v (value-only), so just the value comes back.
+  assert.equal(reg.dispatch(["show", "-Av", "mouse"]).stdout.trim(), "off");
+});
+
+test("show-options -g prefix returns the tmux default C-b", () => {
+  const { reg } = fixture();
+  assert.match(
+    reg.dispatch(["show-options", "-g", "prefix"]).stdout,
+    /prefix\s+C-b/,
+  );
+});
+
+test("switch-client / attach-session / load-buffer are recognised no-ops", () => {
+  const { logs, reg } = fixture();
+  for (const c of [
+    ["switch-client", "-t", "team"],
+    ["attach-session", "-t", "team"],
+    ["load-buffer", "-"],
+  ]) {
+    assert.equal(reg.dispatch(c).exitCode, 0);
+  }
+  assert.equal(logs.length, 0, "should be recognised, not logged as drift");
+});
+
 test("renderFormat resolves known tokens and empties unknown ones", () => {
   assert.equal(renderFormat("#{pane_id}", { pane_id: "%7" }), "%7");
   assert.equal(renderFormat("pre-#{nope}-post", {}), "pre--post");

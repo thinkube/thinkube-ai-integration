@@ -129,6 +129,18 @@ export class AgentTeamsShimServer implements vscode.Disposable {
       `[tmux-shim] listening on ${this.socketPath} (${SHIM_SOCK_ENV})`,
     );
 
+    // Make Claude Code route teammates to the tmux (our shim) backend. It picks
+    // tmux when teammateMode is "tmux" OR `auto` + insideTmux (`!!process.env.TMUX`);
+    // otherwise it uses the in-process backend (spike finding — see the Spec). We
+    // don't run inside a real tmux, so present a synthetic $TMUX (path,pid,session)
+    // that's parseable and truthy. Our shim ignores $TMUX (it dials
+    // THINKUBE_TMUX_SHIM_SOCK), so the value just needs to flip the detector.
+    // Don't override a genuine tmux the user is actually inside.
+    if (!process.env.TMUX) {
+      process.env.TMUX = `${this.socketPath},0,0`;
+      process.env.TMUX_PANE = "%0";
+    }
+
     await this.installShimOnPath();
 
     // process.env (above) reaches children the *extension* spawns (claude-vscode
@@ -138,6 +150,8 @@ export class AgentTeamsShimServer implements vscode.Disposable {
     const envColl = this.context.environmentVariableCollection;
     envColl.replace("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1");
     envColl.replace(SHIM_SOCK_ENV, this.socketPath);
+    envColl.replace("TMUX", `${this.socketPath},0,0`);
+    envColl.replace("TMUX_PANE", "%0");
     envColl.prepend("PATH", shimDir + path.delimiter);
   }
 

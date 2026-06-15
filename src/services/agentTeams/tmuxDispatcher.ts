@@ -131,6 +131,22 @@ export class TmuxRegistry {
         return this.listPanes(opts);
       case "display-message":
         return this.displayMessage(opts);
+      // Init probes the pane backend runs before it commits to tmux — if these
+      // don't answer plausibly, Claude Code silently falls back to the
+      // in-process backend (SP-tgnb5o spike finding). `-V` is the availability
+      // gate (exit 0 = tmux present); show/show-options feed config detection.
+      case "-V":
+        return { stdout: "tmux 3.4\n", exitCode: 0 };
+      case "show":
+        return this.showOption(opts, rest);
+      case "show-options":
+        return this.showOptionsCmd(rest);
+      // Focus/attach/clipboard — meaningful in a real terminal multiplexer, but
+      // our panes are VS Code terminals, so accept them as successful no-ops.
+      case "switch-client":
+      case "attach-session":
+      case "load-buffer":
+        return ok();
       // Cosmetic / layout — accepted as no-ops so Claude's calls succeed.
       case "select-pane":
       case "set-option":
@@ -249,6 +265,35 @@ export class TmuxRegistry {
     const fmt = opts["-F"] ?? "";
     const stdout = renderFormat(fmt, { client_control_mode: "" });
     return { stdout, exitCode: 0 };
+  }
+
+  /**
+   * `tmux show [-Av|-gv] <name>` — option queries the pane backend uses to
+   * detect tmux config (mouse mode, focus-events). We don't enable those, so
+   * answer the value as "off" (`-v` prints the bare value; otherwise
+   * `name value`). Claude treats a non-"on" answer as "no conflict".
+   */
+  private showOption(
+    opts: Record<string, string>,
+    rest: string[],
+  ): DispatchResult {
+    const name = rest[0] ?? "";
+    const valueOnly = Object.keys(opts).some((k) => k.includes("v"));
+    const value = "off";
+    return {
+      stdout: valueOnly ? `${value}\n` : `${name} ${value}\n`,
+      exitCode: 0,
+    };
+  }
+
+  /**
+   * `tmux show-options -g <name>` — Claude reads `prefix` to detect a binding
+   * conflict (it matches /prefix\s+(\S+)/). Report the tmux default `C-b`.
+   */
+  private showOptionsCmd(rest: string[]): DispatchResult {
+    const name = rest[rest.length - 1] ?? "";
+    if (name === "prefix") return { stdout: "prefix C-b\n", exitCode: 0 };
+    return { stdout: name ? `${name}\n` : "", exitCode: 0 };
   }
 
   private paneByTarget(target: string | undefined): Pane | undefined {

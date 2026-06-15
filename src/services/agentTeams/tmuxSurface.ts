@@ -25,6 +25,13 @@ export type TmuxInvocation = string[];
  * `%0`/`%1` are the pane ids our shim mints in order.
  */
 export const AGENT_TEAMS_TMUX_FIXTURE: TmuxInvocation[] = [
+  // Availability gate + config-detection probes the pane backend runs first
+  // (live capture, Claude Code 2.1.177 — SP-tgnb5o spike).
+  ["-V"],
+  ["display-message", "-p", "#{client_termtype}"],
+  ["show", "-Av", "mouse"],
+  ["show", "-gv", "focus-events"],
+  ["show-options", "-g", "prefix"],
   // Claude probes whether it's an iTerm2 control-mode client (must be empty).
   ["display-message", "-p", "#{client_control_mode}"],
   // First teammate: a detached session, pane id read back via -P -F.
@@ -64,6 +71,7 @@ export const AGENT_TEAMS_TMUX_FIXTURE: TmuxInvocation[] = [
   ["has-session", "-t", "team"],
   ["list-panes", "-t", "team", "-F", "#{pane_id}"],
   ["select-pane", "-t", "team:0.%1"],
+  ["switch-client", "-t", "team"],
   // Tear the team down.
   ["kill-session", "-t", "team"],
 ];
