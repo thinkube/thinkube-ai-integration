@@ -216,20 +216,39 @@ export class AgentTeamsShimServer implements vscode.Disposable {
 
     // Render the teammate's PTY bytes straight through a VS Code terminal pane
     // (no scrollback/vt buffer — out of scope per the Spec). handleInput routes
-    // the user's keystrokes back to this teammate (AC#4 groundwork).
+    // the user's keystrokes back to this teammate (AC#4).
+    //
+    // A Pseudoterminal only subscribes to `onDidWrite` once VS Code calls
+    // `open()`, but node-pty starts emitting the moment it spawns — so the
+    // teammate's first output (banner, prompt) is emitted before anyone is
+    // listening and is silently dropped (observed live: an empty pane with just
+    // a cursor). Buffer PTY data until `open()`, then flush and go live.
     const writeEmitter = new vscode.EventEmitter<string>();
     const closeEmitter = new vscode.EventEmitter<number | void>();
+    let opened = false;
+    const backlog: string[] = [];
+    const emit = (data: string) => {
+      if (opened) {
+        writeEmitter.fire(data);
+      } else {
+        backlog.push(data);
+      }
+    };
     const term = vscode.window.createTerminal({
       name: `team:${spec.sessionName} ${spec.paneId}`,
       pty: {
         onDidWrite: writeEmitter.event,
         onDidClose: closeEmitter.event,
-        open: () => {},
+        open: () => {
+          opened = true;
+          for (const d of backlog) writeEmitter.fire(d);
+          backlog.length = 0;
+        },
         close: () => proc.kill(),
         handleInput: (data: string) => proc.write(data),
       },
     });
-    proc.onData((d) => writeEmitter.fire(d));
+    proc.onData((d) => emit(d));
     proc.onExit(({ exitCode }) => closeEmitter.fire(exitCode));
     term.show(/* preserveFocus */ true);
 
