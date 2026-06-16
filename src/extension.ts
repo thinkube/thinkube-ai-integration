@@ -28,6 +28,10 @@ import {
   type ClaimStore,
 } from "./services/OwnershipArbiter";
 import { WorktreeService } from "./services/WorktreeService";
+import {
+  ControlRequestWatcher,
+  controlDir,
+} from "./services/ControlRequestWatcher";
 import { ClaudeConfigService } from "./services/ClaudeConfigService";
 import { LauncherService } from "./services/LauncherService";
 import { SessionLinkService } from "./services/SessionLinkService";
@@ -333,6 +337,19 @@ export function activate(context: vscode.ExtensionContext) {
   // "Start Spec in Worktree": create the Spec's git worktree and open a session
   // rooted there, so parallel Specs never share a working tree (SP-5).
   registerWorktreeCommands(context, { launcher });
+
+  // Control-request watcher (SP-tgpwbm): the standalone Kanban MCP server can't
+  // open a VS Code session itself, so its `start_spec_worktree` tool drops a
+  // one-shot request file into the shared control dir; this watcher runs the
+  // matching command (`thinkube.specs.startWorktree`) — the same filesystem
+  // MCP→host channel the board uses, decoupled from the agent-teams tmux bridge.
+  const controlWatcher = new ControlRequestWatcher(controlDir(context), (m) =>
+    kanbanOutput.appendLine(`[thinkube] control: ${m}`),
+  );
+  context.subscriptions.push(controlWatcher);
+  controlWatcher.activate().catch((err) => {
+    console.error("ControlRequestWatcher activation failed:", err);
+  });
 }
 
 /**

@@ -25,6 +25,28 @@ opens a Spec's `spec/SP-{n}` worktree and is **idempotent**:
   Claude-Code-spawned kanban MCP finds the central sidecar board. The edit is
   machine-local and stays uncommitted (never committed, like `THINKUBE_FOLDERS`).
 
+### Self-driving hand-off (`start_spec_worktree`)
+
+A session that just ran `/slice` can open the worktree pair session itself, with
+no manual button, via the `start_spec_worktree(spec)` MCP tool. The standalone
+MCP server has no `vscode` API, so it can't open a session directly — instead it
+reuses **the board's own MCP→host channel: the filesystem**. (`move_slice`
+already works this way: it writes a slice `.md` and a `FileSystemWatcher` in the
+host reacts — `ThinkubeStore`.)
+
+- The tool writes a one-shot `{kind:"start-worktree", spec, repo}` JSON request
+  (`src/mcp/controlRequests.ts`, pure serialize/parse/route) into the
+  host-published control dir (`THINKUBE_CONTROL_DIR`, baked into `.mcp.json` env
+  alongside `THINKUBE_BOARD_ROOT`).
+- `ControlRequestWatcher` (Extension Host) watches that dir, consumes the request
+  fire-once (deletes it), and runs `thinkube.specs.startWorktree` — the very same
+  command the button runs (create-or-reuse + board-root inject + open session).
+
+This is **deliberately not** the agent-teams `THINKUBE_TMUX_SHIM_SOCK` bridge:
+that socket is tmux-emulation only and gated on an opt-in feature, so routing the
+worktree hand-off through it would break whenever agent-teams is disabled. The
+control watcher is always-on.
+
 ## Slice file-set declarations
 
 Each slice declares, in its frontmatter, the files it will edit and how it
