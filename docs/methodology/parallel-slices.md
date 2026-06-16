@@ -114,3 +114,15 @@ On every Edit/Write the hook reads the tool's target file, the active slice
 
 This catches a stray write the moment it's attempted, rather than discovering
 the conflict at merge time.
+
+## Verification in the worktree
+
+Because each Spec runs in its own worktree, `/pair-next` runs a slice's verifier
+**in that slice's worktree** — the verification recipe executes against the
+isolated checkout, never against the canonical/main tree or another Spec's
+uncommitted changes. This is purely a change of _where_ verification runs.
+
+The **Done gate is unchanged**: `gateSliceSatisfiesToDone` (`qualityGates.ts`)
+still blocks Done unless the verifier is green **and** every AC the slice
+`satisfies` is checked on the Spec. Worktree isolation changes the verifier's
+working directory, not the gate's contract — a regression test pins this.
