@@ -8,6 +8,23 @@ arbiter** enforces that disjointness at runtime and reclaims abandoned claims.
 This page documents the mechanics that ship in the extension. The _why_ lives in
 TEP-tgpupa.
 
+## Starting a Spec in a worktree
+
+**Start Spec in Worktree** (the Specs-view action, `WorktreeService.create`)
+opens a Spec's `spec/SP-{n}` worktree and is **idempotent**:
+
+- **Create-or-reuse.** If a worktree is already checked out on the Spec's
+  branch, it is reused — `create` returns its path instead of failing on
+  "already exists". `planWorktree(existing, repo, n, baseDir?)` is the pure
+  decision (reuse the existing path, else compute a fresh sibling
+  `<repo>-worktrees/SP-{n}`).
+- **Board-connected.** A fresh worktree is a clean checkout, so its committed
+  `.mcp.json` lacks the machine-specific board location. `create` injects
+  `THINKUBE_BOARD_ROOT` (from `thinkube.boards.root`) into the worktree's
+  `.mcp.json` kanban-server env via the pure `mcpWithBoardRoot`, so the
+  Claude-Code-spawned kanban MCP finds the central sidecar board. The edit is
+  machine-local and stays uncommitted (never committed, like `THINKUBE_FOLDERS`).
+
 ## Slice file-set declarations
 
 Each slice declares, in its frontmatter, the files it will edit and how it
