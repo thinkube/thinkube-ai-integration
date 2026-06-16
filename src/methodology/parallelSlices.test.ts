@@ -15,6 +15,7 @@ import {
   serializeOwnership,
   parseOwnership,
   detectRecoverable,
+  requiresWorktree,
   type ParallelSliceInput,
   type OwnershipState,
   type SliceRecoveryInfo,
@@ -268,4 +269,35 @@ test("detectRecoverable: returns only the orphaned handles among a mix", () => {
   const r = detectRecoverable(slices, ["SP-9_SL-3"]);
   assert.equal(r.recoverable, true);
   assert.deepEqual(r.orphaned, ["SP-9_SL-2"]);
+});
+
+// ── Require a worktree before working a Spec (SP-tgpwbm AC2) ────────────────
+
+test("requiresWorktree: the canonical checkout must open the worktree", () => {
+  assert.equal(
+    requiresWorktree("/home/u/repo", "/home/u/repo"),
+    "open-worktree",
+  );
+  // A subdir of the canonical checkout still counts as canonical.
+  assert.equal(
+    requiresWorktree("/home/u/repo/src", "/home/u/repo"),
+    "open-worktree",
+  );
+  // Trailing-slash differences don't fool it.
+  assert.equal(
+    requiresWorktree("/home/u/repo/", "/home/u/repo"),
+    "open-worktree",
+  );
+});
+
+test("requiresWorktree: a linked worktree proceeds (no false sibling-prefix match)", () => {
+  assert.equal(
+    requiresWorktree("/home/u/repo-worktrees/SP-5", "/home/u/repo"),
+    "proceed",
+  );
+  // The sibling `repo-worktrees` must NOT match the `repo` prefix.
+  assert.equal(
+    requiresWorktree("/home/u/other/SP-5", "/home/u/repo"),
+    "proceed",
+  );
 });

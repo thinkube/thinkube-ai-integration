@@ -261,3 +261,24 @@ export function detectRecoverable(
     .map((s) => s.handle);
   return { recoverable: orphaned.length > 0, orphaned };
 }
+
+// ── Require a worktree before working a Spec (SP-tgpwbm AC2) ────────────────
+
+/**
+ * Decide whether `/pair-start` must **open the Spec's worktree** before working,
+ * or can **proceed** because it's already inside one (AC2). A Spec runs in its
+ * own `spec/SP-{n}` worktree (TEP-0008); if `/pair-start` was invoked from the
+ * canonical/main checkout it must redirect into the worktree session rather than
+ * editing the main tree. `cwd` inside the canonical repo tree → `"open-worktree"`;
+ * a linked worktree (a different path, e.g. a sibling `<repo>-worktrees/SP-{n}`)
+ * → `"proceed"`. Pure — the actual open rides `WorktreeService` / SL-7/SL-8.
+ */
+export function requiresWorktree(
+  cwd: string,
+  canonicalRepo: string,
+): "open-worktree" | "proceed" {
+  const norm = (p: string) => p.replace(/\/+$/, "");
+  const c = norm(cwd);
+  const repo = norm(canonicalRepo);
+  return c === repo || c.startsWith(repo + "/") ? "open-worktree" : "proceed";
+}

@@ -10,6 +10,12 @@ TEP-tgpupa.
 
 ## Starting a Spec in a worktree
 
+`/pair-start` **requires** the Spec's worktree: the pure guard
+`requiresWorktree(cwd, canonicalRepo)` returns `"open-worktree"` when invoked
+from the canonical/main checkout (so `/pair-start` opens/redirects into the
+`spec/SP-{n}` worktree session instead of editing the main tree) and `"proceed"`
+when it's already inside a linked worktree. The open itself is the same action:
+
 **Start Spec in Worktree** (the Specs-view action, `WorktreeService.create`)
 opens a Spec's `spec/SP-{n}` worktree and is **idempotent**:
 
