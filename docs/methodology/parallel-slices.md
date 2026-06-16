@@ -82,3 +82,25 @@ After a reload the arbiter can `reconcile(liveSlices)` against the set of slices
 whose worktrees are still live, dropping (reclaiming) files held by abandoned
 slices and persisting the result. The live-worktree → live-slice signal and the
 orphaned-Spec recovery flow are wired by the worktree-recovery slice.
+
+## Enforcement: the PreToolUse hook
+
+The arbiter records ownership; a `PreToolUse(Edit|Write|MultiEdit)` hook
+**enforces** it. The bundle ships `hooks/ownership-guard.mjs` and a
+`hooks.PreToolUse` fragment in `settings.json`; `BundleInstaller` copies the
+script to `.claude/hooks/` and merges the fragment into the project's
+`.claude/settings.json` (de-duplicating, never clobbering other hooks).
+
+On every Edit/Write the hook reads the tool's target file, the active slice
+(`THINKUBE_ACTIVE_SLICE`), and the durable ownership map (the journal at
+`THINKUBE_OWNERSHIP_JOURNAL`, else git refs in the repo), then:
+
+- **exit 0 (allow)** — the active slice owns the file, _or_ the feature isn't
+  engaged (no active slice, or the slice holds no claims — fail-open, so the
+  hook never bricks an ordinary non-parallel session).
+- **exit 2 (block)** — the file is owned by another slice, or is outside the
+  active slice's claimed set; the reason is written to stderr so Claude can pick
+  a file it owns.
+
+This catches a stray write the moment it's attempted, rather than discovering
+the conflict at merge time.

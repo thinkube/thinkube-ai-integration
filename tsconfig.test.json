@@ -11,6 +11,7 @@
     "src/methodology/qualityGates.test.ts",
     "src/methodology/parallelSlices.ts",
     "src/methodology/parallelSlices.test.ts",
+    "src/methodology/ownershipGuard.test.ts",
     "src/views/kanban/host/storage/sliceBoard.ts",
     "src/views/kanban/host/storage/sliceBoard.test.ts",
     "src/store/frontmatter.ts",
