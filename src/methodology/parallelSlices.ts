@@ -19,6 +19,9 @@ export interface ParallelSliceInput {
   parallelGroup?: string;
   /** Repo-relative paths the slice declares it will edit (its `files:` set). */
   files?: string[];
+  /** Execution-aware work units (SP-tgs8gb); each footprint folds into the
+   *  slice's claimed set, so footprint disjointness is enforced alongside `files`. */
+  workUnits?: { footprint: string[] }[];
 }
 
 export interface FileConflict {
@@ -69,7 +72,11 @@ export function validateParallelGroup(
     // file → the set of slice handles in this group that declare it.
     const claimants = new Map<string, Set<string>>();
     for (const m of members) {
-      for (const raw of m.files ?? []) {
+      const claimed = [
+        ...(m.files ?? []),
+        ...(m.workUnits ?? []).flatMap((w) => w.footprint ?? []),
+      ];
+      for (const raw of claimed) {
         const file = normalizeFilePath(raw);
         if (!file) continue;
         const set = claimants.get(file) ?? new Set<string>();

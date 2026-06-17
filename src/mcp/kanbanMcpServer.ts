@@ -1284,7 +1284,7 @@ async function createSlice(
   // `parallel_group` must not claim a file already owned by a sibling in that
   // group. Validate the would-be set against existing siblings before writing.
   const group = args.parallel_group?.trim();
-  if (group && args.files?.length) {
+  if (group && (args.files?.length || args.work_units?.length)) {
     const siblings: ParallelSliceInput[] = [];
     for (const rel of await store.listSlices(args.spec)) {
       const m = SLICE_PATH_RE.exec(rel);
@@ -1295,6 +1295,7 @@ async function createSlice(
         handle: sliceHandle(m[1], Number(m[2])),
         parallelGroup: sfm.parallel_group,
         files: sfm.files,
+        workUnits: sfm.work_units,
       });
     }
     const result = validateParallelGroup([
@@ -1303,6 +1304,7 @@ async function createSlice(
         handle: `SP-${args.spec}_SL-(new)`,
         parallelGroup: group,
         files: args.files,
+        workUnits: args.work_units,
       },
     ]);
     if (!result.ok) throw new Error(result.reason);

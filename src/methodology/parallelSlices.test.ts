@@ -56,6 +56,22 @@ test("overlapping members of a parallel_group are refused, naming the file and s
   assert.match(r.reason, /core/);
 });
 
+test("overlapping work-unit footprints in a parallel_group are refused (SP-tgs8gb)", () => {
+  const slices: ParallelSliceInput[] = [
+    {
+      handle: "SP-9_SL-1",
+      parallelGroup: "core",
+      workUnits: [{ footprint: ["src/a.ts", "src/shared.ts"] }],
+    },
+    { handle: "SP-9_SL-2", parallelGroup: "core", files: ["src/shared.ts"] },
+  ];
+  const r = validateParallelGroup(slices);
+  assert.equal(r.ok, false);
+  if (r.ok) return; // narrow for TS
+  assert.equal(r.conflicts[0].file, "src/shared.ts");
+  assert.deepEqual(r.conflicts[0].slices, ["SP-9_SL-1", "SP-9_SL-2"]);
+});
+
 test("overlap OUTSIDE a parallel_group is allowed — ungrouped slices run sequentially", () => {
   const slices: ParallelSliceInput[] = [
     { handle: "SP-9_SL-1", files: ["src/shared.ts"] },
