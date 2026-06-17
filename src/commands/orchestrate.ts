@@ -92,9 +92,17 @@ export function registerOrchestrateCommands(
           vscode.window.showInformationMessage(
             `SP-${spec}: nothing dispatched — ${r.reason ?? "no Ready slice"}.`,
           );
-        } else {
+        } else if (r.advanced) {
           vscode.window.showInformationMessage(
-            `Dispatched ${r.handle} — worker ${r.success ? "succeeded" : "did not succeed"}. Verify + advance via the gate.`,
+            `${r.handle}: worker succeeded, verified green → advanced to Done.`,
+          );
+        } else if (r.success && r.verified === false) {
+          vscode.window.showWarningMessage(
+            `${r.handle}: worker succeeded but the verifier was red — left in Doing.`,
+          );
+        } else {
+          vscode.window.showWarningMessage(
+            `${r.handle}: worker did not succeed — left in flight.`,
           );
         }
       } catch (err) {

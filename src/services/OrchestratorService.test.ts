@@ -37,14 +37,20 @@ interface FakeFiles {
 
 function makeDeps(
   files: FakeFiles,
-  opts: { acquireOk?: boolean; line?: string } = {},
+  opts: { acquireOk?: boolean; line?: string; verifyOk?: boolean } = {},
 ): {
   deps: OrchestratorDeps;
-  calls: { acquired: string[]; released: string[]; created: number };
+  calls: {
+    acquired: string[];
+    released: string[];
+    advanced: string[];
+    created: number;
+  };
 } {
   const calls = {
     acquired: [] as string[],
     released: [] as string[],
+    advanced: [] as string[],
     created: 0,
   };
   const deps: OrchestratorDeps = {
@@ -83,6 +89,10 @@ function makeDeps(
       fakeWorker(
         opts.line ?? '{"type":"result","subtype":"success","is_error":false}\n',
       ),
+    verify: async () => opts.verifyOk !== false,
+    advance: async (handle: string) => {
+      calls.advanced.push(handle);
+    },
   };
   return { deps, calls };
 }
@@ -100,9 +110,25 @@ test("dispatchNext: picks the ready+deps-satisfied slice, claims it, runs, relea
   assert.equal(r.dispatched, true);
   assert.equal(r.handle, "SP-1_SL-2");
   assert.equal(r.success, true);
+  assert.equal(r.verified, true);
+  assert.equal(r.advanced, true); // worker success + verify green → advanced
   assert.deepEqual(calls.acquired, ["SP-1_SL-2"]);
+  assert.deepEqual(calls.advanced, ["SP-1_SL-2"]);
   assert.deepEqual(calls.released, ["SP-1_SL-2"]); // released even on success
   assert.equal(calls.created, 1);
+});
+
+test("dispatchNext: worker success but verifier red → not advanced (still released)", async () => {
+  const { deps, calls } = makeDeps(
+    { "specs/SP-1/SL-1.md": { status: "ready" } },
+    { verifyOk: false },
+  );
+  const r = await new OrchestratorService(deps).dispatchNext("1");
+  assert.equal(r.success, true);
+  assert.equal(r.verified, false);
+  assert.equal(r.advanced, false);
+  assert.deepEqual(calls.advanced, []); // gate refusal — no advance
+  assert.deepEqual(calls.released, ["SP-1_SL-1"]);
 });
 
 test("dispatchNext: nothing dispatchable → no claim, no worktree", async () => {

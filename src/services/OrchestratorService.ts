@@ -37,6 +37,10 @@ export interface OrchestratorDeps {
   baseDir?: string;
   /** Override the spawn (tests): defaults to spawning the real `claude`. */
   spawnWorker?: (args: string[], cwd: string) => SpawnedWorker;
+  /** Verify a slice at grain in its worktree (tests): defaults to `npm run compile`. */
+  verify?: (cwd: string) => Promise<boolean>;
+  /** Advance a slice to Done (tests): defaults to stamping `status: done`. */
+  advance?: (handle: string) => Promise<void>;
 }
 
 /** Minimal shape of a spawned worker process the shell consumes. */
@@ -49,7 +53,12 @@ export interface SpawnedWorker {
 export interface DispatchResult {
   dispatched: boolean;
   handle?: string;
+  /** The worker (`claude -p`) reported a success result. */
   success?: boolean;
+  /** The slice-grain verify ran green (only when success). */
+  verified?: boolean;
+  /** The slice was advanced to Done (only when verified green). */
+  advanced?: boolean;
   reason?: string;
 }
 
@@ -119,12 +128,39 @@ export class OrchestratorService {
         picked.num,
         worktreePath,
       );
-      output.appendLine(
-        success
-          ? `✓ ${handle}: worker reported success`
-          : `✗ ${handle}: worker did not succeed`,
-      );
-      return { dispatched: true, handle, success };
+      if (!success) {
+        output.appendLine(
+          `✗ ${handle}: worker did not succeed — left in flight.`,
+        );
+        return { dispatched: true, handle, success: false };
+      }
+      output.appendLine(`✓ ${handle}: worker reported success — verifying…`);
+
+      // 6. Verify at slice grain in the worktree; advance only on green.
+      const verify = this.deps.verify ?? ((cwd) => this.defaultVerify(cwd));
+      const verified = await verify(worktreePath);
+      if (!verified) {
+        output.appendLine(
+          `✗ ${handle}: verifier red — left in Doing (gate refusal).`,
+        );
+        return {
+          dispatched: true,
+          handle,
+          success: true,
+          verified: false,
+          advanced: false,
+        };
+      }
+      const advance = this.deps.advance ?? ((h) => this.defaultAdvance(h));
+      await advance(handle);
+      output.appendLine(`✓ ${handle}: verified green → advanced to Done.`);
+      return {
+        dispatched: true,
+        handle,
+        success: true,
+        verified: true,
+        advanced: true,
+      };
     } finally {
       // Release the claim regardless — the slice's lifecycle (→ Done) is gated
       // elsewhere (the verifier + AC gate / SL-3 on failure), not forced here.
@@ -169,6 +205,32 @@ export class OrchestratorService {
       });
       proc.on("close", () => resolve(success));
     });
+  }
+
+  /** Default slice-grain verify: `npm run compile` in the worktree; green = exit 0. */
+  private defaultVerify(cwd: string): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const proc = spawn("npm", ["run", "compile"], { cwd });
+      proc.on("error", () => resolve(false));
+      proc.on("close", (code) => resolve(code === 0));
+    });
+  }
+
+  /**
+   * Default advance: stamp the slice `status: done` in its file. Verifier-green is the
+   * core of the → Done gate; the richer AC-satisfies / docs gate is `/pair-next`'s layer.
+   */
+  private async defaultAdvance(handle: string): Promise<void> {
+    const m = /^SP-(.+)_SL-(\d+)$/.exec(handle);
+    if (!m) return;
+    const rel = this.deps.store.pathForSlice(m[1], Number(m[2]));
+    const parsed = await this.deps.store.getFile(rel);
+    if (!parsed?.frontmatter) return;
+    await this.deps.store.writeFile(
+      rel,
+      { ...parsed.frontmatter, status: "done" },
+      parsed.body,
+    );
   }
 }
 
