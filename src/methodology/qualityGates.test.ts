@@ -8,6 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  gateAcVerification,
   gateForTandemTransition,
   gateSliceDocsToDone,
   gateSliceSatisfiesToDone,
@@ -261,4 +262,48 @@ test("AC6: the → Done gate still allows once every satisfied AC is checked", (
       .ok,
     true,
   );
+});
+
+test("gateAcVerification: AI evidence always passes", () => {
+  assert.equal(
+    gateAcVerification({
+      aiTestability: "high",
+      hasAiEvidence: true,
+      hasHumanVerdict: false,
+    }).ok,
+    true,
+  );
+});
+
+test("gateAcVerification: low testability + human verdict passes (relaxes tgnvkw)", () => {
+  assert.equal(
+    gateAcVerification({
+      aiTestability: "low",
+      hasAiEvidence: false,
+      hasHumanVerdict: true,
+    }).ok,
+    true,
+  );
+});
+
+test("gateAcVerification: low testability with no verdict is refused", () => {
+  assert.equal(
+    gateAcVerification({
+      aiTestability: "low",
+      hasAiEvidence: false,
+      hasHumanVerdict: false,
+    }).ok,
+    false,
+  );
+});
+
+test("gateAcVerification: high testability needs AI evidence — a human verdict does not substitute (no-dodge)", () => {
+  const r = gateAcVerification({
+    aiTestability: "high",
+    hasAiEvidence: false,
+    hasHumanVerdict: true,
+  });
+  assert.equal(r.ok, false);
+  if (r.ok) return;
+  assert.match(r.reason, /no-dodge|AI verification/);
 });

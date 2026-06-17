@@ -363,3 +363,47 @@ export function gateSliceDocsToDone(input: {
     ? { ok: false, reason: msg }
     : { ok: true, warning: `${msg} [advisory — allowed, but please confirm]` };
 }
+
+// ── AC verification under the lever (SP-tgsdvw; relaxes TEP-tgnvkw) ──────────
+//
+// tgnvkw's absolute "AC must be AI-verifiable" becomes **AI-testability-gated** (a lever
+// input, per-AC). High testability → the AI must self-certify: AI evidence is required and
+// a bare human verdict does NOT substitute (the no-dodge guard — never hand-wave what the
+// AI could verify). Low testability → an explicit human verdict is legitimate, no longer a
+// defect. Pure: the caller supplies the per-AC inputs (their storage is SP-tgsdvw's
+// deferred wiring — see its Open questions).
+
+export type AiTestability = "high" | "low";
+
+export interface AcVerificationInput {
+  /** The AC's AI-testability (per-AC lever input). */
+  aiTestability: AiTestability;
+  /** AI verification evidence present for this AC (e.g. verifier green). */
+  hasAiEvidence: boolean;
+  /** An explicit human verdict recorded for this AC. */
+  hasHumanVerdict: boolean;
+}
+
+/**
+ * Gate an AC's verification under the 3-input lever. AI evidence always passes. With no AI
+ * evidence: a **low**-AI-testability AC passes on an explicit human verdict; a **high**
+ * -AI-testability AC is refused — a human verdict cannot substitute for verification the AI
+ * could have done (no-dodge guard).
+ */
+export function gateAcVerification(input: AcVerificationInput): GateResult {
+  if (input.hasAiEvidence) return { ok: true };
+  if (input.aiTestability === "low") {
+    return input.hasHumanVerdict
+      ? { ok: true }
+      : {
+          ok: false,
+          reason:
+            "Low-AI-testability AC needs an explicit human verdict — none recorded.",
+        };
+  }
+  return {
+    ok: false,
+    reason:
+      "High-AI-testability AC requires AI verification evidence; a human verdict does not substitute (no-dodge guard).",
+  };
+}
