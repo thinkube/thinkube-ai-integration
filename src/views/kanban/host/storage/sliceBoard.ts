@@ -21,18 +21,23 @@ import {
 export const TANDEM_COLUMNS: ReadonlyArray<{ id: string; title: string }> = [
   { id: "column-ready", title: "Ready" },
   { id: "column-doing", title: "Doing" },
+  { id: "column-attention", title: "Needs Attention" },
   { id: "column-done", title: "Done" },
 ];
 
 const STATUS_TO_COLUMN: Record<string, string> = {
   ready: "column-ready",
   doing: "column-doing",
+  "requires-attention": "column-attention",
   done: "column-done",
 };
 
-const COLUMN_TO_STATUS: Record<string, "ready" | "doing" | "done"> = {
+type SliceStatus = "ready" | "doing" | "requires-attention" | "done";
+
+const COLUMN_TO_STATUS: Record<string, SliceStatus> = {
   "column-ready": "ready",
   "column-doing": "doing",
+  "column-attention": "requires-attention",
   "column-done": "done",
 };
 
@@ -67,13 +72,68 @@ export function statusToColumnId(status: string | undefined): string {
   return STATUS_TO_COLUMN[(status ?? "ready").toLowerCase()] ?? "column-ready";
 }
 
-export function columnIdToStatus(columnId: string): "ready" | "doing" | "done" {
+export function columnIdToStatus(columnId: string): SliceStatus {
   return COLUMN_TO_STATUS[columnId] ?? "ready";
 }
 
 /** The canonical human handle for a slice, e.g. `SP-tw7n0g_SL-3`. */
 export function sliceHandle(specId: string, sliceNumber: number): string {
   return `SP-${specId}_SL-${sliceNumber}`;
+}
+
+export type SliceGraphNode = {
+  id: string;
+  status: string;
+  color: string;
+  running: boolean;
+};
+export type SliceGraphEdge = { from: string; to: string };
+export interface SliceGraph {
+  nodes: SliceGraphNode[];
+  edges: SliceGraphEdge[];
+}
+
+/**
+ * Distinct status colour for the control-center graph (SP-tgs8nz AC7): running (`doing`),
+ * `done`, and `requires-attention` are each visually distinct. Slugs match the card palette.
+ */
+export function statusColor(status: string | undefined): string {
+  switch ((status ?? "ready").toLowerCase()) {
+    case "doing":
+      return "azure";
+    case "requires-attention":
+      return "amber";
+    case "done":
+      return "lime";
+    case "archived":
+      return "slate";
+    default:
+      return "indigo"; // ready
+  }
+}
+
+/**
+ * Derive the live control-center graph from a Spec's slices (AC7): one status-coloured node
+ * per slice (flagged `running` when a worker is live on it) and one edge per `dependsOn`
+ * link (dep → slice). Dangling deps (target not in the slice set) are dropped. Pure — the
+ * webview renders it; the host supplies the `running` set from the dispatcher.
+ */
+export function buildSliceGraph(
+  slices: { handle: string; status?: string; dependsOn?: string[] }[],
+  running: ReadonlySet<string> = new Set(),
+): SliceGraph {
+  const ids = new Set(slices.map((s) => s.handle));
+  const nodes: SliceGraphNode[] = slices.map((s) => ({
+    id: s.handle,
+    status: (s.status ?? "ready").toLowerCase(),
+    color: statusColor(s.status),
+    running: running.has(s.handle),
+  }));
+  const edges: SliceGraphEdge[] = [];
+  for (const s of slices)
+    for (const dep of s.dependsOn ?? [])
+      if (ids.has(dep)) edges.push({ from: dep, to: s.handle });
+  return { nodes, edges };
 }
 
 export interface SliceInput {

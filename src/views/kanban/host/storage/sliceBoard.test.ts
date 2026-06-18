@@ -11,6 +11,8 @@ import {
   sliceHandle,
   columnIdToStatus,
   statusToColumnId,
+  statusColor,
+  buildSliceGraph,
   SliceInput,
 } from "./sliceBoard";
 
@@ -25,12 +27,54 @@ test("the card's identity is its string handle (opaque spec id, SP-7)", () => {
   assert.equal(card.parentId, "tw7n0g"); // chip + colour by parent Spec id
 });
 
-test("status ↔ column mapping is total and round-trips the three columns", () => {
+test("status ↔ column mapping is total and round-trips the four columns", () => {
   assert.equal(statusToColumnId("ready"), "column-ready");
   assert.equal(statusToColumnId("doing"), "column-doing");
+  assert.equal(statusToColumnId("requires-attention"), "column-attention");
   assert.equal(statusToColumnId("done"), "column-done");
   assert.equal(statusToColumnId(undefined), "column-ready"); // default
   assert.equal(columnIdToStatus("column-doing"), "doing");
+  assert.equal(columnIdToStatus("column-attention"), "requires-attention");
+});
+
+test("statusColor: running / done / requires-attention are distinct (AC7)", () => {
+  const colors = [
+    statusColor("doing"),
+    statusColor("done"),
+    statusColor("requires-attention"),
+    statusColor("ready"),
+  ];
+  assert.equal(
+    new Set(colors).size,
+    4,
+    "all four statuses map to distinct colours",
+  );
+});
+
+test("buildSliceGraph: status-coloured nodes + dep edges, dangling deps dropped", () => {
+  const graph = buildSliceGraph(
+    [
+      { handle: "SP-1_SL-1", status: "done" },
+      { handle: "SP-1_SL-2", status: "doing", dependsOn: ["SP-1_SL-1"] },
+      {
+        handle: "SP-1_SL-3",
+        status: "ready",
+        dependsOn: ["SP-1_SL-2", "SP-1_SL-99"],
+      },
+    ],
+    new Set(["SP-1_SL-2"]), // SL-2 has a live worker
+  );
+  assert.equal(graph.nodes.length, 3);
+  assert.equal(graph.nodes.find((n) => n.id === "SP-1_SL-2")!.running, true);
+  assert.equal(
+    graph.nodes.find((n) => n.id === "SP-1_SL-2")!.color,
+    statusColor("doing"),
+  );
+  // edges: SL-1→SL-2, SL-2→SL-3; the dangling SL-99→SL-3 is dropped.
+  assert.deepEqual(graph.edges, [
+    { from: "SP-1_SL-1", to: "SP-1_SL-2" },
+    { from: "SP-1_SL-2", to: "SP-1_SL-3" },
+  ]);
 });
 
 test("buildSliceBoard lays out three columns and places slices by status", () => {
@@ -42,7 +86,7 @@ test("buildSliceBoard lays out three columns and places slices by status", () =>
   const board = buildSliceBoard(slices, "demo");
   assert.deepEqual(
     board.columns.map((c) => c.title),
-    ["Ready", "Doing", "Done"],
+    ["Ready", "Doing", "Needs Attention", "Done"],
   );
   const ready = board.columns.find((c) => c.title === "Ready")!;
   // Slice cards only — each Spec also gets an auto-derived `_accept` close card.
