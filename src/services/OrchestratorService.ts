@@ -55,6 +55,8 @@ export interface OrchestratorDeps {
   verify?: (cwd: string) => Promise<boolean>;
   /** Advance a slice to Done (tests): defaults to stamping `status: done`. */
   advance?: (handle: string) => Promise<void>;
+  /** Flag a slice requires-attention with a diagnosis (tests): defaults to a frontmatter+body write. */
+  flagAttention?: (handle: string, diagnosis: string) => Promise<void>;
 }
 
 /** Minimal shape of a spawned worker process the shell consumes. */
@@ -73,6 +75,8 @@ export interface DispatchResult {
   verified?: boolean;
   /** The slice was advanced to Done (only when verified green). */
   advanced?: boolean;
+  /** The slice was flagged `requires-attention` (worker failed or verifier red). */
+  requiresAttention?: boolean;
   reason?: string;
 }
 
@@ -199,10 +203,19 @@ export class OrchestratorService {
         worktreePath,
       );
       if (!success) {
-        output.appendLine(
-          `✗ ${handle}: worker did not succeed — left in flight.`,
+        await this.flagAttention(
+          handle,
+          "The `claude -p` worker exited without a success result — see the session JSON-log above.",
         );
-        return { dispatched: true, handle, success: false };
+        output.appendLine(
+          `⚑ ${handle}: worker failed → requires-attention (slot freed).`,
+        );
+        return {
+          dispatched: true,
+          handle,
+          success: false,
+          requiresAttention: true,
+        };
       }
       output.appendLine(`✓ ${handle}: worker reported success — verifying…`);
 
@@ -210,8 +223,12 @@ export class OrchestratorService {
       const verify = this.deps.verify ?? ((cwd) => this.defaultVerify(cwd));
       const verified = await verify(worktreePath);
       if (!verified) {
+        await this.flagAttention(
+          handle,
+          "Worker reported success but the slice-grain verify (`npm run compile`) was red in the worktree.",
+        );
         output.appendLine(
-          `✗ ${handle}: verifier red — left in Doing (gate refusal).`,
+          `⚑ ${handle}: verifier red → requires-attention (slot freed).`,
         );
         return {
           dispatched: true,
@@ -219,6 +236,7 @@ export class OrchestratorService {
           success: true,
           verified: false,
           advanced: false,
+          requiresAttention: true,
         };
       }
       const advance = this.deps.advance ?? ((h) => this.defaultAdvance(h));
@@ -300,6 +318,35 @@ export class OrchestratorService {
       rel,
       { ...parsed.frontmatter, status: "done" },
       parsed.body,
+    );
+  }
+
+  private flagAttention(handle: string, diagnosis: string): Promise<void> {
+    const flag =
+      this.deps.flagAttention ?? ((h, d) => this.defaultFlagAttention(h, d));
+    return flag(handle, diagnosis);
+  }
+
+  /**
+   * Default requires-attention flag: stamp the slice `status: requires-attention` and append
+   * the worker's failure diagnosis to its body, so the stalled card carries the reason a human
+   * needs (AC4). Its slot is already freed (the dispatch returned); `/attend` (SL-5) returns it
+   * to the loop. pickFrontier never re-selects it (it isn't `ready`).
+   */
+  private async defaultFlagAttention(
+    handle: string,
+    diagnosis: string,
+  ): Promise<void> {
+    const m = /^SP-(.+)_SL-(\d+)$/.exec(handle);
+    if (!m) return;
+    const rel = this.deps.store.pathForSlice(m[1], Number(m[2]));
+    const parsed = await this.deps.store.getFile(rel);
+    if (!parsed?.frontmatter) return;
+    const note = `\n\n## ⚑ Requires attention\n\n${diagnosis}\n`;
+    await this.deps.store.writeFile(
+      rel,
+      { ...parsed.frontmatter, status: "requires-attention" },
+      (parsed.body ?? "") + note,
     );
   }
 }

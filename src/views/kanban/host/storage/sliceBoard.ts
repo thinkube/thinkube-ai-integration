@@ -21,18 +21,23 @@ import {
 export const TANDEM_COLUMNS: ReadonlyArray<{ id: string; title: string }> = [
   { id: "column-ready", title: "Ready" },
   { id: "column-doing", title: "Doing" },
+  { id: "column-attention", title: "Needs Attention" },
   { id: "column-done", title: "Done" },
 ];
 
 const STATUS_TO_COLUMN: Record<string, string> = {
   ready: "column-ready",
   doing: "column-doing",
+  "requires-attention": "column-attention",
   done: "column-done",
 };
 
-const COLUMN_TO_STATUS: Record<string, "ready" | "doing" | "done"> = {
+type SliceStatus = "ready" | "doing" | "requires-attention" | "done";
+
+const COLUMN_TO_STATUS: Record<string, SliceStatus> = {
   "column-ready": "ready",
   "column-doing": "doing",
+  "column-attention": "requires-attention",
   "column-done": "done",
 };
 
@@ -67,7 +72,7 @@ export function statusToColumnId(status: string | undefined): string {
   return STATUS_TO_COLUMN[(status ?? "ready").toLowerCase()] ?? "column-ready";
 }
 
-export function columnIdToStatus(columnId: string): "ready" | "doing" | "done" {
+export function columnIdToStatus(columnId: string): SliceStatus {
   return COLUMN_TO_STATUS[columnId] ?? "ready";
 }
 

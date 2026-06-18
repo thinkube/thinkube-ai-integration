@@ -44,6 +44,7 @@ export interface Frontmatter {
     | "ready"
     | "doing"
     | "done"
+    | "requires-attention"
     | "archived"
     | "draft"
     | "active"

@@ -558,7 +558,7 @@ const TOOL_DEFS = [
   {
     name: "move_slice",
     description:
-      "Move a slice to a different column by setting its `status:` frontmatter. Status must be one of: Ready, Doing, Done. Moving to Done is REFUSED unless every acceptance criterion the slice lists in `satisfies` is checked on the parent Spec (the error names the offending criterion); slices with no `satisfies` are not gated. The → Done **docs gate** (TEP-tgh6iy) also applies: a `docs: required` slice must have its documentation done — pass `docs_done: true` once you've updated the doc module. In blocking mode an unsatisfied obligation is refused; in advisory mode (default) the move returns a `docsWarning`. On a successful Done it stamps the slice's `verified_req_hash` from the parent Spec so a later requirement edit re-flags it stale.",
+      "Move a slice to a different column by setting its `status:` frontmatter. Status must be one of: Ready, Doing, Done, Requires-attention (a needs-human state the orchestrator sets when a worker can't resolve a problem — SP-tgs8nz; /attend returns it to the loop). Moving to Done is REFUSED unless every acceptance criterion the slice lists in `satisfies` is checked on the parent Spec (the error names the offending criterion); slices with no `satisfies` are not gated. The → Done **docs gate** (TEP-tgh6iy) also applies: a `docs: required` slice must have its documentation done — pass `docs_done: true` once you've updated the doc module. In blocking mode an unsatisfied obligation is refused; in advisory mode (default) the move returns a `docsWarning`. On a successful Done it stamps the slice's `verified_req_hash` from the parent Spec so a later requirement edit re-flags it stale.",
     inputSchema: {
       type: "object",
       properties: {
@@ -568,7 +568,7 @@ const TOOL_DEFS = [
         },
         status: {
           type: "string",
-          enum: ["Ready", "Doing", "Done"],
+          enum: ["Ready", "Doing", "Done", "Requires-attention"],
         },
         docs_done: {
           type: "boolean",
@@ -912,7 +912,12 @@ async function startSpecWorktree(spec: string, repo: string): Promise<unknown> {
 
 const SLICE_PATH_RE = /specs\/SP-([A-Za-z0-9]+)\/SL-(\d+)\.md$/;
 const SLICE_HANDLE_RE = /^SP-([A-Za-z0-9]+)_SL-(\d+)$/;
-const VALID_STATUSES = ["ready", "doing", "done"] as const;
+const VALID_STATUSES = [
+  "ready",
+  "doing",
+  "done",
+  "requires-attention",
+] as const;
 
 function listBoards(ctx: HandlerContext): unknown {
   return {
@@ -1072,7 +1077,7 @@ async function moveSlice(
   const target = status.trim().toLowerCase() as (typeof VALID_STATUSES)[number];
   if (!VALID_STATUSES.includes(target)) {
     throw new Error(
-      `Invalid status "${status}" — expected one of Ready, Doing, Done.`,
+      `Invalid status "${status}" — expected one of Ready, Doing, Done, Requires-attention.`,
     );
   }
   const { specNumber, sliceNumber } = parseSliceHandle(handle);

@@ -25,12 +25,14 @@ test("the card's identity is its string handle (opaque spec id, SP-7)", () => {
   assert.equal(card.parentId, "tw7n0g"); // chip + colour by parent Spec id
 });
 
-test("status ↔ column mapping is total and round-trips the three columns", () => {
+test("status ↔ column mapping is total and round-trips the four columns", () => {
   assert.equal(statusToColumnId("ready"), "column-ready");
   assert.equal(statusToColumnId("doing"), "column-doing");
+  assert.equal(statusToColumnId("requires-attention"), "column-attention");
   assert.equal(statusToColumnId("done"), "column-done");
   assert.equal(statusToColumnId(undefined), "column-ready"); // default
   assert.equal(columnIdToStatus("column-doing"), "doing");
+  assert.equal(columnIdToStatus("column-attention"), "requires-attention");
 });
 
 test("buildSliceBoard lays out three columns and places slices by status", () => {
@@ -42,7 +44,7 @@ test("buildSliceBoard lays out three columns and places slices by status", () =>
   const board = buildSliceBoard(slices, "demo");
   assert.deepEqual(
     board.columns.map((c) => c.title),
-    ["Ready", "Doing", "Done"],
+    ["Ready", "Doing", "Needs Attention", "Done"],
   );
   const ready = board.columns.find((c) => c.title === "Ready")!;
   // Slice cards only — each Spec also gets an auto-derived `_accept` close card.

@@ -49,6 +49,7 @@ function makeDeps(
     acquired: string[];
     released: string[];
     advanced: string[];
+    attention: string[];
     created: number;
     log: string[];
   };
@@ -57,6 +58,7 @@ function makeDeps(
     acquired: [] as string[],
     released: [] as string[],
     advanced: [] as string[],
+    attention: [] as string[],
     created: 0,
     log: [] as string[],
   };
@@ -102,6 +104,9 @@ function makeDeps(
     advance: async (handle: string) => {
       calls.advanced.push(handle);
     },
+    flagAttention: async (handle: string) => {
+      calls.attention.push(handle);
+    },
   };
   return { deps, calls };
 }
@@ -127,7 +132,7 @@ test("dispatchNext: picks the ready+deps-satisfied slice, claims it, runs, relea
   assert.equal(calls.created, 1);
 });
 
-test("dispatchNext: worker success but verifier red → not advanced (still released)", async () => {
+test("dispatchNext: worker success but verifier red → requires-attention (not advanced, released)", async () => {
   const { deps, calls } = makeDeps(
     { "specs/SP-1/SL-1.md": { status: "ready" } },
     { verifyOk: false },
@@ -136,7 +141,9 @@ test("dispatchNext: worker success but verifier red → not advanced (still rele
   assert.equal(r.success, true);
   assert.equal(r.verified, false);
   assert.equal(r.advanced, false);
+  assert.equal(r.requiresAttention, true);
   assert.deepEqual(calls.advanced, []); // gate refusal — no advance
+  assert.deepEqual(calls.attention, ["SP-1_SL-1"]); // flagged for a human
   assert.deepEqual(calls.released, ["SP-1_SL-1"]);
 });
 
@@ -172,6 +179,8 @@ test("dispatchNext: a worker with no success result → success:false (still rel
   const r = await new OrchestratorService(deps).dispatchNext("1");
   assert.equal(r.dispatched, true);
   assert.equal(r.success, false);
+  assert.equal(r.requiresAttention, true); // worker failure → flagged
+  assert.deepEqual(calls.attention, ["SP-1_SL-1"]);
   assert.deepEqual(calls.released, ["SP-1_SL-1"]);
 });
 
