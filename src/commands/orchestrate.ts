@@ -9,13 +9,20 @@ import * as vscode from "vscode";
 import { ThinkubeStore } from "../store/ThinkubeStore";
 import { WorktreeService } from "../services/WorktreeService";
 import { OrchestratorService } from "../services/OrchestratorService";
+import {
+  extractDiagnosis,
+  buildAttendPrompt,
+} from "../services/orchestratorCore";
 import type { OwnershipArbiter } from "../services/OwnershipArbiter";
+import type { LauncherService } from "../services/LauncherService";
 import type { SpecsProvider } from "../views/boards/SpecsProvider";
 
 export interface OrchestrateDeps {
   specsProvider: SpecsProvider;
   /** The arbiter is built async at activation — a getter so we read it when invoked. */
   getArbiter: () => OwnershipArbiter | undefined;
+  /** Opens primed sessions for `/attend` (reuses the cwd-wrapper launcher). */
+  launcher: LauncherService;
   /** Injectable for tests; defaults to real instances. */
   worktrees?: WorktreeService;
   output?: vscode.OutputChannel;
@@ -116,7 +123,89 @@ export function registerOrchestrateCommands(
       "thinkube.floatOutSession",
       (handle?: string) => floatOutSession(context, handle),
     ),
+    vscode.commands.registerCommand(
+      "thinkube.attend",
+      async (handle?: string) => {
+        const repo = deps.specsProvider.repoEntry;
+        if (!repo || !repo.enabled) {
+          vscode.window.showInformationMessage(
+            "Select an enabled thinking space to attend a slice.",
+          );
+          return;
+        }
+        try {
+          const store = new ThinkubeStore(repo.path, repo.boardDir);
+          const h = handle ?? (await pickAttentionSlice(store));
+          if (!h) return;
+          const m = /^SP-(.+)_SL-(\d+)$/.exec(h);
+          if (!m) {
+            vscode.window.showErrorMessage(`Bad slice handle "${h}".`);
+            return;
+          }
+          const specId = m[1];
+          const rel = store.pathForSlice(specId, Number(m[2]));
+          const body = (await store.getFile(rel))?.body ?? "";
+          const diagnosis = extractDiagnosis(body);
+
+          const canonical =
+            (await worktrees.canonicalRepo(repo.path)) ?? repo.path;
+          const baseDir =
+            vscode.workspace
+              .getConfiguration("thinkube")
+              .get<string>("worktree.baseDir")
+              ?.trim() || undefined;
+          const boardRoot =
+            vscode.workspace
+              .getConfiguration("thinkube.boards")
+              .get<string>("root")
+              ?.trim() || undefined;
+          // Root the primed session in the slice's worktree (reuses the launcher / cwd-wrapper).
+          const worktreePath = await worktrees.create(
+            canonical,
+            specId,
+            baseDir,
+            boardRoot,
+          );
+          await deps.launcher.openHere(
+            vscode.Uri.file(worktreePath),
+            buildAttendPrompt(h, diagnosis),
+          );
+        } catch (err) {
+          vscode.window.showErrorMessage(
+            `Attend failed: ${(err as Error).message}`,
+          );
+        }
+      },
+    ),
   );
+}
+
+/** Find requires-attention slices on the board and quick-pick one (or the only one). */
+async function pickAttentionSlice(
+  store: ThinkubeStore,
+): Promise<string | undefined> {
+  const handles: string[] = [];
+  for (const dir of await store.listSpecDirs()) {
+    const specId = /SP-([^/]+)/.exec(dir)?.[1];
+    if (!specId) continue;
+    for (const rel of await store.listSlices(specId)) {
+      const fm = (await store.getFile(rel))?.frontmatter;
+      if ((fm?.status ?? "") === "requires-attention") {
+        const num = /SL-(\d+)\.md$/.exec(rel)?.[1];
+        if (num) handles.push(store.sliceHandle(specId, Number(num)));
+      }
+    }
+  }
+  if (handles.length === 0) {
+    vscode.window.showInformationMessage(
+      "No requires-attention slices to attend.",
+    );
+    return undefined;
+  }
+  if (handles.length === 1) return handles[0];
+  return vscode.window.showQuickPick(handles, {
+    placeHolder: "Attend which requires-attention slice?",
+  });
 }
 
 /**

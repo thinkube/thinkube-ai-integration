@@ -115,6 +115,29 @@ export function batchExecutionUnits(units: WorkUnit[]): ExecutionUnit[] {
 }
 
 /**
+ * Extract a requires-attention slice's failure diagnosis from its body — the text the
+ * orchestrator appended under the `## ⚑ Requires attention` heading (SP-tgs8nz AC4). Returns
+ * undefined if absent. `/attend` uses it to prime the resolution session.
+ */
+export function extractDiagnosis(body: string): string | undefined {
+  const m = /##\s*⚑\s*Requires attention\s*\n+([\s\S]*?)(?:\n##\s|$)/.exec(
+    body ?? "",
+  );
+  return m?.[1]?.trim() || undefined;
+}
+
+/** The chat prompt priming an `/attend` session: the slice, its diagnosis, and the exit. */
+export function buildAttendPrompt(handle: string, diagnosis?: string): string {
+  const diag = diagnosis
+    ? `\n\nThe orchestrator's diagnosis:\n\n${diagnosis}`
+    : "";
+  return (
+    `Attend the requires-attention slice ${handle} in this worktree.${diag}` +
+    `\n\nResolve the problem, verify at slice grain, then move ${handle} back to Ready so the loop can pick it up.`
+  );
+}
+
+/**
  * Line-buffered NDJSON parser for `claude -p --output-format stream-json`. Feed raw stdout
  * chunks; returns the parsed objects for every **complete** line so far, holding a trailing
  * partial line until the next chunk. Blank and unparseable lines are skipped (never throws).

@@ -345,6 +345,7 @@ export function activate(context: vscode.ExtensionContext) {
   registerOrchestrateCommands(context, {
     specsProvider,
     getArbiter: () => ownershipArbiter,
+    launcher,
   });
 
   // Control-request watcher (SP-tgpwbm): the standalone Kanban MCP server can't

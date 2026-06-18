@@ -12,6 +12,8 @@ import {
   selectDisjoint,
   runWithConcurrency,
   batchExecutionUnits,
+  extractDiagnosis,
+  buildAttendPrompt,
   StreamJsonBuffer,
   summarizeEvent,
   isResultSuccess,
@@ -142,6 +144,22 @@ test("runWithConcurrency: cap floors to ≥1 and handles empty input", async () 
     await runWithConcurrency([1, 2], 0, async (x) => x * 10),
     [10, 20],
   );
+});
+
+test("extractDiagnosis: reads the ⚑ section, undefined when absent", () => {
+  const body =
+    "# A slice\n\nbody text\n\n## ⚑ Requires attention\n\nThe verifier was red.\n";
+  assert.equal(extractDiagnosis(body), "The verifier was red.");
+  assert.equal(extractDiagnosis("# A slice\n\nno flag here"), undefined);
+});
+
+test("buildAttendPrompt: names the slice, includes the diagnosis + the return-to-Ready exit", () => {
+  const p = buildAttendPrompt("SP-1_SL-2", "verifier red");
+  assert.match(p, /SP-1_SL-2/);
+  assert.match(p, /verifier red/);
+  assert.match(p, /back to Ready/);
+  // No diagnosis → still names the slice + the exit, no dangling "diagnosis:" label.
+  assert.doesNotMatch(buildAttendPrompt("SP-1_SL-2"), /diagnosis/i);
 });
 
 test("batchExecutionUnits: serial units collapse to one; mechanize/fan-out stay separate", () => {
