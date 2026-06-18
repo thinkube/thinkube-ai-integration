@@ -77,6 +77,11 @@
         "category": "Thinkube"
       },
       {
+        "command": "thinkube.floatOutSession",
+        "title": "Float Out Session",
+        "category": "Thinkube"
+      },
+      {
         "command": "thinkube.boards.refresh",
         "title": "Refresh Boards",
         "category": "Thinkube Boards",

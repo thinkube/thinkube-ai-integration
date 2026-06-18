@@ -81,6 +81,61 @@ export function sliceHandle(specId: string, sliceNumber: number): string {
   return `SP-${specId}_SL-${sliceNumber}`;
 }
 
+export type SliceGraphNode = {
+  id: string;
+  status: string;
+  color: string;
+  running: boolean;
+};
+export type SliceGraphEdge = { from: string; to: string };
+export interface SliceGraph {
+  nodes: SliceGraphNode[];
+  edges: SliceGraphEdge[];
+}
+
+/**
+ * Distinct status colour for the control-center graph (SP-tgs8nz AC7): running (`doing`),
+ * `done`, and `requires-attention` are each visually distinct. Slugs match the card palette.
+ */
+export function statusColor(status: string | undefined): string {
+  switch ((status ?? "ready").toLowerCase()) {
+    case "doing":
+      return "azure";
+    case "requires-attention":
+      return "amber";
+    case "done":
+      return "lime";
+    case "archived":
+      return "slate";
+    default:
+      return "indigo"; // ready
+  }
+}
+
+/**
+ * Derive the live control-center graph from a Spec's slices (AC7): one status-coloured node
+ * per slice (flagged `running` when a worker is live on it) and one edge per `dependsOn`
+ * link (dep → slice). Dangling deps (target not in the slice set) are dropped. Pure — the
+ * webview renders it; the host supplies the `running` set from the dispatcher.
+ */
+export function buildSliceGraph(
+  slices: { handle: string; status?: string; dependsOn?: string[] }[],
+  running: ReadonlySet<string> = new Set(),
+): SliceGraph {
+  const ids = new Set(slices.map((s) => s.handle));
+  const nodes: SliceGraphNode[] = slices.map((s) => ({
+    id: s.handle,
+    status: (s.status ?? "ready").toLowerCase(),
+    color: statusColor(s.status),
+    running: running.has(s.handle),
+  }));
+  const edges: SliceGraphEdge[] = [];
+  for (const s of slices)
+    for (const dep of s.dependsOn ?? [])
+      if (ids.has(dep)) edges.push({ from: dep, to: s.handle });
+  return { nodes, edges };
+}
+
 export interface SliceInput {
   /** Parent Spec id — an opaque string (base36-epoch, or a legacy integer). */
   specNumber: string;

@@ -112,5 +112,31 @@ export function registerOrchestrateCommands(
         );
       }
     }),
+    vscode.commands.registerCommand(
+      "thinkube.floatOutSession",
+      (handle?: string) => floatOutSession(context, handle),
+    ),
   );
+}
+
+/**
+ * Float a running session into a separate webview panel beside the editor (SP-tgs8nz AC7) —
+ * the user can then "Move into New Window" onto a second monitor. On code-server, where the
+ * auxiliary-window route is unreliable, this beside-panel IS the dedicated-window fallback.
+ * The live JSON-log stream renders here; wiring its content source is the visual-verdict part.
+ */
+function floatOutSession(
+  context: vscode.ExtensionContext,
+  handle?: string,
+): void {
+  const title = handle ? `Session · ${handle}` : "Orchestrator Session";
+  const panel = vscode.window.createWebviewPanel(
+    "thinkubeSession",
+    title,
+    { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+    { retainContextWhenHidden: true },
+  );
+  const safe = title.replace(/[&<>]/g, "");
+  panel.webview.html = `<!doctype html><html><head><meta charset="utf-8"><style>body{font:13px var(--vscode-editor-font-family,monospace);padding:8px;color:var(--vscode-foreground)}h1{font-size:13px;opacity:.7}#log{white-space:pre-wrap}</style></head><body><h1>${safe}</h1><div id="log">Live JSON-log renders here. Use the editor's “Move into New Window” to place it on a second monitor.</div></body></html>`;
+  context.subscriptions.push(panel);
 }
