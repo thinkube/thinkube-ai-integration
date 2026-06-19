@@ -23,6 +23,8 @@
     "src/store/frontmatter.test.ts",
     "src/store/ids.ts",
     "src/store/ids.test.ts",
+    "src/store/tags.ts",
+    "src/store/tags.test.ts",
     "src/services/WorktreeService.ts",
     "src/services/WorktreeService.test.ts",
     "src/services/orchestratorCore.ts",

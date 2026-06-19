@@ -22,6 +22,7 @@ import {
   updateSlice,
   listBoard,
   writeTep,
+  aggregateTagsAcrossBoards,
 } from "./kanbanMcpServer";
 
 /** A tmp board dir seeded with one Spec that has acceptance criteria. */
@@ -122,4 +123,40 @@ test("write_tep persists tags on the TEP frontmatter", async () => {
   const parsed = await store.getFile(store.pathForTep("demotep"));
   assert.equal(res.tep, "TEP-demotep");
   assert.deepEqual(parsed?.frontmatter?.tags, ["platform"]);
+});
+
+test("list_tags aggregates tagged items across boards (SL-3, AC3+AC4)", async () => {
+  const a = await seededStore("aaa");
+  const b = await seededStore("bbb");
+  await createSlice(a, {
+    spec: "aaa",
+    title: "A slice",
+    body: "d",
+    tags: ["security", "auth"],
+  });
+  await createSlice(b, {
+    spec: "bbb",
+    title: "B slice",
+    body: "d",
+    tags: ["security"],
+  });
+  await writeTep(a, { tep: "atep", tags: ["security"] });
+
+  const agg = await aggregateTagsAcrossBoards([
+    { boardId: "board-a", store: a },
+    { boardId: "board-b", store: b },
+  ]);
+
+  const security = agg.find((t) => t.tag === "security");
+  assert.equal(security?.count, 3); // 2 slices + 1 tep
+  // cross-board: items come from both boards
+  const boards = new Set(security?.items.map((i) => i.board));
+  assert.ok(boards.has("board-a") && boards.has("board-b"));
+  // an item with N tags appears under all N
+  assert.equal(agg.find((t) => t.tag === "auth")?.count, 1);
+  // tags are sorted
+  assert.deepEqual(
+    agg.map((t) => t.tag),
+    [...agg.map((t) => t.tag)].sort((x, y) => x.localeCompare(y)),
+  );
 });

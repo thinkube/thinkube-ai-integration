@@ -72,6 +72,7 @@ import { ThinkubeStore } from "../store/ThinkubeStore";
 import { isBoardDir } from "./boardDetection";
 import type { Frontmatter } from "../store/frontmatter";
 import { effectiveTags } from "../store/frontmatter";
+import { groupByTag, type TaggedItem } from "../store/tags";
 import { stampOnEnteringDone } from "../github/sliceProvenance";
 import { linkedWorktreeInfo } from "../services/WorktreeService";
 import {
@@ -523,6 +524,16 @@ const TOOL_DEFS = [
     },
   },
   {
+    name: "list_tags",
+    description:
+      "Aggregate the #hashtag mesh (SP-tgvil2) across every board in the workspace. Returns each tag with its `count` and the `items` carrying it ({ board: the board id, handle: SP-{n} | SP-{n}_SL-{m} | TEP-{id}, kind }), sorted by tag. An item with N tags appears under all N; a tag clusters items from multiple boards (the cross-board clustering layer — a project is a promoted tag). Folds a legacy `theme:` in as a tag.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
     name: "list_board",
     description:
       "Current Tandem board, projected from the committed `.thinkube/specs/SP-{n}/SL-{m}.md` slice files. Returns the Ready / Doing / Done columns; each card carries its slice handle (`id`, e.g. `SP-3_SL-42`), title (`description`), and `specStale` / `specChange` (whether the parent Spec's requirements changed since the slice was last verified).",
@@ -820,6 +831,7 @@ async function dispatchTool(
   writeGate: (n: string) => void,
 ): Promise<unknown> {
   if (name === "list_boards") return listBoards(ctx);
+  if (name === "list_tags") return listTags(ctx);
 
   // Every other tool is board-scoped: resolve the store per call.
   const store = ctx.boards.resolve(optString(args, "board"));
@@ -963,6 +975,76 @@ function listBoards(ctx: HandlerContext): unknown {
         path: b.path,
       })),
   };
+}
+
+/** Collect every tagged item (spec / TEP / slice) in one board's store. */
+async function collectTaggedItems(
+  store: ThinkubeStore,
+  boardId: string,
+  out: TaggedItem[],
+): Promise<void> {
+  for (const t of await store.listTeps()) {
+    const tags = effectiveTags((await store.getFile(t.relativePath))?.frontmatter);
+    if (tags.length)
+      out.push({ boardId, handle: `TEP-${t.id}`, kind: "tep", tags });
+  }
+  for (const spec of await store.listSpecDirs()) {
+    const tags = effectiveTags(
+      (await store.getFile(store.pathForSpecDoc(spec)))?.frontmatter,
+    );
+    if (tags.length)
+      out.push({ boardId, handle: `SP-${spec}`, kind: "spec", tags });
+  }
+  for (const rel of await store.listSlices()) {
+    const m = SLICE_PATH_RE.exec(rel);
+    if (!m) continue;
+    const tags = effectiveTags((await store.getFile(rel))?.frontmatter);
+    if (tags.length)
+      out.push({
+        boardId,
+        handle: sliceHandle(m[1], Number(m[2])),
+        kind: "slice",
+        tags,
+      });
+  }
+}
+
+export interface TagAggregate {
+  tag: string;
+  count: number;
+  items: { board: string; handle: string; kind: string }[];
+}
+
+/**
+ * Walk a set of boards, collect their tagged items, and group by tag — the pure
+ * core of `list_tags` (exported for testing against tmp stores; the registry
+ * walk in `listTags` is the thin glue over it).
+ */
+export async function aggregateTagsAcrossBoards(
+  boards: { boardId: string; store: ThinkubeStore }[],
+): Promise<TagAggregate[]> {
+  const items: TaggedItem[] = [];
+  for (const b of boards) await collectTaggedItems(b.store, b.boardId, items);
+  return [...groupByTag(items).entries()]
+    .map(([tag, its]) => ({
+      tag,
+      count: its.length,
+      items: its.map((i) => ({
+        board: i.boardId,
+        handle: i.handle,
+        kind: i.kind,
+      })),
+    }))
+    .sort((a, b) => a.tag.localeCompare(b.tag));
+}
+
+/** `list_tags` — aggregate tags across every (non-worktree) board in the workspace. */
+async function listTags(ctx: HandlerContext): Promise<unknown> {
+  const boards = ctx.boards
+    .list(true)
+    .filter((b) => !b.worktree)
+    .map((b) => ({ boardId: b.id, store: ctx.boards.resolve(b.id) }));
+  return { tags: await aggregateTagsAcrossBoards(boards) };
 }
 
 /** Parse a slice handle (`SP-3_SL-42`) → its (spec, slice) numbers. */

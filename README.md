@@ -58,7 +58,9 @@ For specs, two per-item right-click actions manage a git **worktree** (parallel 
 
 ## Tags
 
-Specs, TEPs, and slices carry a free-form **`tags: [...]`** frontmatter array — the cross-board clustering mesh. Tags span multiple axes at once: component (`keycloak`), concern (`security`, `inference`), or project (`rebrand`). They're set via the board tools (`create_slice` / `create_tep` accept a `tags` argument; `update_slice` replaces them — pass `[]` to clear), returned by `get_slice`, and shown on each `list_board` card. A legacy single `theme:` value is still honored (folded in as a tag, never dropped). Tags are the clustering layer that cross-board grouping builds on.
+Specs, TEPs, and slices carry a free-form **`tags: [...]`** frontmatter array — the cross-board clustering mesh. Tags span multiple axes at once: component (`keycloak`), concern (`security`, `inference`), or project (`rebrand`). They're set via the board tools (`create_slice` / `create_tep` accept a `tags` argument; `update_slice` replaces them — pass `[]` to clear), returned by `get_slice`, and shown on each `list_board` card. A legacy single `theme:` value is still honored (folded in as a tag, never dropped).
+
+The **`list_tags`** tool aggregates the mesh **across every board** in the workspace: it returns each tag with a `count` and the `items` carrying it (`{ board, handle, kind }`), so one tag clusters work wherever it lives. An item with N tags appears under all N. This cross-board clustering is the layer Products and Projects build on — a project is, in effect, a promoted tag.
 
 ## Configuration view
 
