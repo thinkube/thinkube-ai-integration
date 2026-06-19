@@ -65,6 +65,8 @@ For specs, two per-item right-click actions manage a git **worktree** (parallel 
 
 On a **trusted** session in that repo the plugin auto-installs and the methodology skills/agents/hook go live. (A plugin enabled this way is invisible to `claude plugin list` — it loads from cache per session; verify by skill availability, not the list.)
 
+The plugin also ships the **`thinkube-kanban` board MCP server** as a self-contained bundle (`mcp/kanban.js`, launched via `${CLAUDE_PLUGIN_ROOT}`), so enabling it gives a session the board tools (`list_boards`, `move_slice`, …) with **no per-repo `.mcp.json`**. The server self-configures from a machine-level `<CLAUDE_CONFIG_DIR>/thinkube-mcp.json` the extension writes on activation (board root + folders), so it needs no env injection.
+
 ## Products
 
 A **Product** is the code-less top node of the hierarchy — a top-level directory in the sidecar board root whose member Thinking Spaces are the board namespaces nested under it (e.g. `Platform/core/thinkube`, `Platform/docs/site` belong to the `Platform` product). A Product exists by virtue of containing board namespaces; an optional **`<product>/product.yaml`** (`name:` + metadata) gives it a display name. Products are discovered straight from the sidecar tree, so they need no `.git` of their own, and they generalize the old fixed `Platform / Apps / Templates` containers into arbitrary, user-defined groupings.
