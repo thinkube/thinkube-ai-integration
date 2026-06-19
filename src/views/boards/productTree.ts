@@ -39,6 +39,29 @@ export interface ProductTree {
   ungroupedRepoPaths: string[];
 }
 
+export interface MemberItem {
+  board: string;
+  handle: string;
+  kind: string;
+  tags: string[];
+}
+export interface MemberDesc {
+  board: string;
+  handle: string;
+  kind: string;
+}
+
+/**
+ * A Project's members (SP-tgvl81_SL-2): the items carrying the project's `tag`.
+ * Pure — the navigator's member view collects the tagged items host-side, then
+ * filters them through here. Non-matching items are excluded.
+ */
+export function projectMembers(tag: string, items: MemberItem[]): MemberDesc[] {
+  return items
+    .filter((i) => i.tags.includes(tag))
+    .map(({ board, handle, kind }) => ({ board, handle, kind }));
+}
+
 export function buildProductTree(
   products: Product[],
   projects: Project[],

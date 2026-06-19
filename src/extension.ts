@@ -40,6 +40,7 @@ import { ConfigTreeProvider } from "./views/sidebar/ConfigTreeProvider";
 import { BoardNavigatorProvider } from "./views/boards/BoardNavigatorProvider";
 import { SpecsProvider } from "./views/boards/SpecsProvider";
 import { TepsProvider } from "./views/boards/TepsProvider";
+import { ProjectMembersProvider } from "./views/boards/ProjectMembersProvider";
 import { ThinkubeStore } from "./store/ThinkubeStore";
 import { registerBoardCommands, seedBoardsFilter } from "./commands/boards";
 import {
@@ -246,10 +247,18 @@ export function activate(context: vscode.ExtensionContext) {
   const tepsView = vscode.window.createTreeView("thinkubeTeps", {
     treeDataProvider: tepsProvider,
   });
+  // Project members (SP-tgvl81_SL-2): selecting a Project in the navigator lists
+  // the items (across boards) carrying its tag.
+  const projectMembersProvider = new ProjectMembersProvider();
+  const projectMembersView = vscode.window.createTreeView(
+    "thinkubeProjectMembers",
+    { treeDataProvider: projectMembersProvider },
+  );
   context.subscriptions.push(
     boardsView,
     specsView,
     tepsView,
+    projectMembersView,
     boardsView.onDidChangeSelection((e) => {
       const node = e.selection[0];
       const repo =
@@ -267,6 +276,14 @@ export function activate(context: vscode.ExtensionContext) {
         // scope it to the selected Thinking Space's .claude/.
         treeProvider.setSelectedRepo({ path: repo.path, name: repo.name });
         treeView.description = repo.name;
+      } else if (node?.kind === "project") {
+        // Selecting a Project lists its tag-resolved members (SP-tgvl81_SL-2).
+        projectMembersProvider.setProject({
+          product: node.product,
+          name: node.name,
+          tag: node.tag,
+        });
+        projectMembersView.description = `${node.name} · #${node.tag}`;
       }
     }),
     // Drill-down (SP-tgs8nz): selecting a TEP filters the Specs view to that

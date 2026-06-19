@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { buildProductTree, RepoRef } from "./productTree";
+import { buildProductTree, projectMembers, RepoRef } from "./productTree";
 import type { Product } from "../../store/products";
 import type { Project } from "../../store/projects";
 
@@ -59,4 +59,20 @@ test("no products → every repo is ungrouped", () => {
   const tree = buildProductTree([], [], repos);
   assert.equal(tree.products.length, 0);
   assert.equal(tree.ungroupedRepoPaths.length, repos.length);
+});
+
+test("projectMembers keeps only items carrying the project tag (SL-2)", () => {
+  const items = [
+    { board: "A", handle: "SP-1", kind: "spec", tags: ["rebrand", "x"] },
+    { board: "B", handle: "SP-2_SL-1", kind: "slice", tags: ["rebrand"] },
+    { board: "A", handle: "TEP-z", kind: "tep", tags: ["other"] },
+    { board: "B", handle: "SP-9", kind: "spec", tags: [] },
+  ];
+  const members = projectMembers("rebrand", items);
+  assert.deepEqual(
+    members.map((m) => m.handle),
+    ["SP-1", "SP-2_SL-1"],
+  );
+  // descriptor carries board + kind, drops tags
+  assert.deepEqual(members[0], { board: "A", handle: "SP-1", kind: "spec" });
 });
