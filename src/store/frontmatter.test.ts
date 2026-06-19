@@ -17,6 +17,7 @@ import {
   scanForSecrets,
   parseFrontmatter,
   serializeFrontmatter,
+  effectiveTags,
 } from "./frontmatter";
 
 test("a 40-char hex digest in frontmatter is not flagged as an AWS key", () => {
@@ -68,4 +69,33 @@ test("a file with no archived key parses as not-archived (back-compat)", () => {
     "\n",
   );
   assert.equal(parseFrontmatter(text).frontmatter?.archived, undefined);
+});
+
+// ── tags mesh (SP-tgvil2 / TEP-tgvh8p) ──
+
+test("a tags array round-trips through serialize → parse (order preserved)", () => {
+  const text = serializeFrontmatter({
+    frontmatter: { uid: "s", tags: ["security", "inference"] },
+    body: "# A Spec\n",
+  });
+  assert.deepEqual(parseFrontmatter(text).frontmatter?.tags, [
+    "security",
+    "inference",
+  ]);
+});
+
+test("effectiveTags returns the tags array", () => {
+  assert.deepEqual(effectiveTags({ tags: ["a", "b"] }), ["a", "b"]);
+});
+
+test("effectiveTags folds a legacy `theme` in as a tag (back-compat, never dropped)", () => {
+  assert.deepEqual(effectiveTags({ theme: "rebrand" }), ["rebrand"]);
+  // theme is appended after explicit tags, deduped.
+  assert.deepEqual(effectiveTags({ tags: ["a"], theme: "b" }), ["a", "b"]);
+  assert.deepEqual(effectiveTags({ tags: ["a"], theme: "a" }), ["a"]);
+});
+
+test("effectiveTags trims blanks and dedups; undefined fm → []", () => {
+  assert.deepEqual(effectiveTags({ tags: ["a", " a ", "", "b"] }), ["a", "b"]);
+  assert.deepEqual(effectiveTags(undefined), []);
 });

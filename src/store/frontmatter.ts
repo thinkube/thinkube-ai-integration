@@ -36,7 +36,12 @@ export interface Frontmatter {
   uid?: string;
   /** Parent Spec handle for a slice, e.g. "SP-3". Supersedes `parent_issue`. */
   parent?: string;
-  /** Theme grouping tag (sits above the Spec; not a tier). */
+  /** Free-form clustering tags — the #hashtag mesh (SP-tgvil2 / TEP-tgvh8p):
+   *  component (`keycloak`), concern (`security`), project (`rebrand`). Many-to-many
+   *  and cross-board. Read via `effectiveTags` (which also folds the legacy `theme`). */
+  tags?: string[];
+  /** @deprecated Superseded by `tags` (SP-tgvil2); still read via `effectiveTags`.
+   *  Legacy single grouping tag (sat above the Spec; not a tier). */
   theme?: string;
   /** Board column / lifecycle status. Slices use ready|doing|done|archived;
    *  TEPs use proposed|accepted|superseded (TEP-0009); draft|active are legacy. */
@@ -117,6 +122,24 @@ export interface Frontmatter {
   parent_issue?: number;
   /** Anything else the user puts in the frontmatter. We preserve unknown keys. */
   [extra: string]: unknown;
+}
+
+/**
+ * The effective tag set for an item (SP-tgvil2 / TEP-tgvh8p): `tags` unioned
+ * with a legacy single `theme` (superseded but never dropped). Explicit `tags`
+ * come first, then `theme` if not already present; blanks trimmed, deduped.
+ */
+export function effectiveTags(fm: Frontmatter | undefined): string[] {
+  if (!fm) return [];
+  const out: string[] = [];
+  const push = (t: unknown) => {
+    if (typeof t !== "string") return;
+    const v = t.trim();
+    if (v && !out.includes(v)) out.push(v);
+  };
+  if (Array.isArray(fm.tags)) fm.tags.forEach(push);
+  push(fm.theme);
+  return out;
 }
 
 export interface ParsedFile {
