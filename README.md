@@ -56,6 +56,15 @@ Archived items keep the archive icon regardless of status.
 
 For specs, two per-item right-click actions manage a git **worktree** (parallel work, one tree per spec): **Start Spec in Worktree** creates an isolated worktree + branch and opens a Claude session there; **Retire Spec Worktree** removes that worktree after delivery (refusing if it's dirty/unmerged) — it does _not_ delete the spec. Hover either action for the full description.
 
+## Methodology plugin (per-repo opt-in)
+
+"Enable Methodology Here" delivers the Tandem methodology via the **`tandem-methodology` Claude Code plugin** (from the `thinkube` marketplace), in addition to the per-repo bundle. It is strictly **opt-in and per-repo** — only a repo you enable gets it; every other repo is untouched, nothing global. Enabling a repo:
+
+- registers the `thinkube` marketplace once per machine from your local `thinkube-metadata` clone (a `directory` source — offline, no github); the machine-specific path stays in `~/.claude`, never in a repo;
+- writes a **portable** `enabledPlugins: { "tandem-methodology@thinkube": true }` (note: a **map**, not an array) into that repo's committed `.claude/settings.json`.
+
+On a **trusted** session in that repo the plugin auto-installs and the methodology skills/agents/hook go live. (A plugin enabled this way is invisible to `claude plugin list` — it loads from cache per session; verify by skill availability, not the list.)
+
 ## Products
 
 A **Product** is the code-less top node of the hierarchy — a top-level directory in the sidecar board root whose member Thinking Spaces are the board namespaces nested under it (e.g. `Platform/core/thinkube`, `Platform/docs/site` belong to the `Platform` product). A Product exists by virtue of containing board namespaces; an optional **`<product>/product.yaml`** (`name:` + metadata) gives it a display name. Products are discovered straight from the sidecar tree, so they need no `.git` of their own, and they generalize the old fixed `Platform / Apps / Templates` containers into arbitrary, user-defined groupings.

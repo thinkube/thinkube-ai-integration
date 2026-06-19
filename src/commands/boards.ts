@@ -28,7 +28,12 @@ import { ThinkubeFilesAdapter } from "../views/kanban/host/storage/ThinkubeFiles
 import {
   BoardNavigatorProvider,
   RepoEntry,
+  discoverRepos,
 } from "../views/boards/BoardNavigatorProvider";
+import {
+  registerMarketplace,
+  enableMethodologyPluginForRepo,
+} from "../methodology/pluginEnablement";
 
 interface BoardDeps {
   extensionUri: vscode.Uri;
@@ -254,6 +259,24 @@ async function enableHere(deps: BoardDeps, r: RepoEntry): Promise<void> {
   // ADR-0006: enable = the .thinkube/ skeleton + the per-repo methodology
   // bundle (skills, agents, .mcp.json server entry), via BundleInstaller.
   await vscode.commands.executeCommand("thinkube.kanban.installBundle", r.path);
+
+  // Per-repo opt-in plugin delivery (TEP-tgvwct, Phase 2): make THIS repo's
+  // methodology come from the tandem-methodology plugin. Register the
+  // marketplace once per machine from the local thinkube-metadata clone (a
+  // directory source — offline; the machine path stays in ~/.claude), then write
+  // the portable `enabledPlugins` entry into this repo's committed
+  // .claude/settings.json. On a trusted session here the plugin auto-installs;
+  // repos that weren't opted in get nothing. Best-effort — the copied bundle
+  // above still works if the plugin path is unavailable.
+  const marketplaceRepo = discoverRepos().find(
+    (x) => x.name === "thinkube-metadata",
+  );
+  try {
+    if (marketplaceRepo) await registerMarketplace(marketplaceRepo.path);
+    await enableMethodologyPluginForRepo(r.path);
+  } catch {
+    /* opt-in still succeeds via the copied bundle */
+  }
   deps.provider.refresh();
   const action = await vscode.window.showInformationMessage(
     `Enabled the Tandem methodology in ${r.name}. Commit .thinkube/ and start adding specs.`,
