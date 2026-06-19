@@ -69,6 +69,8 @@ The plugin also ships the **`thinkube-kanban` board MCP server** as a self-conta
 
 **Two-tier marketplaces.** Enabling a repo registers **every locally-cloned `*-metadata` repo that carries a `.claude-plugin/marketplace.json`** — the official `thinkube/thinkube-metadata` *and* your own `{github_org}-metadata`. So you can **publish your own plugins** by adding them to your org's metadata repo's `marketplace.json`; they're registered alongside the official ones automatically (org-agnostic — discovered by the `*-metadata` naming, no `GITHUB_ORG` config).
 
+**The per-repo bundle is now minimal.** Since the plugin delivers the skills, agents, and board MCP, the per-repo methodology bundle no longer copies them — it carries only what a plugin can't inject into a repo: the **permissions** allow/deny merge, the **ownership-guard hook** (file + registration), and the **CLAUDE.md methodology block**. That ends the per-repo copy + drift of the methodology content (the propagation problem the plugin removes).
+
 ## Products
 
 A **Product** is the code-less top node of the hierarchy — a top-level directory in the sidecar board root whose member Thinking Spaces are the board namespaces nested under it (e.g. `Platform/core/thinkube`, `Platform/docs/site` belong to the `Platform` product). A Product exists by virtue of containing board namespaces; an optional **`<product>/product.yaml`** (`name:` + metadata) gives it a display name. Products are discovered straight from the sidecar tree, so they need no `.git` of their own, and they generalize the old fixed `Platform / Apps / Templates` containers into arbitrary, user-defined groupings.

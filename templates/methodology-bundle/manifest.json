@@ -1,6 +1,6 @@
 {
-  "version": "0.0.22",
-  "_comment": "List of files the bundle owns. BundleInstaller reads this to know what to copy on install, hashes each file at install time, and records the hashes in .claude/.bundle-version.json for drift detection. Edit this file in lockstep with the bundle contents — files not listed here won't be installed.",
+  "version": "0.1.0",
+  "_comment": "Files the per-repo bundle owns. TEP-tgvwct Phase 5: skills, agents, and the kanban MCP are now delivered by the tandem-methodology plugin (from the thinkube marketplace) and are NO LONGER copied here — that copy + drift was the propagation problem the plugin removes. This bundle now carries only what a plugin cannot deliver into a repo: the permissions merge, the ownership-guard hook (file + registration), and the CLAUDE.md methodology block. BundleInstaller reads this to know what to install and records hashes in .claude/.bundle-version.json for drift detection of the retained files.",
   "files": [
     {
       "source": "VERSION",
@@ -18,64 +18,9 @@
       "kind": "copy"
     },
     {
-      "source": "mcp.json",
-      "target": ".mcp.json",
-      "kind": "mcp-merge"
-    },
-    {
       "source": "CLAUDE.md",
       "target": "CLAUDE.md",
       "kind": "claudemd-block"
-    },
-    {
-      "source": "skills/spec-prepare/SKILL.md",
-      "target": ".claude/skills/spec-prepare/SKILL.md",
-      "kind": "copy"
-    },
-    {
-      "source": "skills/slice/SKILL.md",
-      "target": ".claude/skills/slice/SKILL.md",
-      "kind": "copy"
-    },
-    {
-      "source": "skills/tep/SKILL.md",
-      "target": ".claude/skills/tep/SKILL.md",
-      "kind": "copy"
-    },
-    {
-      "source": "skills/board/SKILL.md",
-      "target": ".claude/skills/board/SKILL.md",
-      "kind": "copy"
-    },
-    {
-      "source": "skills/retro/SKILL.md",
-      "target": ".claude/skills/retro/SKILL.md",
-      "kind": "copy"
-    },
-    {
-      "source": "skills/methodology-context/SKILL.md",
-      "target": ".claude/skills/methodology-context/SKILL.md",
-      "kind": "copy"
-    },
-    {
-      "source": "skills/repo-conventions/SKILL.md",
-      "target": ".claude/skills/repo-conventions/SKILL.md",
-      "kind": "copy"
-    },
-    {
-      "source": "agents/explorer.md",
-      "target": ".claude/agents/explorer.md",
-      "kind": "copy"
-    },
-    {
-      "source": "agents/reviewer.md",
-      "target": ".claude/agents/reviewer.md",
-      "kind": "copy"
-    },
-    {
-      "source": "agents/verifier.md",
-      "target": ".claude/agents/verifier.md",
-      "kind": "copy"
     }
   ]
 }
