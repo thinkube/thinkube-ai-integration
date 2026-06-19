@@ -2,7 +2,7 @@
   "name": "thinkube-ai-integration",
   "displayName": "Thinkube AI Integration",
   "description": "Thinkube integration for AI assistants - Launch Claude from explorer context menu with smart directory detection and project configuration",
-  "version": "0.1.36",
+  "version": "0.1.37",
   "publisher": "thinkube",
   "engines": {
     "vscode": "^1.101.0"
@@ -137,6 +137,12 @@
       {
         "command": "thinkube.boards.newClaudeSession",
         "title": "New Claude Session Here",
+        "category": "Thinkube Boards",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "thinkube.projects.newClaudeSession",
+        "title": "New Claude Session in Project",
         "category": "Thinkube Boards",
         "icon": "$(comment-discussion)"
       },
@@ -466,6 +472,11 @@
         {
           "command": "thinkube.projects.new",
           "when": "view == thinkubeBoards && viewItem == thinkubeProduct",
+          "group": "inline"
+        },
+        {
+          "command": "thinkube.projects.newClaudeSession",
+          "when": "view == thinkubeBoards && viewItem == thinkubeProject",
           "group": "inline"
         },
         {

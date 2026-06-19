@@ -28,6 +28,7 @@ import { ThinkubeFilesAdapter } from "../views/kanban/host/storage/ThinkubeFiles
 import {
   BoardNavigatorProvider,
   RepoEntry,
+  ProjectNode,
   discoverRepos,
 } from "../views/boards/BoardNavigatorProvider";
 import {
@@ -103,6 +104,10 @@ export function registerBoardCommands(
       (r: RepoEntry) => deps.launcher.openHere(vscode.Uri.file(r.path)),
     ),
     vscode.commands.registerCommand(
+      "thinkube.projects.newClaudeSession",
+      (node: ProjectNode) => openProjectSession(deps, node),
+    ),
+    vscode.commands.registerCommand(
       "thinkube.boards.resumeClaudeSession",
       (r: RepoEntry) => resumeClaudeSession(deps, r),
     ),
@@ -113,6 +118,48 @@ export function registerBoardCommands(
       applyConfiguredOnly(context, deps.provider, false),
     ),
   );
+}
+
+/** The sidecar dir of a Project (TEP-tgvwct Phase 6): `<boardRoot>/<product>/projects/<id>`. */
+export function projectDirPath(
+  boardRoot: string,
+  product: string,
+  id: string,
+): string {
+  return path.join(boardRoot, product, "projects", id);
+}
+
+/**
+ * "New Claude Session in Project" (Phase 6) — the cockpit affordance projects
+ * lacked. Resolve the project's sidecar dir, ensure it's plugin-enabled (register
+ * the discovered metadata marketplaces + write its portable `enabledPlugins`), and
+ * open a Claude session rooted there. The plugin supplies the methodology + board
+ * MCP; per-spec code work still happens in member-repo worktrees.
+ */
+async function openProjectSession(
+  deps: BoardDeps,
+  node: ProjectNode,
+): Promise<void> {
+  const boardRoot = vscode.workspace
+    .getConfiguration("thinkube.boards")
+    .get<string>("root")
+    ?.trim();
+  if (!boardRoot) {
+    vscode.window.showErrorMessage(
+      "Set `thinkube.boards.root` to open a project session.",
+    );
+    return;
+  }
+  const dir = projectDirPath(boardRoot, node.product, node.id);
+  try {
+    await fs.mkdir(dir, { recursive: true });
+    for (const m of discoverMetadataMarketplaces(discoverRepos(), readMarketplaceName))
+      await registerMarketplace(m.path);
+    await enableMethodologyPluginForRepo(dir);
+  } catch {
+    /* best-effort — still open the session */
+  }
+  await deps.launcher.openHere(vscode.Uri.file(dir));
 }
 
 /**
