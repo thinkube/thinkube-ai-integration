@@ -100,6 +100,24 @@ export function projectTepGroups(
   }));
 }
 
+/**
+ * The specs implementing a single TEP (SP-tgvud7_SL-1) — every spec whose
+ * `implements:` resolves to `(ownerNamespace, tepId)`, across boards. A repo
+ * TEP (owner = a repo namespace) yields its same-repo implementer(s); an
+ * umbrella TEP (owner = a project namespace) yields the cross-repo set. Pure;
+ * the navigator feeds it a host-side collection of every board's specs.
+ */
+export function specsImplementing(
+  ownerNamespace: string,
+  tepId: string,
+  specs: SpecImpl[],
+): SpecImpl[] {
+  return specs.filter((s) => {
+    const ref = parseImplements(s.implements);
+    return !!ref && resolvesTo(ref, s.namespace, ownerNamespace, tepId);
+  });
+}
+
 export function buildProductTree(
   products: Product[],
   projects: Project[],

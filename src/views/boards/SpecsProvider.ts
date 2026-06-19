@@ -20,7 +20,10 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 
 import { ThinkubeStore } from "../../store/ThinkubeStore";
-import { RepoEntry } from "./BoardNavigatorProvider";
+import { RepoEntry, discoverRepos } from "./BoardNavigatorProvider";
+import { namespaceForRepo } from "../../store/boardNamespace";
+import { specsImplementing, SpecImpl } from "./productTree";
+import { parseImplements } from "../../store/implementsRef";
 import {
   buildCommitUrl,
   detectRepoCoords,
@@ -57,6 +60,9 @@ export type SpecNode =
       implementsTep?: ImplementsLink;
       /** The Thinking Space's code repo path — worktrees are cut from here (SP-9). */
       repoPath: string;
+      /** The owning repo entry — the kanban/worktree target (SP-tgvud7: a
+       *  cross-board umbrella member lives in a different repo than the selection). */
+      repo: RepoEntry;
       /** Any ready/doing slice — gates the Start-in-Worktree action (SP-9). */
       hasOpenWork: boolean;
       /** The Spec carries the `accepted:` stamp (completed; TEP-0010) — drives
@@ -83,6 +89,11 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
   /** Drill-down: when set, list only Specs implementing this TEP id (SP-tgs8nz). */
   private tepFilter: string | undefined;
 
+  /** The namespace owning the drilled-into TEP (SP-tgvud7). When it's a project
+   *  namespace (an umbrella TEP), implementers are resolved CROSS-BOARD; absent
+   *  (or a repo namespace) ⇒ the single-repo path. */
+  private tepOwnerNamespace: string | undefined;
+
   /** The currently-scoped thinking space — the "+ New Spec" command roots its
    *  session here and mints the id from its board. */
   get repoEntry(): RepoEntry | undefined {
@@ -100,6 +111,7 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
       return;
     this.repo = repo;
     this.tepFilter = undefined; // a new space → no TEP drill-down yet
+    this.tepOwnerNamespace = undefined;
     this.refresh();
   }
 
@@ -110,11 +122,17 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
     this.refresh();
   }
 
-  /** Drill-down to a single TEP's Specs (undefined = all Specs of the space). */
-  setTepFilter(tepId: string | undefined): void {
+  /**
+   * Drill into a single TEP's implementing Specs (undefined = none). When
+   * `ownerNamespace` is a project namespace (an umbrella TEP), implementers are
+   * resolved cross-board; otherwise the single-repo path is used (SP-tgvud7).
+   */
+  setTepFilter(tepId: string | undefined, ownerNamespace?: string): void {
     const next = tepId || undefined;
-    if (this.tepFilter === next) return;
+    const owner = ownerNamespace || undefined;
+    if (this.tepFilter === next && this.tepOwnerNamespace === owner) return;
     this.tepFilter = next;
+    this.tepOwnerNamespace = owner;
     this.refresh();
   }
 
@@ -136,6 +154,12 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
       }
       return [];
     }
+    // Cross-board drill-down (SP-tgvud7): an umbrella TEP's implementers span
+    // repos, so resolve them across all boards rather than a single repo.
+    if (this.tepFilter && this.tepOwnerNamespace) {
+      return this.crossBoardSpecs(this.tepOwnerNamespace, this.tepFilter);
+    }
+
     // No selection → empty, which surfaces the view's welcome text.
     if (!this.repo) return [];
     if (!this.repo.enabled) {
@@ -164,52 +188,120 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
     // Resolve the repo coords once so a recorded commit SHA becomes a
     // clickable URL. Undefined for non-GitHub remotes — the SHA still shows.
     const coords = await detectRepoCoords(this.repo.path);
+    const boardRoot = boardsRoot();
 
     const nodes: SpecNode[] = [];
     for (const n of [...numbers].sort((a, b) => a.localeCompare(b))) {
-      const rel = store.pathForSpecDoc(n);
-      const doc = await store.getFile(rel);
-      // Manual archive flag (TEP-tg86v7): hidden unless "Show archived" is on.
-      const archived = doc?.frontmatter?.archived === true;
-      if (archived && !this.showArchived) continue;
-      const { delivered, hasOpenWork } = await this.specRollup(
-        store,
-        n,
-        coords,
-      );
-      // `implements: TEP-<id>` → a click-through to the proposal (TEP-0009).
+      const doc = await store.getFile(store.pathForSpecDoc(n));
       const impl =
         typeof doc?.frontmatter?.implements === "string"
           ? doc.frontmatter.implements.trim()
           : "";
-      // Drill-down: when a TEP is selected, list only the Specs implementing it.
-      if (this.tepFilter && impl.replace(/^TEP-/i, "") !== this.tepFilter)
-        continue;
-      let implementsTep: ImplementsLink | undefined;
-      if (impl) {
-        const tepId = impl.replace(/^TEP-/i, "");
-        // The real file may be slugged (`TEP-0009-...md`); fall back to the
-        // canonical slugless path so the row still renders if not found.
-        const tepRel = (await store.findTep(tepId)) ?? store.pathForTep(tepId);
-        implementsTep = {
-          tepId,
-          file: path.join(store.thinkubeDir, tepRel),
-        };
-      }
-      nodes.push({
-        kind: "spec",
-        specNumber: n,
-        title: firstHeading(doc?.body) ?? "(untitled)",
-        file: path.join(store.thinkubeDir, rel),
-        delivered,
-        implementsTep,
-        repoPath: this.repo.path,
-        hasOpenWork,
-        accepted: doc?.frontmatter?.accepted != null,
-        archived,
-      });
+      // Single-repo drill-down: match the bare TEP id (legacy repo TEP path).
+      if (impl.replace(/^TEP-/i, "") !== this.tepFilter) continue;
+      const node = await this.buildSpecNode(this.repo, store, n, coords, boardRoot);
+      if (node) nodes.push(node);
     }
     return nodes;
+  }
+
+  /** Specs implementing an umbrella TEP, resolved across every enabled board
+   *  (SP-tgvud7) — each result carries its own repo. */
+  private async crossBoardSpecs(
+    ownerNamespace: string,
+    tepId: string,
+  ): Promise<SpecNode[]> {
+    const folders = (vscode.workspace.workspaceFolders ?? []).map((f) => ({
+      name: f.name,
+      path: f.uri.fsPath,
+    }));
+    const boardRoot = boardsRoot();
+    const candidates: {
+      repo: RepoEntry;
+      store: ThinkubeStore;
+      specNumber: string;
+      impl: SpecImpl;
+    }[] = [];
+    for (const repo of discoverRepos()) {
+      if (!repo.enabled || repo.worktreeOf) continue;
+      const ns = namespaceForRepo(repo.path, folders);
+      if (!ns) continue;
+      const store = new ThinkubeStore(repo.path, repo.boardDir);
+      for (const n of await store.listSpecDirs()) {
+        const fm = (await store.getFile(store.pathForSpecDoc(n)))?.frontmatter;
+        candidates.push({
+          repo,
+          store,
+          specNumber: n,
+          impl: {
+            board: repo.name,
+            namespace: ns,
+            handle: `SP-${n}`,
+            implements:
+              typeof fm?.implements === "string" ? fm.implements : undefined,
+          },
+        });
+      }
+    }
+    const hits = new Set(
+      specsImplementing(
+        ownerNamespace,
+        tepId,
+        candidates.map((c) => c.impl),
+      ).map((s) => s.handle),
+    );
+    const nodes: SpecNode[] = [];
+    for (const c of candidates) {
+      if (!hits.has(c.impl.handle)) continue;
+      const coords = await detectRepoCoords(c.repo.path);
+      const node = await this.buildSpecNode(c.repo, c.store, c.specNumber, coords, boardRoot);
+      if (node) nodes.push(node);
+    }
+    return nodes;
+  }
+
+  /** Build a Spec tree node for one spec in a given repo's store (SP-tgvud7). */
+  private async buildSpecNode(
+    repo: RepoEntry,
+    store: ThinkubeStore,
+    n: string,
+    coords: RepoCoords | undefined,
+    boardRoot: string | undefined,
+  ): Promise<SpecNode | undefined> {
+    const rel = store.pathForSpecDoc(n);
+    const doc = await store.getFile(rel);
+    const archived = doc?.frontmatter?.archived === true;
+    if (archived && !this.showArchived) return undefined;
+    const { delivered, hasOpenWork } = await this.specRollup(store, n, coords);
+    const implRaw =
+      typeof doc?.frontmatter?.implements === "string"
+        ? doc.frontmatter.implements.trim()
+        : "";
+    let implementsTep: ImplementsLink | undefined;
+    if (implRaw) {
+      const ref = parseImplements(implRaw);
+      const tepId = ref?.id ?? implRaw.replace(/^TEP-/i, "");
+      // A qualified ref's TEP lives in its owner namespace (a project umbrella);
+      // a bare ref's TEP is in the spec's own repo (slug-tolerant via findTep).
+      const file =
+        ref?.namespace && boardRoot
+          ? path.join(boardRoot, ...ref.namespace.split("/"), "teps", `TEP-${tepId}.md`)
+          : path.join(store.thinkubeDir, (await store.findTep(tepId)) ?? store.pathForTep(tepId));
+      implementsTep = { tepId, file };
+    }
+    return {
+      kind: "spec",
+      specNumber: n,
+      title: firstHeading(doc?.body) ?? "(untitled)",
+      file: path.join(store.thinkubeDir, rel),
+      delivered,
+      implementsTep,
+      repoPath: repo.path,
+      repo,
+      hasOpenWork,
+      accepted: doc?.frontmatter?.accepted != null,
+      archived,
+    };
   }
 
   /** A Spec's delivery roll-up (done slices, with commit/PR) plus whether it has
@@ -282,7 +374,7 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
     item.command = {
       command: "thinkube.specs.openKanban",
       title: "Open Spec kanban",
-      arguments: [this.repo, node.specNumber],
+      arguments: [node.repo, node.specNumber],
     };
     return item;
   }
@@ -388,6 +480,16 @@ function deliveredTooltip(s: DeliveredSlice): string {
 function prLabel(url: string): string {
   const m = /\/pull\/(\d+)/.exec(url);
   return m ? `PR #${m[1]}` : "PR";
+}
+
+/** The configured central board root (`thinkube.boards.root`), or undefined. */
+function boardsRoot(): string | undefined {
+  return (
+    vscode.workspace
+      .getConfiguration("thinkube.boards")
+      .get<string>("root")
+      ?.trim() || undefined
+  );
 }
 
 /** First markdown heading / non-empty line of the body, marker stripped. */

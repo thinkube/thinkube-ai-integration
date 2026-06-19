@@ -9,6 +9,7 @@ import {
   buildProductTree,
   projectMembers,
   projectTepGroups,
+  specsImplementing,
   RepoRef,
 } from "./productTree";
 import type { Product } from "../../store/products";
@@ -64,6 +65,27 @@ test("no products → every repo is ungrouped", () => {
   const tree = buildProductTree([], [], repos);
   assert.equal(tree.products.length, 0);
   assert.equal(tree.ungroupedRepoPaths.length, repos.length);
+});
+
+test("specsImplementing: umbrella TEP → cross-repo set; repo TEP → same-repo; excludes others (SP-tgvud7)", () => {
+  const PROJ = "Platform/projects/rebrand";
+  const REPO = "Platform/core/thinkube";
+  const specs = [
+    { board: "thinkube", namespace: REPO, handle: "SP-a", implements: `${PROJ}:TEP-reb` },
+    { board: "control", namespace: "Platform/core/control", handle: "SP-b", implements: `${PROJ}:TEP-reb` },
+    { board: "thinkube", namespace: REPO, handle: "SP-c", implements: "TEP-local" }, // bare, repo-local
+    { board: "control", namespace: "Platform/core/control", handle: "SP-d", implements: "TEP-other" },
+  ];
+  // umbrella TEP → the two qualified implementers across repos
+  assert.deepEqual(
+    specsImplementing(PROJ, "reb", specs).map((s) => s.handle),
+    ["SP-a", "SP-b"],
+  );
+  // repo TEP (owner = the repo namespace) → the bare implementer in that repo
+  assert.deepEqual(
+    specsImplementing(REPO, "local", specs).map((s) => s.handle),
+    ["SP-c"],
+  );
 });
 
 test("projectTepGroups groups implementing specs under each umbrella TEP (SP-tgvpbm)", () => {
