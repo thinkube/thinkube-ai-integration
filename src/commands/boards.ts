@@ -33,6 +33,8 @@ import {
 import {
   registerMarketplace,
   enableMethodologyPluginForRepo,
+  discoverMetadataMarketplaces,
+  readMarketplaceName,
 } from "../methodology/pluginEnablement";
 
 interface BoardDeps {
@@ -268,11 +270,15 @@ async function enableHere(deps: BoardDeps, r: RepoEntry): Promise<void> {
   // .claude/settings.json. On a trusted session here the plugin auto-installs;
   // repos that weren't opted in get nothing. Best-effort — the copied bundle
   // above still works if the plugin path is unavailable.
-  const marketplaceRepo = discoverRepos().find(
-    (x) => x.name === "thinkube-metadata",
+  // Register every locally-cloned `*-metadata` marketplace (TEP-tgvwct Phase 4):
+  // the official `thinkube-metadata` AND any user `{org}-metadata`, so a user can
+  // publish/enable their own plugins beside the official ones. Org-agnostic.
+  const marketplaces = discoverMetadataMarketplaces(
+    discoverRepos(),
+    readMarketplaceName,
   );
   try {
-    if (marketplaceRepo) await registerMarketplace(marketplaceRepo.path);
+    for (const m of marketplaces) await registerMarketplace(m.path);
     await enableMethodologyPluginForRepo(r.path);
   } catch {
     /* opt-in still succeeds via the copied bundle */

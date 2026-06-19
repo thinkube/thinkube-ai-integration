@@ -15,7 +15,7 @@
  * `applyPluginEnablement` is PURE (no vscode/fs) → unit-tested. The fs/process
  * wrappers below are thin glue for the per-repo opt-in ("Enable Methodology Here").
  */
-import { promises as fs } from "node:fs";
+import { promises as fs, readFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import * as path from "node:path";
 import { promisify } from "node:util";
@@ -61,6 +61,53 @@ export function applyPluginEnablement(input: Settings | null | undefined): Enabl
   const already = enabled[PLUGIN_ID] === true && !Array.isArray(before.enabledPlugins);
   enabled[PLUGIN_ID] = true;
   return { settings: { ...before, enabledPlugins: enabled }, changed: !already };
+}
+
+/** A discovered Claude Code marketplace hosted in a `*-metadata` repo. */
+export interface MetadataMarketplace {
+  /** The repo name (e.g. `thinkube-metadata`, `acme-metadata`). */
+  repo: string;
+  /** Absolute path to the repo (the directory marketplace source). */
+  path: string;
+  /** The marketplace `name` from its `.claude-plugin/marketplace.json`. */
+  marketplaceName: string;
+}
+
+/**
+ * The metadata-repo marketplaces among `repos` (TEP-tgvwct, Phase 4): every repo
+ * named `*-metadata` that carries a `.claude-plugin/marketplace.json`, paired with
+ * that manifest's `name`. Covers the official `thinkube-metadata` AND each user's
+ * own `{org}-metadata` — org-agnostic, discovered structurally. Pure: the manifest
+ * read is injected (`readMarketplaceName` → the name, or null when absent/invalid).
+ */
+export function discoverMetadataMarketplaces(
+  repos: { name: string; path: string }[],
+  readMarketplaceName: (repoPath: string) => string | null,
+): MetadataMarketplace[] {
+  const out: MetadataMarketplace[] = [];
+  for (const r of repos) {
+    if (!r.name.endsWith("-metadata")) continue;
+    const marketplaceName = readMarketplaceName(r.path);
+    if (marketplaceName) out.push({ repo: r.name, path: r.path, marketplaceName });
+  }
+  return out;
+}
+
+/** Read the `name` from `<repoPath>/.claude-plugin/marketplace.json`, or null. */
+export function readMarketplaceName(repoPath: string): string | null {
+  try {
+    const manifest = JSON.parse(
+      readFileSync(
+        path.join(repoPath, ".claude-plugin", "marketplace.json"),
+        "utf8",
+      ),
+    ) as { name?: unknown };
+    return typeof manifest.name === "string" && manifest.name.trim()
+      ? manifest.name.trim()
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

@@ -4,7 +4,30 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { applyPluginEnablement, PLUGIN_ID } from "./pluginEnablement";
+import {
+  applyPluginEnablement,
+  PLUGIN_ID,
+  discoverMetadataMarketplaces,
+} from "./pluginEnablement";
+
+test("discoverMetadataMarketplaces: *-metadata repos with a manifest (official + user); others excluded (SP-tgwdn7)", () => {
+  const repos = [
+    { name: "thinkube-metadata", path: "/r/thinkube-metadata" }, // official, has manifest
+    { name: "acme-metadata", path: "/r/acme-metadata" }, // user tier, has manifest
+    { name: "thinkube", path: "/r/thinkube" }, // not -metadata
+    { name: "empty-metadata", path: "/r/empty-metadata" }, // -metadata but no manifest
+  ];
+  const names: Record<string, string | null> = {
+    "/r/thinkube-metadata": "thinkube",
+    "/r/acme-metadata": "acme",
+    "/r/empty-metadata": null,
+  };
+  const found = discoverMetadataMarketplaces(repos, (p) => names[p] ?? null);
+  assert.deepEqual(
+    found.map((m) => `${m.repo}:${m.marketplaceName}`),
+    ["thinkube-metadata:thinkube", "acme-metadata:acme"],
+  );
+});
 
 test("from empty: adds map-form enabledPlugins with the plugin id (changed)", () => {
   const { settings, changed } = applyPluginEnablement({});
