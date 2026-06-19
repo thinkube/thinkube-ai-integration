@@ -27,6 +27,9 @@ import {
   boardDirForNamespace,
   namespaceForRepo,
 } from "../../store/boardNamespace";
+import { discoverProducts } from "../../store/products";
+import { discoverProjects } from "../../store/projects";
+import { buildProductTree } from "./productTree";
 
 export interface RepoEntry {
   kind: "repo";
@@ -69,7 +72,32 @@ export interface BoardMessageNode {
   icon: string;
 }
 
-export type BoardNode = RepoEntry | BundleStatusNode | BoardMessageNode;
+/** A Product — the code-less top node (SP-tgvl81): groups member Spaces + Projects. */
+export interface ProductNode {
+  kind: "product";
+  id: string;
+  name: string;
+  repos: RepoEntry[];
+  projects: ProjectNode[];
+}
+
+/** A Project under a Product (SP-tgvl81) — a promoted tag; leaf in the tree (its
+ *  members surface in the dedicated member view on selection). */
+export interface ProjectNode {
+  kind: "project";
+  product: string;
+  id: string;
+  name: string;
+  state: "open" | "done";
+  tag: string;
+}
+
+export type BoardNode =
+  | RepoEntry
+  | BundleStatusNode
+  | BoardMessageNode
+  | ProductNode
+  | ProjectNode;
 
 /**
  * Find git repos across the open workspace folders (depth-limited), marking
@@ -270,8 +298,54 @@ export class BoardNavigatorProvider implements vscode.TreeDataProvider<BoardNode
       // separate Thinking Space), so hide worktree entries unless opted in —
       // they otherwise read as duplicate top-level boards.
       if (!showWorktrees) repos = repos.filter((r) => !r.worktreeOf);
-      return this._configuredOnly ? repos.filter((r) => r.enabled) : repos;
+      if (this._configuredOnly) repos = repos.filter((r) => r.enabled);
+
+      // Group the visible repos under their Product when the board root has any
+      // (SP-tgvl81). With no board root / no products, fall back to the flat
+      // repo list — Products are an additive layer, nothing disappears.
+      const boardRoot =
+        vscode.workspace
+          .getConfiguration("thinkube.boards")
+          .get<string>("root")
+          ?.trim() || undefined;
+      const products = boardRoot ? discoverProducts(boardRoot) : [];
+      if (boardRoot && products.length) {
+        const folders = (vscode.workspace.workspaceFolders ?? []).map((f) => ({
+          name: f.name,
+          path: f.uri.fsPath,
+        }));
+        const refs = repos.map((r) => ({
+          path: r.path,
+          namespace: namespaceForRepo(r.path, folders),
+        }));
+        const tree = buildProductTree(products, discoverProjects(boardRoot), refs);
+        const byPath = new Map(repos.map((r) => [r.path, r]));
+        const lookup = (p: string): RepoEntry | undefined => byPath.get(p);
+        const productNodes: BoardNode[] = tree.products.map((g) => ({
+          kind: "product",
+          id: g.id,
+          name: g.name,
+          repos: g.repoPaths.map(lookup).filter((r): r is RepoEntry => !!r),
+          projects: g.projects.map((pr) => ({
+            kind: "project",
+            product: pr.product,
+            id: pr.id,
+            name: pr.name,
+            state: pr.state,
+            tag: pr.tag,
+          })),
+        }));
+        const ungrouped = tree.ungroupedRepoPaths
+          .map(lookup)
+          .filter((r): r is RepoEntry => !!r);
+        return [...productNodes, ...ungrouped];
+      }
+      return repos;
     }
+    if (element.kind === "product") {
+      return [...element.repos, ...element.projects];
+    }
+    if (element.kind === "project") return []; // members surface in the member view (SP-tgvl81_SL-2)
     if (element.kind !== "repo" || !element.enabled) return [];
     // Enabled repo → one bundle-status child (per-file detail stays behind
     // the Diff command, matching the old Project view's single-row design).
@@ -294,6 +368,31 @@ export class BoardNavigatorProvider implements vscode.TreeDataProvider<BoardNode
 
   getTreeItem(node: BoardNode): vscode.TreeItem {
     if (node.kind === "bundle-status") return bundleStatusItem(node);
+    if (node.kind === "product") {
+      const item = new vscode.TreeItem(
+        node.name,
+        vscode.TreeItemCollapsibleState.Expanded,
+      );
+      const n = node.projects.length;
+      item.description = `product${n ? ` · ${n} project${n === 1 ? "" : "s"}` : ""}`;
+      item.tooltip = `Product: ${node.id}`;
+      item.contextValue = "thinkubeProduct";
+      item.iconPath = new vscode.ThemeIcon("package");
+      return item;
+    }
+    if (node.kind === "project") {
+      const item = new vscode.TreeItem(
+        node.name,
+        vscode.TreeItemCollapsibleState.None,
+      );
+      item.description = node.state === "done" ? "✓ done" : `#${node.tag}`;
+      item.tooltip = `Project ${node.product}/${node.id} · #${node.tag} · ${node.state}`;
+      item.contextValue = "thinkubeProject";
+      item.iconPath = new vscode.ThemeIcon(
+        node.state === "done" ? "pass-filled" : "milestone",
+      );
+      return item;
+    }
     if (node.kind === "message") {
       const item = new vscode.TreeItem(
         node.text,
