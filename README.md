@@ -56,6 +56,12 @@ Archived items keep the archive icon regardless of status.
 
 For specs, two per-item right-click actions manage a git **worktree** (parallel work, one tree per spec): **Start Spec in Worktree** creates an isolated worktree + branch and opens a Claude session there; **Retire Spec Worktree** removes that worktree after delivery (refusing if it's dirty/unmerged) — it does _not_ delete the spec. Hover either action for the full description.
 
+## Products
+
+A **Product** is the code-less top node of the hierarchy — a top-level directory in the sidecar board root whose member Thinking Spaces are the board namespaces nested under it (e.g. `Platform/core/thinkube`, `Platform/docs/site` belong to the `Platform` product). A Product exists by virtue of containing board namespaces; an optional **`<product>/product.yaml`** (`name:` + metadata) gives it a display name. Products are discovered straight from the sidecar tree, so they need no `.git` of their own, and they generalize the old fixed `Platform / Apps / Templates` containers into arbitrary, user-defined groupings.
+
+The **`list_products`** tool returns each Product `{ id, name, members }` across the board root (empty when no board root is configured). _(The navigator Product-tree and a "New Product" command land in a follow-up; this is the data + discovery layer.)_
+
 ## Tags
 
 Specs, TEPs, and slices carry a free-form **`tags: [...]`** frontmatter array — the cross-board clustering mesh. Tags span multiple axes at once: component (`keycloak`), concern (`security`, `inference`), or project (`rebrand`). They're set via the board tools (`create_slice` / `create_tep` accept a `tags` argument; `update_slice` replaces them — pass `[]` to clear), returned by `get_slice`, and shown on each `list_board` card. A legacy single `theme:` value is still honored (folded in as a tag, never dropped).

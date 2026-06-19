@@ -1,0 +1,50 @@
+/**
+ * Handler test for `list_products` (SP-tgvjug_SL-2). Uses the installVscodeStub
+ * pattern (import the stub FIRST) so importing the server module loads outside
+ * the extension host; `main()` is guarded by `require.main === module`, so this
+ * import does not boot the stdio server. `listProducts` only reads
+ * `ctx.env.boardRoot` (pure fs), so a minimal ctx suffices.
+ */
+import "./installVscodeStub";
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
+import { listProducts } from "./kanbanMcpServer";
+
+function boardRootFixture(): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tk-prodtool-"));
+  fs.mkdirSync(path.join(root, "Platform", "core", "thinkube", "specs"), {
+    recursive: true,
+  });
+  fs.writeFileSync(
+    path.join(root, "Platform", "product.yaml"),
+    "name: Thinkube Platform\n",
+  );
+  fs.mkdirSync(path.join(root, "Apps", "payments", "specs"), {
+    recursive: true,
+  });
+  return root;
+}
+
+test("list_products returns products + members for the configured board root", () => {
+  const root = boardRootFixture();
+  const res = listProducts({ env: { boardRoot: root } } as never) as {
+    products: { id: string; name: string; members: string[] }[];
+  };
+  assert.deepEqual(
+    res.products.map((p) => p.id),
+    ["Apps", "Platform"],
+  );
+  const platform = res.products.find((p) => p.id === "Platform");
+  assert.equal(platform?.name, "Thinkube Platform");
+  assert.deepEqual(platform?.members, ["Platform/core/thinkube"]);
+});
+
+test("list_products returns an empty list when no board root is configured", () => {
+  const res = listProducts({ env: {} } as never) as { products: unknown[] };
+  assert.deepEqual(res.products, []);
+});

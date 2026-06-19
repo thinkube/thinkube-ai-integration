@@ -73,6 +73,7 @@ import { isBoardDir } from "./boardDetection";
 import type { Frontmatter } from "../store/frontmatter";
 import { effectiveTags } from "../store/frontmatter";
 import { groupByTag, type TaggedItem } from "../store/tags";
+import { discoverProducts } from "../store/products";
 import { stampOnEnteringDone } from "../github/sliceProvenance";
 import { linkedWorktreeInfo } from "../services/WorktreeService";
 import {
@@ -534,6 +535,16 @@ const TOOL_DEFS = [
     },
   },
   {
+    name: "list_products",
+    description:
+      "List Products — the code-less top nodes of the hierarchy (SP-tgvjug / TEP-tgvh8p). A Product is a top-level directory in the sidecar board root whose member Thinking Spaces are the board namespaces nested under it. Returns each Product `{ id, name (from <product>/product.yaml, else the id), members: namespaces }`, sorted by id. Empty when no board root is configured. Products generalize the old fixed Platform/Apps/Templates containers into arbitrary user-defined groupings; a Project (later) is a tag promoted under a Product.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
     name: "list_board",
     description:
       "Current Tandem board, projected from the committed `.thinkube/specs/SP-{n}/SL-{m}.md` slice files. Returns the Ready / Doing / Done columns; each card carries its slice handle (`id`, e.g. `SP-3_SL-42`), title (`description`), and `specStale` / `specChange` (whether the parent Spec's requirements changed since the slice was last verified).",
@@ -832,6 +843,7 @@ async function dispatchTool(
 ): Promise<unknown> {
   if (name === "list_boards") return listBoards(ctx);
   if (name === "list_tags") return listTags(ctx);
+  if (name === "list_products") return listProducts(ctx);
 
   // Every other tool is board-scoped: resolve the store per call.
   const store = ctx.boards.resolve(optString(args, "board"));
@@ -1045,6 +1057,14 @@ async function listTags(ctx: HandlerContext): Promise<unknown> {
     .filter((b) => !b.worktree)
     .map((b) => ({ boardId: b.id, store: ctx.boards.resolve(b.id) }));
   return { tags: await aggregateTagsAcrossBoards(boards) };
+}
+
+/** `list_products` — Products (code-less top nodes) discovered from the sidecar
+ * board root, each with its member namespaces. Empty when no board root is set. */
+export function listProducts(ctx: HandlerContext): unknown {
+  return {
+    products: ctx.env.boardRoot ? discoverProducts(ctx.env.boardRoot) : [],
+  };
 }
 
 /** Parse a slice handle (`SP-3_SL-42`) → its (spec, slice) numbers. */
