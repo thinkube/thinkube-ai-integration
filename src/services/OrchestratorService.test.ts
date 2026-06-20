@@ -1,6 +1,6 @@
 /**
  * Unit tests for the orchestrator shell's makespan scheduler (SP-tgs8nz), exercised with fakes
- * (store / arbiter / worktrees / spawn / commit) — no real `claude -p`, no vscode. Verifies the
+ * (store / arbiter / worktrees / runUnit / commit) — no live Agent SDK, no vscode. Verifies the
  * scheduler logic (validate DAG → saturate the frontier → per-slice verify-join → commit-once);
  * the live worker actually doing useful work stays a human verdict (SP-tgsdvw lever).
  */
@@ -10,53 +10,30 @@ import assert from "node:assert/strict";
 import {
   OrchestratorService,
   type OrchestratorDeps,
-  type SpawnedWorker,
+  type WorkerResult,
 } from "./OrchestratorService";
 import { answerParkedWorker } from "./orchestratorSessions";
 
-/** A fake worker that emits one stream-json line then closes, after handlers register. */
-function fakeWorker(line: string): SpawnedWorker {
-  let dataCb: ((c: string) => void) | undefined;
-  return {
-    stdout: {
-      on: (_e: "data", cb: (c: Buffer | string) => void) => {
-        dataCb = cb as (c: string) => void;
-      },
-    },
-    on: (event: string, cb: (arg: never) => void) => {
-      if (event === "close") {
-        dataCb?.(line);
-        (cb as unknown as (code: number | null) => void)(0);
-      }
-    },
-  } as unknown as SpawnedWorker;
-}
+type RunUnit = NonNullable<OrchestratorDeps["runUnit"]>;
 
-/** A worker that defers its close to a microtask, tracking peak concurrency. */
-function asyncWorker(
-  track: { inFlight: number; max: number },
-  line: string,
-): SpawnedWorker {
-  let dataCb: ((c: string) => void) | undefined;
-  return {
-    stdout: {
-      on: (_e: "data", cb: (c: Buffer | string) => void) => {
-        dataCb = cb as (c: string) => void;
-      },
-    },
-    on: (event: string, cb: (arg: never) => void) => {
-      if (event === "close") {
-        track.inFlight++;
-        track.max = Math.max(track.max, track.inFlight);
-        setImmediate(() => {
-          dataCb?.(line);
-          track.inFlight--;
-          (cb as unknown as (code: number | null) => void)(0);
-        });
-      }
-    },
-  } as unknown as SpawnedWorker;
-}
+/** A runUnit that resolves to a fixed outcome (the default seam: success). */
+const runOutcome =
+  (
+    outcome: WorkerResult["outcome"],
+    extra: Partial<WorkerResult> = {},
+  ): RunUnit =>
+  async () => ({ outcome, ...extra });
+
+/** A runUnit that defers to a microtask, tracking peak concurrency (for the cap test). */
+const runTracked =
+  (track: { inFlight: number; max: number }): RunUnit =>
+  async () => {
+    track.inFlight++;
+    track.max = Math.max(track.max, track.inFlight);
+    await new Promise((r) => setImmediate(r));
+    track.inFlight--;
+    return { outcome: "success" as const };
+  };
 
 interface FakeFile {
   status?: string;
@@ -66,15 +43,11 @@ interface FakeFile {
 }
 type FakeFiles = Record<string, FakeFile>;
 
-const SUCCESS = '{"type":"result","subtype":"success","is_error":false}\n';
-const FAILURE =
-  '{"type":"result","subtype":"error_during_execution","is_error":true}\n';
-
 function makeDeps(
   files: FakeFiles,
   opts: {
     acquireOk?: boolean;
-    spawn?: () => SpawnedWorker;
+    run?: RunUnit;
     verifyOk?: boolean;
   } = {},
 ): {
@@ -133,7 +106,7 @@ function makeDeps(
       appendLine: (l: string) => calls.log.push(l),
     } as unknown as OrchestratorDeps["output"],
     canonicalRepo: "/repo",
-    spawnWorker: opts.spawn ?? (() => fakeWorker(SUCCESS)),
+    runUnit: opts.run ?? runOutcome("success"),
     verify: async () => opts.verifyOk !== false,
     advance: async (h: string) => {
       calls.advanced.push(h);
@@ -220,22 +193,14 @@ test("dispatchSpec: units pool ACROSS slices — both slices' units co-schedule,
 
 test("dispatchSpec: a dependent slice waits until its dep is Done", async () => {
   const order: string[] = [];
-  const { deps } = makeDeps(
-    {
-      "specs/SP-1/SL-1.md": { status: "ready", files: ["src/a.ts"] },
-      "specs/SP-1/SL-2.md": {
-        status: "ready",
-        depends_on: ["SP-1_SL-1"],
-        files: ["src/b.ts"],
-      },
+  const { deps } = makeDeps({
+    "specs/SP-1/SL-1.md": { status: "ready", files: ["src/a.ts"] },
+    "specs/SP-1/SL-2.md": {
+      status: "ready",
+      depends_on: ["SP-1_SL-1"],
+      files: ["src/b.ts"],
     },
-    {
-      spawn: () => {
-        // record dispatch order via the success line (both succeed)
-        return fakeWorker(SUCCESS);
-      },
-    },
-  );
+  });
   // capture advance order
   const realAdvance = deps.advance!;
   deps.advance = async (h: string) => {
@@ -250,7 +215,7 @@ test("dispatchSpec: a dependent slice waits until its dep is Done", async () => 
 test("dispatchSpec: a worker failure flags its slice requires-attention; nothing committed", async () => {
   const { deps, calls } = makeDeps(
     { "specs/SP-1/SL-1.md": { status: "ready", files: ["src/a.ts"] } },
-    { spawn: () => fakeWorker(FAILURE) },
+    { run: runOutcome("failed") },
   );
   const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
   assert.deepEqual(r.results.map((x) => x.outcome), ["failed"]);
@@ -317,7 +282,7 @@ test("dispatchSpec: the worker pool never exceeds the cap", async () => {
         ],
       },
     },
-    { spawn: () => asyncWorker(track, SUCCESS) },
+    { run: runTracked(track) },
   );
   const r = await new OrchestratorService(deps).dispatchSpec("1", 2);
   assert.equal(r.dispatched, 5, "all five units run");
@@ -325,17 +290,14 @@ test("dispatchSpec: the worker pool never exceeds the cap", async () => {
   assert.ok(track.max <= 2, `peak concurrency ${track.max} should be ≤ cap 2`);
 });
 
-test("dispatchSpec: a worker that asks a question parks the slice needs-input (not failed, not committed)", async () => {
-  const NEEDS =
-    JSON.stringify({
-      type: "assistant",
-      message: {
-        content: [{ type: "text", text: "⟦NEEDS-INPUT⟧ Which database — pg or sqlite?" }],
-      },
-    }) + "\n"; // no success result → classify finds the sentinel
+test("dispatchSpec: a worker that RETURNS needs-input parks the slice (not failed, not committed)", async () => {
   const { deps, calls } = makeDeps(
     { "specs/SP-1/SL-1.md": { status: "ready", files: ["src/a.ts"] } },
-    { spawn: () => fakeWorker(NEEDS) },
+    {
+      run: runOutcome("needs-input", {
+        question: "Which database — pg or sqlite?",
+      }),
+    },
   );
   const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
   assert.deepEqual(
@@ -351,26 +313,9 @@ test("dispatchSpec: a worker that asks a question parks the slice needs-input (n
   assert.match(r.results[0].slice, /SP-1_SL-1/);
 });
 
-test("dispatchSpec: success wins over a stray sentinel mention", async () => {
-  const MIXED =
-    JSON.stringify({
-      type: "assistant",
-      message: { content: [{ type: "text", text: "pondered ⟦NEEDS-INPUT⟧ but resolved it" }] },
-    }) +
-    "\n" +
-    SUCCESS;
-  const { deps, calls } = makeDeps(
-    { "specs/SP-1/SL-1.md": { status: "ready", files: ["src/a.ts"] } },
-    { spawn: () => fakeWorker(MIXED) },
-  );
-  const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
-  assert.deepEqual(
-    r.results.map((x) => x.outcome),
-    ["success"],
-  );
-  assert.deepEqual(calls.needsInput, []);
-  assert.equal(r.committed, true);
-});
+// (Removed: "success wins over a stray sentinel mention" tested the spawn-path `classify`
+// helper, now deleted. The success-over-sentinel precedence lives in `runViaSdk`'s control
+// flow — a live-SDK behaviour verified by the smoke test / human verdict, not this seam.)
 
 test("dispatchSpec: a resident worker PARKS (frees its slot), then an external answer resumes it to Done + commit", async () => {
   // SL-1 has two fan-out units: #eu-0 asks a question (parks resident), #eu-1 runs normally.

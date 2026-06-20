@@ -365,8 +365,8 @@ export function activate(context: vscode.ExtensionContext) {
   // rooted there, so parallel Specs never share a working tree (SP-5).
   registerWorktreeCommands(context, { launcher });
 
-  // Board orchestrator (SP-tgs8nz_SL-1): dispatch a Spec's next Ready slice to a
-  // `claude -p` worker in its worktree. Consumes the (async-built) ownership arbiter
+  // Board orchestrator (SP-tgs8nz_SL-1): dispatch a Spec's next Ready slice to an
+  // Agent SDK worker in its worktree. Consumes the (async-built) ownership arbiter
   // via a getter so it's read at invoke time.
   // Persist orchestrator session logs (the .jsonl the control-center float-out renders).
   initSessions(

@@ -1,9 +1,9 @@
 /**
- * Pure, vscode-free core of the board orchestrator (SP-tgs8nz_SL-1): picking the next
- * dispatchable slice and parsing a `claude -p --output-format stream-json` event stream.
- * No I/O — the `OrchestratorService` shell supplies board rows + raw stdout and acts on
+ * Pure, vscode-free core of the board orchestrator (SP-tgs8nz_SL-1): the work-unit DAG +
+ * scheduler, plus session-log helpers that parse a worker's persisted `.jsonl` events.
+ * No I/O — the `OrchestratorService` shell supplies board rows + the event stream and acts on
  * the results. Unit-tested directly (high AI-testability per the lever, SP-tgsdvw); the
- * live spawn / verify / advance is the shell's job — a human verdict (low AI-testability).
+ * live SDK worker / verify / advance is the shell's job — a human verdict (low AI-testability).
  */
 
 export interface SliceRow {
@@ -62,7 +62,7 @@ export function selectDisjoint(
 
 /**
  * Run `worker` over `items` with at most `cap` (≥1) in flight; a wider set **queues** and
- * drains as slots free (AC3 — the per-Spec `claude -p` cap). Results are returned in input
+ * drains as slots free (AC3 — the per-Spec worker cap). Results are returned in input
  * order; a worker that throws rejects the whole run (callers wrap per-item as needed).
  */
 export async function runWithConcurrency<T, R>(
@@ -97,7 +97,7 @@ export interface ExecutionUnit {
 }
 
 /**
- * Batch one slice's work units into **execution units** to amortize `claude -p` cold-start
+ * Batch one slice's work units into **execution units** to amortize worker cold-start
  * (AC6): all `serial` units collapse into ONE execution unit (a single warm session, run in
  * order); each `mechanize` (codemod-once) and each `fan-out` (parallel-eligible) unit is its
  * own execution unit. Never spans slices — the caller passes a single slice's units, so
@@ -338,7 +338,7 @@ export function buildAttendPrompt(handle: string, diagnosis?: string): string {
 }
 
 /**
- * Line-buffered NDJSON parser for `claude -p --output-format stream-json`. Feed raw stdout
+ * Line-buffered NDJSON parser for a worker's persisted `.jsonl` session log. Feed raw stdout
  * chunks; returns the parsed objects for every **complete** line so far, holding a trailing
  * partial line until the next chunk. Blank and unparseable lines are skipped (never throws).
  */

@@ -4,12 +4,14 @@
  * pools every slice's execution units into one graph (units span slices, never Specs), keeps
  * a per-Spec pool of N workers saturated (ready frontier ∧ footprint-disjoint, critical-path
  * first), verifies each slice when all its units land, and commits **once** when the whole
- * Spec is green. A worker is a headless `claude -p` (the SDK `query()` substrate swaps in
- * behind the injectable `spawnWorker`); workers only edit files — the orchestrator owns git.
+ * Spec is green. A worker is an **Agent SDK `query()` session** (`runViaSdk`) — a headless
+ * `claude` subprocess the SDK manages under `bypassPermissions`; workers only edit files, the
+ * orchestrator owns git. The SDK is the sole substrate; tests inject the `runUnit` seam to
+ * return outcomes (success / needs-input / failed) without a live SDK call.
  *
  * The pure DAG/frontier/prompt logic lives in `orchestratorCore` + `parallelSlices`
- * (unit-tested). This shell is the low-AI-testability part (live spawn + worktree + commit):
- * its end-to-end behaviour is a human verdict (SP-tgsdvw lever), exercised here with fakes.
+ * (unit-tested). This shell is the low-AI-testability part (live SDK worker + worktree +
+ * commit): its end-to-end behaviour is a human verdict (SP-tgsdvw lever), exercised with fakes.
  */
 import { spawn } from "child_process";
 import type * as vscode from "vscode";
@@ -22,7 +24,6 @@ import {
   buildWorkerPrompt,
   extractNeedsInput,
   sessionIdOf,
-  StreamJsonBuffer,
   summarizeEvent,
   isResultSuccess,
   type SliceForDag,
@@ -63,8 +64,6 @@ export interface OrchestratorDeps {
   boardRoot?: string;
   /** `thinkube.worktree.baseDir` — where linked worktrees are created. */
   baseDir?: string;
-  /** Override the spawn (tests): defaults to spawning the real `claude`. */
-  spawnWorker?: (args: string[], cwd: string) => SpawnedWorker;
   /** Verify a slice at grain in its worktree (tests): defaults to `npm run compile`. */
   verify?: (cwd: string) => Promise<boolean>;
   /** Advance a slice to Done (tests): defaults to stamping `status: done`. */
@@ -82,7 +81,7 @@ export interface OrchestratorDeps {
   commit?: (specNumber: string, cwd: string) => Promise<void>;
   /** Tear down a finished Spec — close its worktree (tests): defaults to `WorktreeService.remove`. */
   teardown?: (specNumber: string) => Promise<void>;
-  /** Run one execution unit (tests): overrides the SDK/spawn substrate; `onPark` parks it resident. */
+  /** Run one execution unit (tests): overrides the SDK substrate; `onPark` parks it resident. */
   runUnit?: (
     unit: SchedUnit,
     specNumber: string,
@@ -98,13 +97,6 @@ export interface WorkerResult {
   question?: string;
   /** The worker's session id, captured for resume-on-answer (SL-3 / SL-5). */
   sessionId?: string;
-}
-
-/** Minimal shape of a spawned worker process the shell consumes. */
-export interface SpawnedWorker {
-  stdout: { on(event: "data", cb: (chunk: Buffer | string) => void): void };
-  on(event: "close", cb: (code: number | null) => void): void;
-  on(event: "error", cb: (err: Error) => void): void;
 }
 
 export type UnitOutcome = "success" | "needs-input" | "failed";
@@ -254,8 +246,8 @@ export class OrchestratorService {
 
     // Resident needs-input park (SL-3): free the worker's slot + register its LIVE session so
     // `/attend` can push the answer in, but keep it alive (its promise resolves on the answered
-    // continuation). Distinct from the exit-model `needs-input` outcome (the spawn path) handled
-    // in the loop below; here the worker never resolved — it's suspended mid-stream.
+    // continuation). Distinct from the exit-model `needs-input` outcome (a runUnit that RETURNS it)
+    // handled in the loop below; here the worker never resolved — it's suspended mid-stream.
     const onPark: OnPark = (u, question, answer) => {
       (footprintsOf.get(u.id) ?? []).forEach((f) => state.running.delete(f));
       parked.add(u.id);
@@ -313,8 +305,10 @@ export class OrchestratorService {
       result.results.push({ id: d.id, slice: d.slice, outcome: d.outcome });
 
       if (d.outcome === "needs-input") {
-        // Exit-model needs-input (a non-resident worker — the spawn path / claude -p): there's no
-        // live session to feed, so park via the board for resume-by-session-id (/attend fallback).
+        // Non-resident needs-input: a worker that RETURNED a question instead of parking its live
+        // session. runViaSdk parks resident via onPark and never returns this; this branch covers a
+        // runUnit seam (tests) / a future exit-model runner. No live session to feed → flag via the
+        // board for resume-by-session-id (/attend fallback).
         await this.flagNeedsInput(
           d.slice,
           d.question ?? "(no question text)",
@@ -424,25 +418,8 @@ export class OrchestratorService {
   }
 
   /**
-   * Classify a finished worker's accumulated output. Success wins (a worker that resolved its own
-   * doubt and reported success is done); otherwise a trailing `⟦NEEDS-INPUT⟧` question parks it
-   * needs-input; otherwise it failed.
-   */
-  private classify(
-    text: string,
-    success: boolean,
-    sessionId?: string,
-  ): WorkerResult {
-    if (success) return { outcome: "success", sessionId };
-    const question = extractNeedsInput(text);
-    if (question) return { outcome: "needs-input", question, sessionId };
-    return { outcome: "failed", sessionId };
-  }
-
-  /**
-   * Run one execution unit. The **default substrate is the Agent SDK** (`runViaSdk`); a test or a
-   * `claude -p` fallback injects `spawnWorker` to take the subprocess path. Returns true on a
-   * `result: success`.
+   * Run one execution unit. The sole substrate is the Agent SDK (`runViaSdk`); tests inject the
+   * `runUnit` seam to return an outcome (success / needs-input / failed) without a live SDK call.
    */
   private runWorker(
     unit: SchedUnit,
@@ -450,10 +427,8 @@ export class OrchestratorService {
     cwd: string,
     onPark: OnPark,
   ): Promise<WorkerResult> {
-    if (this.deps.runUnit)
-      return this.deps.runUnit(unit, specNumber, cwd, onPark);
-    return this.deps.spawnWorker
-      ? this.runViaSpawn(unit, specNumber, cwd) // exit model (claude -p can't park resident)
+    return this.deps.runUnit
+      ? this.deps.runUnit(unit, specNumber, cwd, onPark)
       : this.runViaSdk(unit, specNumber, cwd, onPark);
   }
 
@@ -573,51 +548,6 @@ export class OrchestratorService {
     return success
       ? { outcome: "success", sessionId }
       : { outcome: "failed", sessionId };
-  }
-
-  /** The subprocess worker (injected `spawnWorker`): a headless `claude -p`, stream-json parsed. */
-  private runViaSpawn(
-    unit: SchedUnit,
-    specNumber: string,
-    cwd: string,
-  ): Promise<WorkerResult> {
-    const prompt = buildWorkerPrompt(unit, specNumber);
-    const args = [
-      "-p",
-      prompt,
-      "--output-format",
-      "stream-json",
-      "--verbose",
-      // Autonomy posture (SP-tgs8nz): never prompt for permission in headless runs.
-      // The PreToolUse footprint hook (SP-tgs8nz_SL-6) is the silent guardrail.
-      "--permission-mode",
-      "bypassPermissions",
-    ];
-    const proc = (this.deps.spawnWorker ?? defaultSpawn)(args, cwd);
-    const buf = new StreamJsonBuffer();
-    let success = false;
-    let sessionId: string | undefined;
-    let textBuf = "";
-    return new Promise<WorkerResult>((resolve) => {
-      proc.stdout.on("data", (chunk) => {
-        const text = chunk.toString();
-        appendSession(unit.id, text);
-        for (const evt of buf.push(text)) {
-          sessionId = sessionId ?? sessionIdOf(evt);
-          const line = summarizeEvent(evt);
-          if (line) {
-            this.deps.output.appendLine(`  [${unit.id}] ${line}`);
-            textBuf += line + "\n";
-          }
-          if (isResultSuccess(evt)) success = true;
-        }
-      });
-      proc.on("error", (err) => {
-        this.deps.output.appendLine(`  ✗ ${unit.id} spawn error: ${err.message}`);
-        resolve({ outcome: "failed", sessionId });
-      });
-      proc.on("close", () => resolve(this.classify(textBuf, success, sessionId)));
-    });
   }
 
   private verify(cwd: string): Promise<boolean> {
@@ -769,8 +699,4 @@ interface UnitDone {
   question?: string;
   /** The worker's session id (for resume-on-answer). */
   sessionId?: string;
-}
-
-function defaultSpawn(args: string[], cwd: string): SpawnedWorker {
-  return spawn("claude", args, { cwd }) as unknown as SpawnedWorker;
 }
