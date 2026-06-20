@@ -105,7 +105,9 @@ export type WebviewMessage =
   | { kind: "accept-spec"; spec: string }
   /** Float a running session out into a panel (clicked on the control-center graph). */
   | { kind: "float-out"; handle: string }
-  | { kind: "attend"; handle: string };
+  | { kind: "attend"; handle: string }
+  /** Start the makespan scheduler on a Spec (the ▶ button on the control-center graph). */
+  | { kind: "orchestrate"; spec: string };
 
 export type ModeFlag = "navigator" | "driver" | "both";
 

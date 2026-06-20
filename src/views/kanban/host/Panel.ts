@@ -275,6 +275,18 @@ export class KanbanPanel implements vscode.Disposable {
           this.log(`attend ${message.handle} failed: ${(err as Error).message}`);
         }
         break;
+      case "orchestrate":
+        try {
+          await vscode.commands.executeCommand(
+            "thinkube.orchestrate",
+            message.spec,
+          );
+        } catch (err) {
+          this.log(
+            `orchestrate ${message.spec} failed: ${(err as Error).message}`,
+          );
+        }
+        break;
       case "notify":
         this.notify(message.level, message.text);
         break;

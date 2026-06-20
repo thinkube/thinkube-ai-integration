@@ -79,7 +79,7 @@ function accentFor(state: UnitState, card: TaskCard): string {
 export function GraphView(): JSX.Element {
   const { state } = useGlobalState();
 
-  const { nodes, edges, width, height } = useMemo(() => {
+  const { nodes, edges, specs, width, height } = useMemo(() => {
     // Slice cards only — exclude the auto-derived acceptance close-cards.
     const cards = Object.values(state.tasks).filter((t) => !t.isAcceptance);
 
@@ -151,9 +151,13 @@ export function GraphView(): JSX.Element {
           to: pos.get(n.id) ?? { x: 0, y: 0 },
         })),
     );
+    const specs = [
+      ...new Set(cards.map((c) => c.parentId).filter((p): p is string => !!p)),
+    ].sort();
     return {
       nodes: placed,
       edges: lines,
+      specs,
       width: (maxDepth + 1) * (NODE_W + COL_GAP),
       height: maxRows * (NODE_H + ROW_GAP) + ROW_GAP,
     };
@@ -168,7 +172,41 @@ export function GraphView(): JSX.Element {
   const edgeColor = "var(--vscode-editorIndentGuide-background, #888)";
 
   return (
-    <div style={{ overflow: "auto", padding: 16, height: "100%" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          flexWrap: "wrap",
+          alignItems: "center",
+          padding: "8px 16px",
+          borderBottom: "1px solid var(--vscode-panel-border, #333)",
+        }}
+      >
+        <span style={{ fontSize: 11, opacity: 0.7, marginRight: 4 }}>
+          Orchestrate
+        </span>
+        {specs.map((s) => (
+          <button
+            key={s}
+            title={`Run the makespan scheduler on SP-${s} — dispatch its ready, footprint-disjoint units across N workers`}
+            onClick={() => postToHost({ kind: "orchestrate", spec: s })}
+            style={{
+              cursor: "pointer",
+              border: "1px solid var(--vscode-button-border, transparent)",
+              background: "var(--vscode-button-background)",
+              color: "var(--vscode-button-foreground)",
+              borderRadius: 6,
+              padding: "3px 10px",
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            ▶ SP-{s}
+          </button>
+        ))}
+      </div>
+      <div style={{ overflow: "auto", padding: 16, flex: 1 }}>
       <svg width={Math.max(width, 1)} height={Math.max(height, 1)}>
         <defs>
           <marker
@@ -289,6 +327,7 @@ export function GraphView(): JSX.Element {
           );
         })}
       </svg>
+      </div>
     </div>
   );
 }

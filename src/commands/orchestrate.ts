@@ -45,7 +45,7 @@ export function registerOrchestrateCommands(
     deps.output ?? vscode.window.createOutputChannel("Thinkube Orchestrator");
   context.subscriptions.push(
     output,
-    vscode.commands.registerCommand("thinkube.orchestrate", async () => {
+    vscode.commands.registerCommand("thinkube.orchestrate", async (specArg?: string) => {
       const repo = deps.specsProvider.repoEntry;
       if (!repo || !repo.enabled) {
         vscode.window.showInformationMessage(
@@ -69,15 +69,28 @@ export function registerOrchestrateCommands(
           vscode.window.showInformationMessage("No Specs on this board yet.");
           return;
         }
-        const specId =
-          specs.length === 1
-            ? specs[0]
-            : await vscode.window.showQuickPick(
-                specs.map((id) => `SP-${id}`),
-                { placeHolder: "Orchestrate which Spec's next Ready slice?" },
-              );
-        if (!specId) return;
-        const spec = specId.replace(/^SP-/, "");
+        // From the ▶ button (control-center graph): a spec id is passed directly — skip the
+        // quick-pick and orchestrate exactly the Spec the user clicked.
+        let spec: string;
+        if (typeof specArg === "string" && specArg.trim()) {
+          spec = specArg.replace(/^SP-/, "").trim();
+          if (!specs.includes(spec)) {
+            vscode.window.showWarningMessage(
+              `SP-${spec} is not a Spec on this board.`,
+            );
+            return;
+          }
+        } else {
+          const specId =
+            specs.length === 1
+              ? specs[0]
+              : await vscode.window.showQuickPick(
+                  specs.map((id) => `SP-${id}`),
+                  { placeHolder: "Orchestrate which Spec's next Ready slice?" },
+                );
+          if (!specId) return;
+          spec = specId.replace(/^SP-/, "");
+        }
 
         const canonical =
           (await worktrees.canonicalRepo(repo.path)) ?? repo.path;
