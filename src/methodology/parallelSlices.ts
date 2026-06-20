@@ -200,6 +200,54 @@ export function validateDag(nodes: DagNode[]): ValidateDagResult {
   return { ok: true };
 }
 
+// ── Footprint enforcement (SP-tgs8nz_SL-6: the PreToolUse guard) ────────────
+//
+// An orchestrated worker runs under `bypassPermissions` (no prompts), so a
+// PreToolUse hook is the guardrail: it **denies** an Edit/Write/MultiEdit to a
+// file outside the worker's declared footprint. Pure decision — the SDK hook
+// callback (in OrchestratorService) and the shell `ownership-guard.mjs` both
+// call this; fixtures in, allow/deny out.
+
+const GUARDED_TOOLS = new Set(["Edit", "Write", "MultiEdit"]);
+
+/** Relativize an Edit/Write target to the repo root so it compares to the (repo-relative) footprint. */
+function relToRepo(p: string, repoRoot: string): string {
+  const root = repoRoot.replace(/\/+$/, "");
+  let t = p.trim();
+  if (root && t.startsWith(root + "/")) t = t.slice(root.length + 1);
+  return normalizeFilePath(t);
+}
+
+export type FootprintDecision = { allow: true } | { allow: false; reason: string };
+
+/**
+ * Decide whether a worker scoped to `footprint` may run `toolName` on `toolInput`
+ * (SP-tgs8nz_SL-6). Only `Edit`/`Write`/`MultiEdit` are guarded — anything else, and a
+ * call with no `file_path`, is allowed (the hook fences *writes*, not reads/Bash). A
+ * write to a file **outside** the declared footprint is **denied**, naming it — so a
+ * stray write surfaces immediately instead of corrupting another unit's files.
+ */
+export function footprintGuard(
+  toolName: string,
+  toolInput: unknown,
+  footprint: string[],
+  repoRoot: string,
+): FootprintDecision {
+  if (!GUARDED_TOOLS.has(toolName)) return { allow: true };
+  const fp = (toolInput as { file_path?: unknown })?.file_path;
+  if (typeof fp !== "string" || !fp.trim()) return { allow: true };
+  const target = relToRepo(fp, repoRoot);
+  const owned = footprint.map(normalizeFilePath);
+  if (owned.includes(target)) return { allow: true };
+  return {
+    allow: false,
+    reason:
+      `Out-of-footprint write: ${target} is not in this unit's declared footprint ` +
+      `[${owned.join(", ") || "(none)"}]. Edit only your footprint; if you genuinely ` +
+      `need another file, stop and state the question rather than editing it.`,
+  };
+}
+
 // ── Ownership claims (SP-tgpwbm AC3 / AC5) ─────────────────────────────────
 //
 // The durable ownership map: each repo-relative file is owned by at most one

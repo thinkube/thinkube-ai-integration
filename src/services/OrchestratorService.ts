@@ -28,7 +28,7 @@ import {
   type SchedulerState,
   type WorkUnit,
 } from "./orchestratorCore";
-import { validateDag } from "../methodology/parallelSlices";
+import { validateDag, footprintGuard } from "../methodology/parallelSlices";
 import {
   startSession,
   appendSession,
@@ -341,7 +341,44 @@ export class OrchestratorService {
       const { query } = await import("@anthropic-ai/claude-agent-sdk");
       for await (const msg of query({
         prompt,
-        options: { cwd, permissionMode: "bypassPermissions" },
+        options: {
+          cwd,
+          permissionMode: "bypassPermissions",
+          // The guardrail (SL-6): a PreToolUse hook runs FIRST and denies any Edit/Write
+          // outside this unit's footprint — silently, no prompt. Must be a hook, not
+          // `canUseTool`, which bypassPermissions/acceptEdits skip for edits.
+          hooks: {
+            PreToolUse: [
+              {
+                hooks: [
+                  async (input: unknown) => {
+                    const inp = input as {
+                      tool_name?: string;
+                      tool_input?: unknown;
+                    };
+                    const d = footprintGuard(
+                      inp.tool_name ?? "",
+                      inp.tool_input,
+                      unit.footprint,
+                      cwd,
+                    );
+                    if (d.allow) return {};
+                    this.deps.output.appendLine(
+                      `  ⛔ [${unit.id}] denied: ${d.reason.split("\n")[0]}`,
+                    );
+                    return {
+                      hookSpecificOutput: {
+                        hookEventName: "PreToolUse" as const,
+                        permissionDecision: "deny" as const,
+                        permissionDecisionReason: d.reason,
+                      },
+                    };
+                  },
+                ],
+              },
+            ],
+          },
+        },
       })) {
         const rec = msg as unknown as Record<string, unknown>;
         appendSession(unit.id, JSON.stringify(rec) + "\n");

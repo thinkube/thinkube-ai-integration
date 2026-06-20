@@ -10,6 +10,7 @@ import {
   normalizeFilePath,
   validateParallelGroup,
   validateDag,
+  footprintGuard,
   acquireClaim,
   releaseClaim,
   reconcileOwnership,
@@ -366,4 +367,56 @@ test("validateDag: dangling deps are reported before cycles", () => {
   assert.equal(r.ok, false);
   if (r.ok) return;
   assert.ok(r.missing, "reports the missing dep first");
+});
+
+// ── footprintGuard (SP-tgs8nz_SL-6 PreToolUse fence) ───────────────────────
+
+test("footprintGuard: an in-footprint Write is allowed", () => {
+  const d = footprintGuard(
+    "Write",
+    { file_path: "src/a.ts" },
+    ["src/a.ts", "src/b.ts"],
+    "/wt",
+  );
+  assert.equal(d.allow, true);
+});
+
+test("footprintGuard: an out-of-footprint Edit is DENIED, naming the file", () => {
+  const d = footprintGuard("Edit", { file_path: "src/evil.ts" }, ["src/a.ts"], "/wt");
+  assert.equal(d.allow, false);
+  if (d.allow) return;
+  assert.match(d.reason, /src\/evil\.ts/);
+  assert.match(d.reason, /footprint/);
+});
+
+test("footprintGuard: an absolute path under the worktree is relativized before comparison", () => {
+  const d = footprintGuard(
+    "Write",
+    { file_path: "/wt/src/a.ts" },
+    ["src/a.ts"],
+    "/wt",
+  );
+  assert.equal(d.allow, true);
+});
+
+test("footprintGuard: non-write tools (Read, Bash) are not guarded", () => {
+  assert.equal(footprintGuard("Read", { file_path: "src/x.ts" }, [], "/wt").allow, true);
+  assert.equal(footprintGuard("Bash", { command: "ls" }, [], "/wt").allow, true);
+});
+
+test("footprintGuard: a write with no file_path is allowed (nothing to fence)", () => {
+  assert.equal(footprintGuard("Write", {}, ["src/a.ts"], "/wt").allow, true);
+  assert.equal(footprintGuard("Edit", undefined, ["src/a.ts"], "/wt").allow, true);
+});
+
+test("footprintGuard: ./-prefixed footprint matches the bare target", () => {
+  const d = footprintGuard("Edit", { file_path: "src/a.ts" }, ["./src/a.ts"], "/wt");
+  assert.equal(d.allow, true);
+});
+
+test("footprintGuard: MultiEdit is guarded like Edit/Write", () => {
+  assert.equal(
+    footprintGuard("MultiEdit", { file_path: "out.ts" }, ["in.ts"], "/wt").allow,
+    false,
+  );
 });
