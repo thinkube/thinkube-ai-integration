@@ -283,11 +283,23 @@ export class KanbanPanel implements vscode.Disposable {
 
   /** Flag tasks whose slice has a live `claude -p` worker (SP-tgs8nz SL-4). */
   private withRunning(board: Board): Board {
-    const live = new Set(runningSessions());
-    if (live.size === 0) return board;
+    const live = runningSessions();
+    if (live.length === 0) return board;
+    // Sessions are keyed per WORKER (execution unit, e.g. `SP-3_SL-2#eu-0`); group them under
+    // their slice so the control-center graph shows a node per running worker (SP-tgs8nz_SL-4).
+    const bySlice = new Map<string, string[]>();
+    for (const id of live) {
+      const slice = id.split("#")[0];
+      const arr = bySlice.get(slice) ?? [];
+      arr.push(id);
+      bySlice.set(slice, arr);
+    }
     const tasks: Record<string, TaskCard> = {};
     for (const [id, t] of Object.entries(board.tasks)) {
-      tasks[id] = live.has(id) ? { ...t, running: true } : t;
+      const workers = bySlice.get(id);
+      tasks[id] = workers
+        ? { ...t, running: true, runningWorkers: workers }
+        : t;
     }
     return { ...board, tasks };
   }

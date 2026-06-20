@@ -134,15 +134,7 @@ export function GraphView(): JSX.Element {
         {nodes.map(({ card, x, y }) => {
           const accent = colorFor(card.columnId);
           return (
-            <g
-              key={card.id}
-              transform={`translate(${x},${y})`}
-              style={{ cursor: card.running ? "pointer" : "default" }}
-              onClick={() => {
-                if (card.running)
-                  postToHost({ kind: "float-out", handle: card.id });
-              }}
-            >
+            <g key={card.id} transform={`translate(${x},${y})`}>
               <rect
                 width={NODE_W}
                 height={NODE_H}
@@ -169,25 +161,41 @@ export function GraphView(): JSX.Element {
               >
                 {truncate(card.description, 28)}
               </text>
-              {card.running && (
+              {/* A node per running worker (SP-tgs8nz_SL-4): one pulsing dot per execution-unit
+                  session on this slice; click it to float out that worker's live JSON-log. */}
+              {(card.runningWorkers ?? []).length > 0 && (
                 <>
                   <text
-                    x={NODE_W - 24}
-                    y={20}
-                    textAnchor="end"
+                    x={16}
+                    y={NODE_H - 6}
                     fill="#3fb950"
-                    fontSize={10}
+                    fontSize={9}
                   >
-                    running
+                    {card.runningWorkers!.length} worker
+                    {card.runningWorkers!.length > 1 ? "s" : ""} running
                   </text>
-                  <circle cx={NODE_W - 14} cy={16} r={4} fill="#3fb950">
-                    <animate
-                      attributeName="opacity"
-                      values="1;0.3;1"
-                      dur="1.2s"
-                      repeatCount="indefinite"
-                    />
-                  </circle>
+                  {card.runningWorkers!.map((w, i) => (
+                    <circle
+                      key={w}
+                      cx={NODE_W - 14 - i * 14}
+                      cy={16}
+                      r={5}
+                      fill="#3fb950"
+                      style={{ cursor: "pointer" }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        postToHost({ kind: "float-out", handle: w });
+                      }}
+                    >
+                      <title>{`${w} — click to open its live log`}</title>
+                      <animate
+                        attributeName="opacity"
+                        values="1;0.3;1"
+                        dur="1.2s"
+                        repeatCount="indefinite"
+                      />
+                    </circle>
+                  ))}
                 </>
               )}
             </g>

@@ -59,8 +59,10 @@ export interface TaskCard {
   slicesTotal?: number;
   /** Dependency handles (slice-DAG edges) for the control-center graph (SP-tgs8nz). */
   dependsOn?: string[];
-  /** A live `claude -p` worker is running on this slice — graph running tag. */
+  /** A live worker is running on this slice — graph running tag. */
   running?: boolean;
+  /** The live worker (execution-unit) ids running on this slice — a node per worker (SL-4). */
+  runningWorkers?: string[];
 }
 
 export interface BoardColumn {

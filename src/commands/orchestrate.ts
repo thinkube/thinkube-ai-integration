@@ -15,6 +15,7 @@ import {
   buildAttendPrompt,
   StreamJsonBuffer,
   summarizeEvent,
+  isResultSuccess,
 } from "../services/orchestratorCore";
 import { sessionLogPath } from "../services/orchestratorSessions";
 import type { OwnershipArbiter } from "../services/OwnershipArbiter";
@@ -150,8 +151,9 @@ export function registerOrchestrateCommands(
           }
           const specId = m[1];
           const rel = store.pathForSlice(specId, Number(m[2]));
-          const body = (await store.getFile(rel))?.body ?? "";
-          const diagnosis = extractDiagnosis(body);
+          const parsed = await store.getFile(rel);
+          const fm = (parsed?.frontmatter ?? {}) as Record<string, unknown>;
+          const body = parsed?.body ?? "";
 
           const canonical =
             (await worktrees.canonicalRepo(repo.path)) ?? repo.path;
@@ -165,16 +167,66 @@ export function registerOrchestrateCommands(
               .getConfiguration("thinkube.boards")
               .get<string>("root")
               ?.trim() || undefined;
-          // Root the primed session in the slice's worktree (reuses the launcher / cwd-wrapper).
           const worktreePath = await worktrees.create(
             canonical,
             specId,
             baseDir,
             boardRoot,
           );
+
+          // needs-input → prompt for the answer and RESUME the parked worker (SL-5).
+          if (fm.needs_input && typeof fm.worker_session === "string") {
+            const qm = /##\s*❓\s*Needs input\s*\n+([\s\S]*?)(?:\n##\s|$)/.exec(
+              body,
+            );
+            const question = qm?.[1]?.trim() || "(no question recorded)";
+            const answer = await vscode.window.showInputBox({
+              title: `Answer ${h}`,
+              prompt: question,
+              ignoreFocusOut: true,
+            });
+            if (!answer) return;
+            output.show(true);
+            output.appendLine(
+              `▸ resuming ${h} (session ${fm.worker_session}) with your answer…`,
+            );
+            let success = false;
+            try {
+              const { query } = await import("@anthropic-ai/claude-agent-sdk");
+              for await (const msg of query({
+                prompt: answer,
+                options: {
+                  cwd: worktreePath,
+                  resume: fm.worker_session,
+                  permissionMode: "bypassPermissions",
+                },
+              })) {
+                const rec = msg as unknown as Record<string, unknown>;
+                const line = summarizeEvent(rec);
+                if (line) output.appendLine(`  [${h}] ${line}`);
+                if (isResultSuccess(rec)) success = true;
+              }
+            } catch (err) {
+              output.appendLine(`  ✗ resume failed: ${(err as Error).message}`);
+            }
+            // Return it to the loop so the next Orchestrate verifies + advances it.
+            await store.writeFile(
+              rel,
+              { ...fm, status: "ready", needs_input: false },
+              body,
+            );
+            vscode.window.showInformationMessage(
+              success
+                ? `${h}: resumed to completion — back to Ready for verify.`
+                : `${h}: resume ended without a success result — back to Ready; re-attend if needed.`,
+            );
+            return;
+          }
+
+          // failed (requires-attention) → open a primed session in the worktree.
           await deps.launcher.openHere(
             vscode.Uri.file(worktreePath),
-            buildAttendPrompt(h, diagnosis),
+            buildAttendPrompt(h, extractDiagnosis(body)),
           );
         } catch (err) {
           vscode.window.showErrorMessage(
