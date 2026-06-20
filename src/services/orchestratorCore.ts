@@ -114,6 +114,160 @@ export function batchExecutionUnits(units: WorkUnit[]): ExecutionUnit[] {
   return out;
 }
 
+// ── Work-unit DAG scheduler (SP-tgs8nz: makespan over the Spec's units) ──────
+//
+// The schedulable atom is an **execution unit** (a worker's assignment): a slice's
+// work units batched by shape (serial → one ordered session; mechanize/fan-out →
+// one each). The DAG pools every slice's execution units — units may **span
+// slices** (the slice is only a validation label), never Specs. The scheduler keeps
+// the worker pool saturated: ready frontier (deps-done ∧ footprint-disjoint),
+// critical-path first. Pure + unit-tested; the shell maintains done/running state.
+
+/** A slice + its frontmatter — the input to building the Spec's work-unit DAG. */
+export interface SliceForDag {
+  handle: string;
+  /** ready | doing | done | requires-attention | archived. */
+  status: string;
+  /** Slice-level `depends_on` (handles). */
+  dependsOn: string[];
+  /** Declared `files:` (the footprint for a unit-less legacy slice). */
+  files: string[];
+  /** `work_units` (may be empty → the whole slice is one serial unit). */
+  workUnits: (WorkUnit & { note?: string })[];
+}
+
+/** A schedulable execution unit — one worker's assignment. */
+export interface SchedUnit {
+  /** `${slice}#eu-${i}`, or the slice handle for a unit-less (legacy) slice. */
+  id: string;
+  /** Parent slice handle — the validation label (a slice verifies when all its units land). */
+  slice: string;
+  /** Files this unit touches (∪ of its work units' footprints). */
+  footprint: string[];
+  /** Unit + slice ids this unit waits on. */
+  dependsOn: string[];
+  shape: "serial" | "mechanize" | "fan-out";
+  /** The unit's task text(s), for the worker prompt. */
+  note?: string;
+  /** The underlying work units (for the worker prompt + footprint). */
+  units?: WorkUnit[];
+}
+
+/**
+ * Expand a Spec's slices into the **execution-unit DAG** the scheduler runs over: each
+ * slice's work units are batched by shape (`batchExecutionUnits`), and every resulting
+ * execution unit becomes a node — pooled across all slices into one graph. A slice with
+ * no `work_units` (legacy) becomes ONE serial node whose footprint is its declared
+ * `files`. Each node inherits its slice's `depends_on` (the slice can't start until its
+ * dep-slices are done) plus its work units' own `depends_on`.
+ */
+export function buildUnitDag(slices: SliceForDag[]): SchedUnit[] {
+  const out: SchedUnit[] = [];
+  for (const s of slices) {
+    const sliceDeps = s.dependsOn ?? [];
+    const units = s.workUnits ?? [];
+    if (units.length === 0) {
+      out.push({
+        id: s.handle,
+        slice: s.handle,
+        footprint: s.files ?? [],
+        dependsOn: [...sliceDeps],
+        shape: "serial",
+      });
+      continue;
+    }
+    batchExecutionUnits(units).forEach((eu, i) => {
+      const footprint = [
+        ...new Set(eu.units.flatMap((u) => u.footprint ?? [])),
+      ];
+      const dependsOn = [
+        ...new Set([...sliceDeps, ...eu.units.flatMap((u) => u.depends_on ?? [])]),
+      ];
+      const note =
+        eu.units
+          .map((u) => (u as WorkUnit & { note?: string }).note)
+          .filter(Boolean)
+          .join("; ") || undefined;
+      out.push({
+        id: `${s.handle}#eu-${i}`,
+        slice: s.handle,
+        footprint,
+        dependsOn,
+        shape: eu.shape,
+        note,
+        units: eu.units,
+      });
+    });
+  }
+  return out;
+}
+
+/** The scheduler's live state: what's done, what's running, what's not dispatchable. */
+export interface SchedulerState {
+  /** Ids known done — completed execution-unit ids AND handles of done slices. */
+  done: Set<string>;
+  /** Footprints (files) currently held by running units. */
+  running: Set<string>;
+  /** Unit ids that must not be dispatched (slice doing-elsewhere / requires-attention / archived). */
+  blocked: Set<string>;
+}
+
+/**
+ * The scheduler's **ready frontier**: execution units that are not done, not blocked, whose
+ * every dependency is satisfied (`done`), and whose footprint doesn't overlap a running unit
+ * — ordered **critical-path first** (longest remaining chain of dependents) and narrowed to a
+ * footprint-**disjoint** set so a batch dispatched together can't collide. A slice-handle dep
+ * is satisfied once the shell marks that slice done (all its units landed).
+ */
+export function readyFrontier(
+  units: SchedUnit[],
+  state: SchedulerState,
+): SchedUnit[] {
+  const { done, running, blocked } = state;
+  const candidates = units.filter(
+    (u) =>
+      !done.has(u.id) &&
+      !blocked.has(u.id) &&
+      !u.footprint.some((f) => running.has(f)) &&
+      (u.dependsOn ?? []).every((d) => done.has(d)),
+  );
+
+  // critical-path order: longest remaining chain of dependents first.
+  const dependents = new Map<string, string[]>();
+  for (const u of units)
+    for (const d of u.dependsOn ?? []) {
+      const arr = dependents.get(d) ?? [];
+      arr.push(u.id);
+      dependents.set(d, arr);
+    }
+  const depthCache = new Map<string, number>();
+  const depth = (id: string, seen: Set<string> = new Set()): number => {
+    const c = depthCache.get(id);
+    if (c != null) return c;
+    if (seen.has(id)) return 0; // cycle guard (validateDag rejects real cycles upstream)
+    seen.add(id);
+    const kids = dependents.get(id) ?? [];
+    const d = kids.length
+      ? 1 + Math.max(...kids.map((k) => depth(k, new Set(seen))))
+      : 0;
+    depthCache.set(id, d);
+    return d;
+  };
+  const ordered = [...candidates].sort(
+    (a, b) => depth(b.id) - depth(a.id) || a.id.localeCompare(b.id),
+  );
+
+  // footprint-disjoint subset: a batch dispatched together must not collide.
+  const taken = new Set<string>();
+  const out: SchedUnit[] = [];
+  for (const u of ordered) {
+    if (u.footprint.some((f) => taken.has(f))) continue;
+    u.footprint.forEach((f) => taken.add(f));
+    out.push(u);
+  }
+  return out;
+}
+
 /**
  * Extract a requires-attention slice's failure diagnosis from its body — the text the
  * orchestrator appended under the `## ⚑ Requires attention` heading (SP-tgs8nz AC4). Returns

@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import {
   normalizeFilePath,
   validateParallelGroup,
+  validateDag,
   acquireClaim,
   releaseClaim,
   reconcileOwnership,
@@ -316,4 +317,53 @@ test("requiresWorktree: a linked worktree proceeds (no false sibling-prefix matc
     requiresWorktree("/home/u/other/SP-5", "/home/u/repo"),
     "proceed",
   );
+});
+
+// ── validateDag (SP-tgs8nz deterministic control plane) ────────────────────
+
+test("validateDag: a well-formed DAG passes", () => {
+  const r = validateDag([
+    { id: "a", dependsOn: [] },
+    { id: "b", dependsOn: ["a"] },
+    { id: "c", dependsOn: ["a", "b"] },
+  ]);
+  assert.equal(r.ok, true);
+});
+
+test("validateDag: a dangling dependency is rejected, naming it", () => {
+  const r = validateDag([
+    { id: "a", dependsOn: ["ghost"] },
+    { id: "b", dependsOn: ["a"] },
+  ]);
+  assert.equal(r.ok, false);
+  if (r.ok) return;
+  assert.deepEqual(r.missing, [{ node: "a", dep: "ghost" }]);
+  assert.match(r.reason, /ghost/);
+});
+
+test("validateDag: a cycle is rejected, naming the loop", () => {
+  const r = validateDag([
+    { id: "a", dependsOn: ["c"] },
+    { id: "b", dependsOn: ["a"] },
+    { id: "c", dependsOn: ["b"] },
+  ]);
+  assert.equal(r.ok, false);
+  if (r.ok) return;
+  assert.ok(r.cycle && r.cycle.length >= 2, "names the cycle path");
+  assert.match(r.reason, /cycle/i);
+});
+
+test("validateDag: a self-loop is a cycle", () => {
+  const r = validateDag([{ id: "a", dependsOn: ["a"] }]);
+  assert.equal(r.ok, false);
+});
+
+test("validateDag: dangling deps are reported before cycles", () => {
+  const r = validateDag([
+    { id: "a", dependsOn: ["b", "ghost"] },
+    { id: "b", dependsOn: ["a"] }, // also a cycle, but the dangling dep wins
+  ]);
+  assert.equal(r.ok, false);
+  if (r.ok) return;
+  assert.ok(r.missing, "reports the missing dep first");
 });

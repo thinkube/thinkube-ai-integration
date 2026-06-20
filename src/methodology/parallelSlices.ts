@@ -108,6 +108,98 @@ export function validateParallelGroup(
   return { ok: false, reason, conflicts };
 }
 
+// ── Work-unit / slice DAG validation (SP-tgs8nz: deterministic control plane) ──
+//
+// Before any worker runs, the scheduler's DAG must be well-formed: every
+// dependency resolves to a known node, and the graph is acyclic. This is pure
+// graph code — no LLM in the control plane (SP-tgs8nz). `create_slice` and the
+// scheduler call it to reject a malformed DAG deterministically.
+
+export interface DagNode {
+  /** Node id — a work-unit id (`SP-3_SL-2#wu-0`) or a slice handle (`SP-3_SL-2`). */
+  id: string;
+  /** Ids this node depends on (must all resolve to nodes in the same DAG). */
+  dependsOn: string[];
+}
+
+export type ValidateDagResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: string;
+      cycle?: string[];
+      missing?: Array<{ node: string; dep: string }>;
+    };
+
+/**
+ * Validate a work-unit / slice DAG is well-formed (SP-tgs8nz). Two checks, both
+ * pure and deterministic: **dep-resolution** (every `dependsOn` id is a node in
+ * the DAG — no dangling reference) and **acyclicity** (no dependency cycle; the
+ * returned `cycle` names the loop). Dangling deps are reported first (a cycle
+ * check over a graph with missing nodes is meaningless). Fixtures in, a verdict
+ * out — the scheduler never dispatches a DAG this rejects.
+ */
+export function validateDag(nodes: DagNode[]): ValidateDagResult {
+  const ids = new Set(nodes.map((n) => n.id));
+
+  // 1. Dep-resolution: every dependency must name a node in the DAG.
+  const missing: Array<{ node: string; dep: string }> = [];
+  for (const n of nodes)
+    for (const d of n.dependsOn ?? [])
+      if (!ids.has(d)) missing.push({ node: n.id, dep: d });
+  if (missing.length) {
+    missing.sort(
+      (a, b) => a.node.localeCompare(b.node) || a.dep.localeCompare(b.dep),
+    );
+    const reason =
+      "Unresolved dependency — a node depends on an id that isn't in the DAG:\n" +
+      missing
+        .map((m) => `  • ${m.node} depends on ${m.dep} (not found)`)
+        .join("\n");
+    return { ok: false, reason, missing };
+  }
+
+  // 2. Acyclicity: DFS with GRAY/BLACK colouring; a back-edge to a GRAY node is a cycle.
+  // `findCycle` RETURNS the loop path (rather than mutating a closure var) so the
+  // control-flow narrowing below sees `cycle` as `string[] | null`.
+  const adj = new Map(nodes.map((n) => [n.id, n.dependsOn ?? []]));
+  const WHITE = 0,
+    GRAY = 1,
+    BLACK = 2;
+  const color = new Map<string, number>(nodes.map((n) => [n.id, WHITE]));
+  const stack: string[] = [];
+  const findCycle = (id: string): string[] | null => {
+    color.set(id, GRAY);
+    stack.push(id);
+    for (const d of adj.get(id) ?? []) {
+      if (color.get(d) === GRAY) return stack.slice(stack.indexOf(d)).concat(d);
+      if (color.get(d) === WHITE) {
+        const c = findCycle(d);
+        if (c) return c;
+      }
+    }
+    stack.pop();
+    color.set(id, BLACK);
+    return null;
+  };
+  let cycle: string[] | null = null;
+  for (const n of nodes) {
+    if (color.get(n.id) === WHITE) {
+      cycle = findCycle(n.id);
+      if (cycle) break;
+    }
+  }
+  if (cycle) {
+    return {
+      ok: false,
+      reason: "Dependency cycle — the DAG must be acyclic:\n  • " + cycle.join(" → "),
+      cycle,
+    };
+  }
+
+  return { ok: true };
+}
+
 // ── Ownership claims (SP-tgpwbm AC3 / AC5) ─────────────────────────────────
 //
 // The durable ownership map: each repo-relative file is owned by at most one
