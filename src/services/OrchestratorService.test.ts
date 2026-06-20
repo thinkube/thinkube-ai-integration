@@ -12,6 +12,7 @@ import {
   type OrchestratorDeps,
   type SpawnedWorker,
 } from "./OrchestratorService";
+import { answerParkedWorker } from "./orchestratorSessions";
 
 /** A fake worker that emits one stream-json line then closes, after handlers register. */
 function fakeWorker(line: string): SpawnedWorker {
@@ -364,4 +365,37 @@ test("dispatchSpec: success wins over a stray sentinel mention", async () => {
   );
   assert.deepEqual(calls.needsInput, []);
   assert.equal(r.committed, true);
+});
+
+test("dispatchSpec: a resident worker PARKS (frees its slot), then an external answer resumes it to Done + commit", async () => {
+  // SL-1 has two fan-out units: #eu-0 asks a question (parks resident), #eu-1 runs normally.
+  // The parked unit must free its slot so #eu-1 proceeds; once answered (simulating /attend),
+  // it resumes to success → the slice verifies + advances → the Spec commits.
+  const parkedId = "SP-1_SL-1#eu-0";
+  const { deps, calls } = makeDeps({
+    "specs/SP-1/SL-1.md": {
+      status: "ready",
+      work_units: [
+        { footprint: ["a.ts"], execution: "fan-out", note: "asks" },
+        { footprint: ["b.ts"], execution: "fan-out", note: "runs" },
+      ],
+    },
+  });
+  deps.runUnit = async (unit, _spec, _cwd, onPark) => {
+    if (unit.id === parkedId) {
+      // Park resident: resolve only when the registered answer fn is invoked.
+      return await new Promise((resolve) => {
+        onPark(unit, "which database?", () => resolve({ outcome: "success" }));
+      });
+    }
+    // The other unit completes immediately, then delivers the human's answer to the parked one.
+    setImmediate(() => answerParkedWorker(parkedId, "use postgres"));
+    return { outcome: "success" };
+  };
+  const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
+  assert.equal(r.dispatched, 2);
+  assert.ok(r.needsInput.includes("SP-1_SL-1"), "parked at least once");
+  assert.deepEqual(r.advanced, ["SP-1_SL-1"], "resumed + verified after the answer");
+  assert.equal(r.committed, true);
+  assert.deepEqual(calls.needsInput, ["SP-1_SL-1"]); // flagged needs-input on park
 });

@@ -72,3 +72,53 @@ export function onSessionsChange(cb: () => void): () => void {
   emitter.on("change", cb);
   return () => emitter.off("change", cb);
 }
+
+// ── Parked workers (SP-tgs8nz_SL-3: resident needs-input standby) ───────────
+//
+// A worker that asks a question stays **resident** (its streaming-input SDK
+// session alive, suspended awaiting the answer) but off the active cap. It
+// registers here so `/attend` — a separate command, possibly a different
+// OrchestratorService instance — can push the answer into the live session.
+
+interface ParkedWorker {
+  slice: string;
+  question: string;
+  /** Resolve the worker's suspended input generator with the human's answer. */
+  answer: (a: string) => void;
+}
+const parked = new Map<string, ParkedWorker>(); // unit id → parked worker
+
+/** Park a resident worker awaiting an answer (frees its active slot; stays alive). */
+export function parkWorker(
+  id: string,
+  slice: string,
+  question: string,
+  answer: (a: string) => void,
+): void {
+  parked.set(id, { slice, question, answer });
+  emitter.emit("change");
+}
+
+/** Push the human's answer into a parked worker's live session; true if it was resident. */
+export function answerParkedWorker(id: string, answer: string): boolean {
+  const p = parked.get(id);
+  if (!p) return false;
+  parked.delete(id);
+  p.answer(answer);
+  emitter.emit("change");
+  return true;
+}
+
+/** Drop a parked worker (it completed or was abandoned). */
+export function unparkWorker(id: string): void {
+  if (parked.delete(id)) emitter.emit("change");
+}
+
+/** Currently parked workers (for the control-center graph's needs-input nodes). */
+export function parkedWorkers(): Array<{ id: string; slice: string; question: string }> {
+  return [...parked.entries()].map(([id, p]) => ({
+    id,
+    slice: p.slice,
+    question: p.question,
+  }));
+}

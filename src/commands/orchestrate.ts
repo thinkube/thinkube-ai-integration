@@ -17,7 +17,10 @@ import {
   summarizeEvent,
   isResultSuccess,
 } from "../services/orchestratorCore";
-import { sessionLogPath } from "../services/orchestratorSessions";
+import {
+  sessionLogPath,
+  answerParkedWorker,
+} from "../services/orchestratorSessions";
 import type { OwnershipArbiter } from "../services/OwnershipArbiter";
 import type { LauncherService } from "../services/LauncherService";
 import type { SpecsProvider } from "../views/boards/SpecsProvider";
@@ -174,8 +177,8 @@ export function registerOrchestrateCommands(
             boardRoot,
           );
 
-          // needs-input → prompt for the answer and RESUME the parked worker (SL-5).
-          if (fm.needs_input && typeof fm.worker_session === "string") {
+          // needs-input → prompt for the answer, then continue the parked worker (SL-5).
+          if (fm.needs_input) {
             const qm = /##\s*❓\s*Needs input\s*\n+([\s\S]*?)(?:\n##\s|$)/.exec(
               body,
             );
@@ -186,6 +189,27 @@ export function registerOrchestrateCommands(
               ignoreFocusOut: true,
             });
             if (!answer) return;
+
+            // If the worker is still RESIDENT (its streaming session alive in a running
+            // orchestration), push the answer in — it continues in place and the running loop
+            // verifies + advances it. No board write needed here.
+            if (
+              typeof fm.worker_unit === "string" &&
+              answerParkedWorker(fm.worker_unit, answer)
+            ) {
+              vscode.window.showInformationMessage(
+                `${h}: answer delivered to the live worker — it will continue and verify in the running orchestration.`,
+              );
+              return;
+            }
+
+            // Not resident (e.g. the host reloaded) → fall back to SDK resume by session id.
+            if (typeof fm.worker_session !== "string") {
+              vscode.window.showWarningMessage(
+                `${h}: no live worker and no session to resume — re-run Orchestrate to retry it.`,
+              );
+              return;
+            }
             output.show(true);
             output.appendLine(
               `▸ resuming ${h} (session ${fm.worker_session}) with your answer…`,

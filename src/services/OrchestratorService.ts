@@ -35,7 +35,20 @@ import {
   startSession,
   appendSession,
   endSession,
+  parkWorker,
+  unparkWorker,
 } from "./orchestratorSessions";
+
+/**
+ * Called when a worker escalates a question and **parks resident** (SP-tgs8nz_SL-3): the scheduler
+ * frees its active slot but the worker stays alive, suspended. `answer` pushes the human's reply
+ * into the live session (via `/attend`), continuing it in place.
+ */
+export type OnPark = (
+  unit: SchedUnit,
+  question: string,
+  answer: (a: string) => void,
+) => void;
 
 const SLICE_REL_RE = /specs\/SP-(.+?)\/SL-(\d+)\.md$/;
 
@@ -58,14 +71,22 @@ export interface OrchestratorDeps {
   advance?: (handle: string) => Promise<void>;
   /** Flag a slice requires-attention with a diagnosis (tests): defaults to a frontmatter+body write. */
   flagAttention?: (handle: string, diagnosis: string) => Promise<void>;
-  /** Park a slice needs-input with its question + the worker's session id (tests): defaults to a frontmatter+body write. */
+  /** Park a slice needs-input with its question + the worker's session id + unit id (tests): defaults to a frontmatter+body write. */
   flagNeedsInput?: (
     handle: string,
     question: string,
     sessionId?: string,
+    unitId?: string,
   ) => Promise<void>;
   /** Commit the worktree once the whole Spec is Done (tests): defaults to `git add -A && git commit`. */
   commit?: (specNumber: string, cwd: string) => Promise<void>;
+  /** Run one execution unit (tests): overrides the SDK/spawn substrate; `onPark` parks it resident. */
+  runUnit?: (
+    unit: SchedUnit,
+    specNumber: string,
+    cwd: string,
+    onPark: OnPark,
+  ) => Promise<WorkerResult>;
 }
 
 /** What a worker run resolved to — the third outcome carries the escalated question + session id. */
@@ -224,16 +245,36 @@ export class OrchestratorService {
       dag.map((u) => [u.id, u.footprint]),
     );
     const running = new Map<string, Promise<UnitDone>>();
+    const parked = new Set<string>(); // dispatched but suspended awaiting an answer (off the cap)
+    let wake: () => void = () => {};
+    let wakeSignal = new Promise<void>((r) => (wake = r));
+    const activeCount = () => running.size - parked.size;
+
+    // Resident needs-input park (SL-3): free the worker's slot + register its LIVE session so
+    // `/attend` can push the answer in, but keep it alive (its promise resolves on the answered
+    // continuation). Distinct from the exit-model `needs-input` outcome (the spawn path) handled
+    // in the loop below; here the worker never resolved — it's suspended mid-stream.
+    const onPark: OnPark = (u, question, answer) => {
+      (footprintsOf.get(u.id) ?? []).forEach((f) => state.running.delete(f));
+      parked.add(u.id);
+      parkWorker(u.id, u.slice, question, answer);
+      if (!result.needsInput.includes(u.slice)) result.needsInput.push(u.slice);
+      void this.flagNeedsInput(u.slice, question, undefined, u.id);
+      output.appendLine(
+        `❓ ${u.slice}: ${u.id} asked a question → parked resident (slot freed, awaiting /attend).`,
+      );
+      wake();
+    };
 
     const fill = () => {
       for (const u of readyFrontier(dag, state)) {
-        if (running.size >= limit) break;
+        if (activeCount() >= limit) break;
         if (running.has(u.id)) continue;
         u.footprint.forEach((f) => state.running.add(f));
-        running.set(u.id, this.dispatchUnit(u, specNumber, worktreePath));
+        running.set(u.id, this.dispatchUnit(u, specNumber, worktreePath, onPark));
         result.dispatched++;
         output.appendLine(
-          `▸ ${u.id} [${u.shape}] dispatched (${running.size}/${limit})`,
+          `▸ ${u.id} [${u.shape}] dispatched (${activeCount()}/${limit})`,
         );
       }
     };
@@ -247,23 +288,40 @@ export class OrchestratorService {
 
     fill();
     while (running.size > 0) {
-      const d = await Promise.race(running.values());
+      // Race worker completions against a park-wake (a freed slot with no completion, so we
+      // re-fill). If only parked workers remain, the loop waits here for `/attend` to answer them.
+      const winner = await Promise.race<
+        { kind: "done"; d: UnitDone } | { kind: "wake" }
+      >([
+        ...[...running.values()].map((p) =>
+          p.then((d) => ({ kind: "done" as const, d })),
+        ),
+        wakeSignal.then(() => ({ kind: "wake" as const })),
+      ]);
+      if (winner.kind === "wake") {
+        wakeSignal = new Promise<void>((r) => (wake = r));
+        fill();
+        continue;
+      }
+      const d = winner.d;
       running.delete(d.id);
+      parked.delete(d.id);
+      unparkWorker(d.id);
       (footprintsOf.get(d.id) ?? []).forEach((f) => state.running.delete(f));
       result.results.push({ id: d.id, slice: d.slice, outcome: d.outcome });
 
       if (d.outcome === "needs-input") {
-        // The worker escalated a question rather than guessing — park the slice (slot already
-        // freed), capturing its session id for resume-on-answer (/attend, SL-5). Distinct from a
-        // failure: the work isn't wrong, it's waiting on a human decision.
+        // Exit-model needs-input (a non-resident worker — the spawn path / claude -p): there's no
+        // live session to feed, so park via the board for resume-by-session-id (/attend fallback).
         await this.flagNeedsInput(
           d.slice,
           d.question ?? "(no question text)",
           d.sessionId,
+          d.id,
         );
         (unitsBySlice.get(d.slice) ?? []).forEach((u) => state.blocked.add(u.id));
         remaining.delete(d.slice);
-        result.needsInput.push(d.slice);
+        if (!result.needsInput.includes(d.slice)) result.needsInput.push(d.slice);
         output.appendLine(
           `❓ ${d.slice}: ${d.id} asked a question → needs-input (slot freed).`,
         );
@@ -316,11 +374,12 @@ export class OrchestratorService {
     return result;
   }
 
-  /** Claim the unit's footprint → run the worker → release. Resolves with its outcome. */
+  /** Claim the unit's footprint → run the worker (may park resident) → release. Resolves with its outcome. */
   private async dispatchUnit(
     unit: SchedUnit,
     specNumber: string,
     worktreePath: string,
+    onPark: OnPark,
   ): Promise<UnitDone> {
     const claim = await this.deps.arbiter.acquire(unit.id, unit.footprint);
     if (!claim.ok) {
@@ -335,7 +394,7 @@ export class OrchestratorService {
     }
     startSession(unit.id);
     try {
-      const wr = await this.runWorker(unit, specNumber, worktreePath);
+      const wr = await this.runWorker(unit, specNumber, worktreePath, onPark);
       return {
         id: unit.id,
         slice: unit.slice,
@@ -374,10 +433,13 @@ export class OrchestratorService {
     unit: SchedUnit,
     specNumber: string,
     cwd: string,
+    onPark: OnPark,
   ): Promise<WorkerResult> {
+    if (this.deps.runUnit)
+      return this.deps.runUnit(unit, specNumber, cwd, onPark);
     return this.deps.spawnWorker
-      ? this.runViaSpawn(unit, specNumber, cwd)
-      : this.runViaSdk(unit, specNumber, cwd);
+      ? this.runViaSpawn(unit, specNumber, cwd) // exit model (claude -p can't park resident)
+      : this.runViaSdk(unit, specNumber, cwd, onPark);
   }
 
   /**
@@ -391,15 +453,35 @@ export class OrchestratorService {
     unit: SchedUnit,
     specNumber: string,
     cwd: string,
+    onPark: OnPark,
   ): Promise<WorkerResult> {
     const prompt = buildWorkerPrompt(unit, specNumber);
     let success = false;
     let sessionId: string | undefined;
-    let textBuf = "";
+    let turnText = "";
+    let parkedOnce = false;
+
+    // Streaming-input session (SL-3 resident standby): yield the task; when the agent ends a turn
+    // with a `⟦NEEDS-INPUT⟧` question, the session stays alive (suspended at `await nextInput`) and
+    // we `onPark` it off the active cap. `/attend` resolves `nextInput` with the answer → the agent
+    // continues in place. No process restart, no context re-read while within the cache TTL.
+    let resolveNext: (v: string | null) => void = () => {};
+    const nextInput = new Promise<string | null>((r) => (resolveNext = r));
+    const userMsg = (content: string) => ({
+      type: "user" as const,
+      message: { role: "user" as const, content },
+      parent_tool_use_id: null,
+    });
+    const input = (async function* () {
+      yield userMsg(prompt);
+      const a = await nextInput;
+      if (a != null) yield userMsg(a);
+    })();
+
     try {
       const { query } = await import("@anthropic-ai/claude-agent-sdk");
       for await (const msg of query({
-        prompt,
+        prompt: input,
         options: {
           cwd,
           permissionMode: "bypassPermissions",
@@ -445,17 +527,37 @@ export class OrchestratorService {
         const line = summarizeEvent(rec);
         if (line) {
           this.deps.output.appendLine(`  [${unit.id}] ${line}`);
-          textBuf += line + "\n";
+          turnText += line + "\n";
         }
         if (isResultSuccess(rec)) success = true;
+        if (rec.type === "result") {
+          // A turn ended. Finish on success; otherwise park once on a question; otherwise stop.
+          if (success) {
+            resolveNext(null);
+          } else if (!parkedOnce) {
+            const q = extractNeedsInput(turnText);
+            if (q) {
+              parkedOnce = true;
+              turnText = "";
+              onPark(unit, q, (ans) => resolveNext(ans));
+            } else {
+              resolveNext(null);
+            }
+          } else {
+            resolveNext(null);
+          }
+        }
       }
     } catch (err) {
       this.deps.output.appendLine(
         `  ✗ ${unit.id} SDK worker error: ${(err as Error).message}`,
       );
+      resolveNext(null);
       return { outcome: "failed", sessionId };
     }
-    return this.classify(textBuf, success, sessionId);
+    return success
+      ? { outcome: "success", sessionId }
+      : { outcome: "failed", sessionId };
   }
 
   /** The subprocess worker (injected `spawnWorker`): a headless `claude -p`, stream-json parsed. */
@@ -567,22 +669,25 @@ export class OrchestratorService {
     handle: string,
     question: string,
     sessionId?: string,
+    unitId?: string,
   ): Promise<void> {
     return (
       this.deps.flagNeedsInput ??
-      ((h, q, s) => this.defaultFlagNeedsInput(h, q, s))
-    )(handle, question, sessionId);
+      ((h, q, s, u) => this.defaultFlagNeedsInput(h, q, s, u))
+    )(handle, question, sessionId, unitId);
   }
 
   /**
    * Default needs-input park (SL-3): mark the slice `requires-attention` (the human-needed column)
-   * but distinct from a failure — `needs_input: true` + the worker's `worker_session` (for
-   * resume-on-answer) + the question under a `## ❓ Needs input` heading. `/attend` (SL-5) answers it.
+   * but distinct from a failure — `needs_input: true` + the worker's `worker_session` (resume
+   * fallback) + `worker_unit` (the resident-session key `/attend` uses) + the question under a
+   * `## ❓ Needs input` heading. `/attend` (SL-5) answers it.
    */
   private async defaultFlagNeedsInput(
     handle: string,
     question: string,
     sessionId?: string,
+    unitId?: string,
   ): Promise<void> {
     const m = /^SP-(.+)_SL-(\d+)$/.exec(handle);
     if (!m) return;
@@ -597,6 +702,7 @@ export class OrchestratorService {
         status: "requires-attention",
         needs_input: true,
         ...(sessionId ? { worker_session: sessionId } : {}),
+        ...(unitId ? { worker_unit: unitId } : {}),
       },
       (parsed.body ?? "") + note,
     );
