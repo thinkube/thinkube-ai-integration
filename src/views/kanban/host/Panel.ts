@@ -292,7 +292,7 @@ export class KanbanPanel implements vscode.Disposable {
     this.panel.webview.postMessage(out);
   }
 
-  /** Flag tasks whose slice has a live `claude -p` worker (SP-tgs8nz SL-4). */
+  /** Flag tasks whose slice has a live Agent SDK worker (SP-tgs8nz SL-4). */
   private withRunning(board: Board): Board {
     const live = runningSessions();
     const park = parkedWorkers();

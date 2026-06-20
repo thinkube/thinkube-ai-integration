@@ -117,6 +117,7 @@ export class ThinkubeFilesAdapter implements StorageAdapter {
         assignee: fm.assignee,
         files: fm.files,
         dependsOn: Array.isArray(fm.depends_on) ? fm.depends_on : undefined,
+        workUnits: Array.isArray(fm.work_units) ? fm.work_units : undefined,
       });
     }
     const board = buildSliceBoard(inputs, this.scope, specMeta);

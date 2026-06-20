@@ -1,15 +1,20 @@
 /**
- * Control-center graph view (SP-tgs8nz SL-4): the slice-DAG rendered as status-coloured
- * nodes + dependency edges, with a running-session tag on live nodes. Clicking a running
- * node floats its session out (postToHost `float-out`). Pure presentation over the board the
- * host already sends — tasks carry `columnId` → status colour, `dependsOn` → edges, `running`.
+ * Control-center graph view (SP-tgs8nz SL-4): the **work-unit DAG** rendered as a node per
+ * worker (execution unit), not per slice. Each slice's `workUnits` (expanded host-side from
+ * `work_units` via the scheduler's batching) becomes one node — shown idle before dispatch and
+ * coloured live as an Agent SDK worker runs on it. A slice with no work units yields a single
+ * node (= the slice handle), so legacy slices render as before. Node ids align with the live
+ * `runningWorkers` / `parkedWorkers` keys, so clicking a running node floats out *that SDK
+ * worker's* JSON-log, and a parked (needs-input) node answers it via `/attend`. Pure
+ * presentation over the board the host already sends.
  */
 import { useMemo } from "react";
 import { useGlobalState } from "../utils/context";
 import { postToHost } from "../utils/vscode";
 import { lookupPalette } from "../utils/palette";
-import { TaskCard } from "../types";
+import { TaskCard, WorkUnitNode } from "../types";
 
+/** Base node colour by the parent slice's column (status). */
 const STATUS_SLUG: Record<string, string> = {
   "column-ready": "indigo",
   "column-doing": "azure",
@@ -17,7 +22,10 @@ const STATUS_SLUG: Record<string, string> = {
   "column-done": "lime",
 };
 
-function colorFor(columnId: string): string {
+const RUNNING_COLOR = "#3fb950"; // a live SDK worker on this unit
+const PARKED_COLOR = "#d29922"; // a needs-input worker awaiting an answer
+
+function baseColor(columnId: string): string {
   return lookupPalette(STATUS_SLUG[columnId] ?? "slate").accent;
 }
 
@@ -30,13 +38,72 @@ function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
+/** Strip the `SP-{id}_` prefix so the label reads `SL-1#eu-2` (or `SL-1` for a legacy node). */
+function shortId(id: string): string {
+  return id.replace(/^SP-[^_]+_/, "");
+}
+
+type UnitState = "running" | "parked" | "done" | "attention" | "active" | "ready";
+
+interface UnitNode {
+  id: string;
+  card: TaskCard;
+  unit: WorkUnitNode;
+  state: UnitState;
+  accent: string;
+  /** Effective dependency node-ids (slice-handle deps expanded to their unit ids). */
+  deps: string[];
+}
+
+function unitStateOf(card: TaskCard, unitId: string): UnitState {
+  if ((card.runningWorkers ?? []).includes(unitId)) return "running";
+  if ((card.parkedWorkers ?? []).includes(unitId)) return "parked";
+  switch (card.columnId) {
+    case "column-done":
+      return "done";
+    case "column-attention":
+      return "attention";
+    case "column-doing":
+      return "active";
+    default:
+      return "ready";
+  }
+}
+
+function accentFor(state: UnitState, card: TaskCard): string {
+  if (state === "running") return RUNNING_COLOR;
+  if (state === "parked") return PARKED_COLOR;
+  return baseColor(card.columnId);
+}
+
 export function GraphView(): JSX.Element {
   const { state } = useGlobalState();
 
   const { nodes, edges, width, height } = useMemo(() => {
     // Slice cards only — exclude the auto-derived acceptance close-cards.
     const cards = Object.values(state.tasks).filter((t) => !t.isAcceptance);
-    const byId = new Map(cards.map((c) => [c.id, c]));
+
+    // A slice with no work_units still carries one synthetic unit (= its handle) from the host,
+    // so every card contributes ≥1 node. Map slice handle → its unit ids (to expand slice-level
+    // deps, which name a slice handle, into edges between the actual unit nodes).
+    const unitsBySlice = new Map<string, string[]>();
+    for (const c of cards)
+      unitsBySlice.set(c.id, (c.workUnits ?? [{ id: c.id, shape: "serial" }]).map((u) => u.id));
+
+    const unitNodes: UnitNode[] = [];
+    for (const c of cards) {
+      const units = c.workUnits ?? [{ id: c.id, shape: "serial" as const }];
+      for (const u of units) {
+        const st = unitStateOf(c, u.id);
+        // A dep may name a unit id (passes through) or a sibling slice handle (expand to its
+        // units, so a cross-slice dependency draws edges between the real worker nodes).
+        const deps = (u.dependsOn ?? []).flatMap((d) =>
+          unitsBySlice.get(d) ?? [d],
+        );
+        unitNodes.push({ id: u.id, card: c, unit: u, state: st, accent: accentFor(st, c), deps });
+      }
+    }
+    const byId = new Map(unitNodes.map((n) => [n.id, n]));
 
     // Layer each node by its longest dependency chain (topological depth).
     const depthCache = new Map<string, number>();
@@ -45,7 +112,7 @@ export function GraphView(): JSX.Element {
       if (cached != null) return cached;
       if (seen.has(id)) return 0; // cycle guard
       seen.add(id);
-      const deps = (byId.get(id)?.dependsOn ?? []).filter((d) => byId.has(d));
+      const deps = (byId.get(id)?.deps ?? []).filter((d) => byId.has(d));
       const d = deps.length
         ? 1 + Math.max(...deps.map((x) => depthOf(x, new Set(seen))))
         : 0;
@@ -53,38 +120,35 @@ export function GraphView(): JSX.Element {
       return d;
     };
 
-    const layers = new Map<number, TaskCard[]>();
-    for (const c of cards) {
-      const d = depthOf(c.id);
+    const layers = new Map<number, UnitNode[]>();
+    for (const n of unitNodes) {
+      const d = depthOf(n.id);
       const arr = layers.get(d) ?? [];
-      arr.push(c);
+      arr.push(n);
       layers.set(d, arr);
     }
 
     const pos = new Map<string, { x: number; y: number }>();
     let maxRows = 0;
     for (const [d, arr] of layers) {
-      arr.forEach((c, i) =>
-        pos.set(c.id, {
-          x: d * (NODE_W + COL_GAP),
-          y: i * (NODE_H + ROW_GAP),
-        }),
+      arr.forEach((n, i) =>
+        pos.set(n.id, { x: d * (NODE_W + COL_GAP), y: i * (NODE_H + ROW_GAP) }),
       );
       maxRows = Math.max(maxRows, arr.length);
     }
     const maxDepth = layers.size ? Math.max(...layers.keys()) : 0;
 
-    const placed = cards.map((c) => {
-      const p = pos.get(c.id) ?? { x: 0, y: 0 };
-      return { card: c, x: p.x, y: p.y };
+    const placed = unitNodes.map((n) => {
+      const p = pos.get(n.id) ?? { x: 0, y: 0 };
+      return { node: n, x: p.x, y: p.y };
     });
-    const lines = cards.flatMap((c) =>
-      (c.dependsOn ?? [])
+    const lines = unitNodes.flatMap((n) =>
+      n.deps
         .filter((d) => byId.has(d))
         .map((d) => ({
-          key: `${d}->${c.id}`,
+          key: `${d}->${n.id}`,
           from: pos.get(d) ?? { x: 0, y: 0 },
-          to: pos.get(c.id) ?? { x: 0, y: 0 },
+          to: pos.get(n.id) ?? { x: 0, y: 0 },
         })),
     );
     return {
@@ -97,7 +161,7 @@ export function GraphView(): JSX.Element {
 
   if (nodes.length === 0) {
     return (
-      <div style={{ padding: 24, opacity: 0.7 }}>No slices to graph yet.</div>
+      <div style={{ padding: 24, opacity: 0.7 }}>No work to graph yet.</div>
     );
   }
 
@@ -131,10 +195,37 @@ export function GraphView(): JSX.Element {
             markerEnd="url(#tk-arrow)"
           />
         ))}
-        {nodes.map(({ card, x, y }) => {
-          const accent = colorFor(card.columnId);
+        {nodes.map(({ node, x, y }) => {
+          const { card, unit, state: st, accent } = node;
+          const clickable = st === "running" || st === "parked";
+          const onClick =
+            st === "running"
+              ? () => postToHost({ kind: "float-out", handle: node.id })
+              : st === "parked"
+                ? () => postToHost({ kind: "attend", handle: card.id })
+                : undefined;
+          const subtitle = unit.note ?? card.description;
+          const title =
+            st === "running"
+              ? `${node.id} — click to open its live SDK-worker log`
+              : st === "parked"
+                ? `${node.id} asked a question — click to answer (/attend)`
+                : `${node.id}${unit.note ? ` — ${unit.note}` : ""}`;
           return (
-            <g key={card.id} transform={`translate(${x},${y})`}>
+            <g
+              key={node.id}
+              transform={`translate(${x},${y})`}
+              style={clickable ? { cursor: "pointer" } : undefined}
+              onClick={
+                onClick
+                  ? (e) => {
+                      e.stopPropagation();
+                      onClick();
+                    }
+                  : undefined
+              }
+            >
+              <title>{title}</title>
               <rect
                 width={NODE_W}
                 height={NODE_H}
@@ -142,86 +233,57 @@ export function GraphView(): JSX.Element {
                 fill="var(--vscode-editor-background)"
                 stroke={accent}
                 strokeWidth={2}
+                strokeDasharray={st === "ready" ? "4 3" : undefined}
               />
               <rect width={6} height={NODE_H} rx={3} fill={accent} />
               <text
                 x={16}
-                y={23}
+                y={22}
                 fill="var(--vscode-foreground)"
                 fontSize={12}
                 fontWeight={600}
               >
-                {truncate(card.id, 24)}
+                {truncate(shortId(node.id), 22)}
               </text>
               <text
                 x={16}
-                y={41}
+                y={40}
                 fill="var(--vscode-descriptionForeground, #aaa)"
-                fontSize={11}
+                fontSize={10}
               >
-                {truncate(card.description, 28)}
+                {truncate(subtitle, 30)}
               </text>
-              {/* A node per running worker (SP-tgs8nz_SL-4): one pulsing dot per execution-unit
-                  session on this slice; click it to float out that worker's live JSON-log. */}
-              {(card.runningWorkers ?? []).length > 0 && (
+              {/* Shape tag bottom-left; status word bottom-right. */}
+              <text x={16} y={NODE_H - 6} fill={accent} fontSize={9} opacity={0.85}>
+                {unit.shape}
+              </text>
+              {st === "running" && (
                 <>
-                  <text
-                    x={16}
-                    y={NODE_H - 6}
-                    fill="#3fb950"
-                    fontSize={9}
-                  >
-                    {card.runningWorkers!.length} worker
-                    {card.runningWorkers!.length > 1 ? "s" : ""} running
+                  <text x={NODE_W - 58} y={NODE_H - 6} fill={RUNNING_COLOR} fontSize={9}>
+                    running
                   </text>
-                  {card.runningWorkers!.map((w, i) => (
-                    <circle
-                      key={w}
-                      cx={NODE_W - 14 - i * 14}
-                      cy={16}
-                      r={5}
-                      fill="#3fb950"
-                      style={{ cursor: "pointer" }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        postToHost({ kind: "float-out", handle: w });
-                      }}
-                    >
-                      <title>{`${w} — click to open its live log`}</title>
-                      <animate
-                        attributeName="opacity"
-                        values="1;0.3;1"
-                        dur="1.2s"
-                        repeatCount="indefinite"
-                      />
-                    </circle>
-                  ))}
+                  <circle cx={NODE_W - 14} cy={16} r={5} fill={RUNNING_COLOR}>
+                    <animate
+                      attributeName="opacity"
+                      values="1;0.3;1"
+                      dur="1.2s"
+                      repeatCount="indefinite"
+                    />
+                  </circle>
                 </>
               )}
-              {/* A parked (needs-input) worker (SP-tgs8nz_SL-3): an amber dot; click it to
-                  answer the question and resume the resident session via /attend. */}
-              {(card.parkedWorkers ?? []).length > 0 && (
+              {st === "parked" && (
                 <>
-                  <text x={16} y={NODE_H - 6} fill="#d29922" fontSize={9}>
-                    {card.parkedWorkers!.length} awaiting answer
+                  <text x={NODE_W - 78} y={NODE_H - 6} fill={PARKED_COLOR} fontSize={9}>
+                    needs input
                   </text>
-                  {card.parkedWorkers!.map((w, i) => (
-                    <circle
-                      key={w}
-                      cx={NODE_W - 14 - i * 14}
-                      cy={NODE_H - 14}
-                      r={5}
-                      fill="#d29922"
-                      style={{ cursor: "pointer" }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        postToHost({ kind: "attend", handle: card.id });
-                      }}
-                    >
-                      <title>{`${w} asked a question — click to answer (/attend)`}</title>
-                    </circle>
-                  ))}
+                  <circle cx={NODE_W - 14} cy={16} r={5} fill={PARKED_COLOR} />
                 </>
+              )}
+              {st === "done" && (
+                <text x={NODE_W - 36} y={NODE_H - 6} fill={accent} fontSize={9}>
+                  done
+                </text>
               )}
             </g>
           );

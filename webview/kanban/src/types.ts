@@ -17,6 +17,23 @@
  * that slug gets derived deterministically from the task's parent epic so
  * tasks under the same epic share a color.
  */
+/**
+ * An execution-unit node (SP-tgs8nz_SL-4): a slice's work units expanded to the
+ * scheduler's execution units, so the control-center graph shows a node per worker
+ * even before dispatch. `id` matches the live `runningWorkers`/`parkedWorkers` keys
+ * (the Agent SDK worker/session key the scheduler dispatches and `float-out` opens).
+ */
+export interface WorkUnitNode {
+  /** `${sliceHandle}#eu-${i}`, or the slice handle for a unit-less (legacy) slice. */
+  id: string;
+  /** Execution shape of the batched unit. */
+  shape: "serial" | "mechanize" | "fan-out";
+  /** The unit's task text (the worker's prompt), for the node label. */
+  note?: string;
+  /** Unit/slice handles this unit waits on (work-unit DAG edges). */
+  dependsOn?: string[];
+}
+
 export interface TaskCard {
   id: string;
   /** The issue title — the card's heading. */
@@ -65,6 +82,9 @@ export interface TaskCard {
   runningWorkers?: string[];
   /** The parked worker (execution-unit) ids awaiting an answer on this slice — needs-input (SL-3). */
   parkedWorkers?: string[];
+  /** The slice's execution-unit nodes (SP-tgs8nz_SL-4) — a node per worker, shown idle before
+   *  dispatch and coloured live via `runningWorkers`/`parkedWorkers` (ids align). */
+  workUnits?: WorkUnitNode[];
 }
 
 export interface BoardColumn {
