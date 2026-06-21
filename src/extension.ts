@@ -304,6 +304,28 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("thinkube.specs.refresh", () =>
       specsProvider.refresh(),
     ),
+    // Eye icon on a TEP/Spec row → open the document in the Markdown PREVIEW (rendered),
+    // not the raw editor. The node (passed by the inline menu) carries its `.file`.
+    vscode.commands.registerCommand(
+      "thinkube.specs.openRendered",
+      (node?: { file?: string }) => {
+        if (node?.file)
+          void vscode.commands.executeCommand(
+            "markdown.showPreview",
+            vscode.Uri.file(node.file),
+          );
+      },
+    ),
+    vscode.commands.registerCommand(
+      "thinkube.teps.openRendered",
+      (node?: { file?: string }) => {
+        if (node?.file)
+          void vscode.commands.executeCommand(
+            "markdown.showPreview",
+            vscode.Uri.file(node.file),
+          );
+      },
+    ),
     // "+ New Spec" on the Specs section header — mint the next Spec id from the
     // selected space's board and open `/spec-prepare <n>` (sidebar-consistent
     // with "+ New TEP"; the kanban webview no longer owns this).
