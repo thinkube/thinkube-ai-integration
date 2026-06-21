@@ -18,7 +18,7 @@ import {
   isResultSuccess,
 } from "../services/orchestratorCore";
 import {
-  sessionLogPath,
+  sessionLogPathFor,
   answerParkedWorker,
 } from "../services/orchestratorSessions";
 import type { OwnershipArbiter } from "../services/OwnershipArbiter";
@@ -347,11 +347,12 @@ function floatOutSession(
     { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
     { retainContextWhenHidden: true },
   );
-  const logPath = handle ? sessionLogPath(handle) : undefined;
+  const logPath = handle ? sessionLogPathFor(handle) : undefined;
 
   const render = () => {
     const lines: string[] = [];
-    if (logPath) {
+    const exists = logPath ? fs.existsSync(logPath) : false;
+    if (exists && logPath) {
       try {
         const buf = new StreamJsonBuffer();
         for (const evt of buf.push(fs.readFileSync(logPath, "utf8"))) {
@@ -364,9 +365,9 @@ function floatOutSession(
     }
     const body = lines.length
       ? lines.map(esc).join("\n")
-      : logPath
+      : exists
         ? "Waiting for session output…"
-        : "No session log for this slice yet — run it via “Orchestrate Next Slice”.";
+        : "No log for this worker yet — it hasn't run (dispatch the Spec to start it).";
     panel.webview.html = sessionHtml(esc(title), body);
   };
 

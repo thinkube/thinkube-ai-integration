@@ -313,6 +313,24 @@ export function GraphView(): JSX.Element {
               <text x={16} y={NODE_H - 6} fill={accent} fontSize={9} opacity={0.85}>
                 {unit.shape}
               </text>
+              {/* A "view log" affordance on every worker that has run (done / failed / running /
+                  parked) — click to float out its JSON-log for debugging, even after a reload. */}
+              {st !== "ready" && (
+                <text
+                  x={NODE_W - 30}
+                  y={15}
+                  fill="var(--vscode-descriptionForeground, #aaa)"
+                  fontSize={12}
+                  style={{ cursor: "pointer" }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    postToHost({ kind: "float-out", handle: node.id });
+                  }}
+                >
+                  <title>{`${node.id} — view this worker's log`}</title>
+                  ≣
+                </text>
+              )}
               {st === "running" && (
                 <>
                   <text x={NODE_W - 58} y={NODE_H - 6} fill={RUNNING_COLOR} fontSize={9}>

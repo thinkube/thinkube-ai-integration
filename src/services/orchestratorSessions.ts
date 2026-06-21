@@ -85,6 +85,15 @@ export function sessionLogPath(handle: string): string | undefined {
   return logs.get(handle);
 }
 
+/** The DETERMINISTIC `.jsonl` path for a unit handle — computed from the sessions dir, so a
+ *  finished/failed worker's log is viewable even after the in-memory map is gone (a reload).
+ *  Returns the path whether or not the file exists yet; callers check existence. */
+export function sessionLogPathFor(handle: string): string | undefined {
+  return baseDir
+    ? path.join(baseDir, `${handle.replace(/[^A-Za-z0-9_-]/g, "_")}.jsonl`)
+    : undefined;
+}
+
 /** Subscribe to running-set changes; returns an unsubscribe. */
 export function onSessionsChange(cb: () => void): () => void {
   emitter.on("change", cb);
