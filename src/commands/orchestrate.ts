@@ -391,5 +391,5 @@ function esc(s: string): string {
 }
 
 function sessionHtml(title: string, body: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><style>body{font:13px var(--vscode-editor-font-family,monospace);padding:8px;color:var(--vscode-foreground)}h1{font-size:13px;opacity:.7}#log{white-space:pre-wrap}.hint{opacity:.5}</style></head><body><h1>${title}</h1><div id="log">${body}</div><p class="hint">Use the editor's “Move into New Window” to place this on a second monitor.</p></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><style>body{font:13px var(--vscode-editor-font-family,monospace);padding:8px;color:var(--vscode-foreground)}h1{font-size:13px;opacity:.7}#log{white-space:pre-wrap}.hint{opacity:.5}</style></head><body><h1>${title}</h1><div id="log">${body}</div><p class="hint">Tip: drag this tab into its own editor group, or open a second code-server browser window, to place it on another monitor. (“Move into New Window” via right-clicking the tab is desktop-VS-Code only.)</p></body></html>`;
 }
