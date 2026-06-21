@@ -2,7 +2,7 @@
   "name": "thinkube-ai-integration",
   "displayName": "Thinkube AI Integration",
   "description": "Thinkube integration for AI assistants - Launch Claude from explorer context menu with smart directory detection and project configuration",
-  "version": "0.1.59",
+  "version": "0.1.60",
   "publisher": "thinkube",
   "engines": {
     "vscode": "^1.101.0"
@@ -662,6 +662,11 @@
           "type": "string",
           "default": "",
           "description": "Shell command run in a slice's worktree to verify it before the orchestrator advances it to Done (green = exit 0), e.g. `ansible-lint` or `npm test`. When empty, the orchestrator runs `npm run compile` if the repo has a package.json, otherwise skips the verify (logged) so a non-JS repo isn't falsely failed by a JS-only gate."
+        },
+        "thinkube.orchestrator.floatLogsToNewWindow": {
+          "type": "boolean",
+          "default": true,
+          "description": "When you open a worker's log (the ≣ on a control-center graph node), pop it directly into its own editor window instead of a beside tab. Falls back to a beside tab where auxiliary windows aren't supported. Turn off to keep logs beside the editor."
         },
         "thinkube.agentTeams.enableExperimental": {
           "type": "boolean",

@@ -341,10 +341,16 @@ function floatOutSession(
   handle?: string,
 ): void {
   const title = handle ? `Session · ${handle}` : "Orchestrator Session";
+  const toNewWindow = vscode.workspace
+    .getConfiguration("thinkube.orchestrator")
+    .get<boolean>("floatLogsToNewWindow", true);
   const panel = vscode.window.createWebviewPanel(
     "thinkubeSession",
     title,
-    { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+    // Active (focused) when we're about to pop it into its own window; Beside (unfocused) otherwise.
+    toNewWindow
+      ? vscode.ViewColumn.Active
+      : { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
     { retainContextWhenHidden: true },
   );
   const logPath = handle ? sessionLogPathFor(handle) : undefined;
@@ -382,6 +388,15 @@ function floatOutSession(
   }
   panel.onDidDispose(() => watcher?.close());
   context.subscriptions.push(panel);
+
+  // Pop the log directly into its own window — the "float out" intent — instead of leaving it a
+  // beside tab the user must "Move into New Window" by hand. Best-effort: a graceful no-op where
+  // the command / auxiliary windows aren't supported (the panel just stays as a tab).
+  if (toNewWindow) {
+    void Promise.resolve(
+      vscode.commands.executeCommand("workbench.action.moveEditorToNewWindow"),
+    ).then(undefined, () => undefined);
+  }
 }
 
 function esc(s: string): string {
