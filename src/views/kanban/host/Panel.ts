@@ -271,6 +271,7 @@ export class KanbanPanel implements vscode.Disposable {
           await vscode.commands.executeCommand(
             "thinkube.attend",
             message.handle,
+            this.adapter.boardContext?.(),
           );
         } catch (err) {
           this.log(`attend ${message.handle} failed: ${(err as Error).message}`);

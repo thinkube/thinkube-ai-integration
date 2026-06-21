@@ -165,16 +165,28 @@ export function registerOrchestrateCommands(
     ),
     vscode.commands.registerCommand(
       "thinkube.attend",
-      async (handle?: string) => {
-        const repo = deps.specsProvider.repoEntry;
-        if (!repo || !repo.enabled) {
-          vscode.window.showInformationMessage(
-            "Select an enabled thinking space to attend a slice.",
-          );
-          return;
+      async (
+        handle?: string,
+        boardCtx?: { root: string; boardDir: string; name: string },
+      ) => {
+        let repoPath: string;
+        let boardDir: string;
+        if (boardCtx) {
+          repoPath = boardCtx.root;
+          boardDir = boardCtx.boardDir;
+        } else {
+          const repo = deps.specsProvider.repoEntry;
+          if (!repo || !repo.enabled) {
+            vscode.window.showInformationMessage(
+              "Select an enabled thinking space to attend a slice.",
+            );
+            return;
+          }
+          repoPath = repo.path;
+          boardDir = repo.boardDir;
         }
         try {
-          const store = new ThinkubeStore(repo.path, repo.boardDir);
+          const store = new ThinkubeStore(repoPath, boardDir);
           const h = handle ?? (await pickAttentionSlice(store));
           if (!h) return;
           const m = /^SP-(.+)_SL-(\d+)$/.exec(h);
@@ -189,7 +201,7 @@ export function registerOrchestrateCommands(
           const body = parsed?.body ?? "";
 
           const canonical =
-            (await worktrees.canonicalRepo(repo.path)) ?? repo.path;
+            (await worktrees.canonicalRepo(repoPath)) ?? repoPath;
           const baseDir =
             vscode.workspace
               .getConfiguration("thinkube")

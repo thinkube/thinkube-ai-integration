@@ -243,11 +243,14 @@ export function GraphView(): JSX.Element {
           const sliceAttention = card.columnId === "column-attention";
           const borderColor =
             sliceAttention && st !== "attention" ? PARKED_COLOR : accent;
-          const clickable = st === "running" || st === "parked";
+          // Actionable when: running (open its live log), parked (answer it), or its slice needs
+          // attention (open the worktree to investigate + fix — attention is never just "retry").
+          const wantsAttend = st === "parked" || sliceAttention;
+          const clickable = st === "running" || wantsAttend;
           const onClick =
             st === "running"
               ? () => postToHost({ kind: "float-out", handle: node.id })
-              : st === "parked"
+              : wantsAttend
                 ? () => postToHost({ kind: "attend", handle: card.id })
                 : undefined;
           const subtitle = unit.note ?? card.description;
@@ -256,7 +259,9 @@ export function GraphView(): JSX.Element {
               ? `${node.id} — click to open its live SDK-worker log`
               : st === "parked"
                 ? `${node.id} asked a question — click to answer (/attend)`
-                : `${node.id}${unit.note ? ` — ${unit.note}` : ""}`;
+                : sliceAttention
+                  ? `${card.id} needs attention — click to open its worktree and investigate`
+                  : `${node.id}${unit.note ? ` — ${unit.note}` : ""}`;
           return (
             <g
               key={node.id}
