@@ -82,11 +82,18 @@ import { discoverProjects, projectTeps } from "../store/projects";
 import {
   parseImplements,
   normalizeTepId,
+  formatImplements,
   rewriteImplementsForPromote,
+  type ParsedImplements,
 } from "../store/implementsRef";
 import { stampOnEnteringDone } from "../github/sliceProvenance";
 import { linkedWorktreeInfo } from "../services/WorktreeService";
 import { readyGate } from "../services/openingGate";
+import {
+  implementsPromoteCheck,
+  type PromoteLocator,
+} from "../methodology/implementsPromoteCheck";
+import { ConcurrencyLock } from "../services/concurrencyLock";
 import {
   boardDirForNamespace,
   namespaceForRepo,
@@ -156,7 +163,7 @@ async function main(): Promise<void> {
     { capabilities: { tools: {}, resources: {} } },
   );
 
-  const ctx: HandlerContext = { env, boards };
+  const ctx: HandlerContext = { env, boards, lock: new ConcurrencyLock() };
   registerHandlers(server, sdkTypes, ctx);
 
   const transport = new sdkStdio.StdioServerTransport();
@@ -436,7 +443,58 @@ function walkForBoards(
 interface HandlerContext {
   env: ServerEnv;
   boards: BoardRegistry;
+  /**
+   * Serializes mutating board writes per board handle (#20). Optional so the
+   * many test harnesses that hand-build a minimal `{ env, boards }` context keep
+   * compiling; `dispatchTool` falls back to a module-level singleton
+   * (`defaultBoardWriteLock`) when it is absent, so writes are serialized either
+   * way. Production (`main`) injects a fresh per-process lock.
+   */
+  lock?: ConcurrencyLock;
+  /**
+   * Cross-board `implements:` promote locator consulted by `write_spec` (#3).
+   * Injected so AC#3 can drive the real refusal through `dispatchTool` with a fake
+   * locator (no board fixture). Absent ⇒ `dispatchTool` builds the real, board-
+   * backed locator (`makeBoardPromoteLocator`) from this context. See
+   * `methodology/implementsPromoteCheck` for the contract — the pure check lives
+   * there and this only resolves "is this qualified TEP promoted?".
+   */
+  promoteLocator?: PromoteLocator;
 }
+
+/**
+ * The real, board-backed promote locator for `write_spec` (#3). Only consulted by
+ * `implementsPromoteCheck` for **qualified** (`<namespace>:TEP-<id>`) refs — bare
+ * repo-local refs are accepted by the pure check without consulting us. Returns:
+ *   - `true`  (promoted)   — the namespace is a project (`<product>/projects/<id>`)
+ *                            whose `teps/` actually owns the TEP, OR we can't
+ *                            classify (no board root) so we accept rather than
+ *                            block a write we can't reason about.
+ *   - `false` (unpromoted) — a cross-board ref whose TEP has not been promoted into
+ *                            a project; `implementsPromoteCheck` refuses it, naming
+ *                            `promote_tep`.
+ */
+function makeBoardPromoteLocator(ctx: HandlerContext): PromoteLocator {
+  return (ref) => {
+    const boardRoot = ctx.env.boardRoot;
+    if (!boardRoot) return true; // can't classify → accept
+    const m = /^([^/]+)\/projects\/([^/]+)$/.exec(ref.namespace);
+    if (m) {
+      const owned = projectTeps(boardRoot, m[1], m[2]).map(normalizeTepId);
+      return owned.includes(normalizeTepId(ref.id));
+    }
+    // A non-project (repo board) namespace: a real cross-board ref that hasn't
+    // been promoted into a project.
+    return false;
+  };
+}
+
+/**
+ * Process-wide fallback lock for `move_slice` / `accept_spec` when a caller did
+ * not inject one via `ctx.lock` (e.g. unit tests). A single instance keyed by
+ * board handle is enough: per-handle slots keep different boards independent.
+ */
+const defaultBoardWriteLock = new ConcurrencyLock();
 
 function registerHandlers(server: any, types: any, ctx: HandlerContext): void {
   const writeGate = (toolName: string) => {
@@ -967,6 +1025,16 @@ export async function dispatchTool(
 
   // Every other tool is board-scoped: resolve the store per call.
   const store = ctx.boards.resolve(optString(args, "board"));
+
+  // Per-handle write lock (#20): `move_slice` / `accept_spec` do a
+  // read-modify-write of the board, so two interleaving on the SAME board race
+  // — the second clobbers the first ("last write wins"). Serialize them per
+  // board handle so a queued op only reads state after the in-flight write has
+  // landed. The handle is the board dir (a stable absolute path); distinct
+  // boards stay independent.
+  const writeLock = ctx.lock ?? defaultBoardWriteLock;
+  const boardHandle = store.thinkubeDir;
+
   switch (name) {
     case "list_board":
       return listBoard(store);
@@ -976,22 +1044,21 @@ export async function dispatchTool(
       return getThinkubeFile(store, asString(args, "relative_path"));
     case "move_slice":
       writeGate(name);
-      return moveSlice(
-        store,
-        asString(args, "slice"),
-        asString(args, "status"),
-        {
+      return writeLock.runExclusive(boardHandle, () =>
+        moveSlice(store, asString(args, "slice"), asString(args, "status"), {
           docsGateMode: ctx.env.docsGateMode,
           docsDone: optBoolean(args, "docs_done"),
-        },
+        }),
       );
     case "accept_spec":
       writeGate(name);
-      return acceptSpec(
-        store,
-        typeof args.spec === "number"
-          ? String(args.spec)
-          : asString(args, "spec"),
+      return writeLock.runExclusive(boardHandle, () =>
+        acceptSpec(
+          store,
+          typeof args.spec === "number"
+            ? String(args.spec)
+            : asString(args, "spec"),
+        ),
       );
     case "create_slice":
       writeGate(name);
@@ -1026,15 +1093,25 @@ export async function dispatchTool(
         priority: optString(args, "priority"),
         tags: optStringArray(args, "tags"),
       });
-    case "write_spec":
+    case "write_spec": {
       writeGate(name);
+      // #3 cross-board learnability: refuse an `implements:` naming a TEP on
+      // another board that hasn't been promoted into a project — the link would
+      // dangle. The locator is injected (AC#3 drives this with a fake) or built
+      // from the board context here.
+      const implementsRaw = optString(args, "implements");
+      const promoteCheck = await implementsPromoteCheck(
+        implementsRaw,
+        ctx.promoteLocator ?? makeBoardPromoteLocator(ctx),
+      );
+      if (!promoteCheck.ok) throw new Error(promoteCheck.message);
       return writeSpec(
         store,
         typeof args.spec === "number"
           ? String(args.spec)
           : asString(args, "spec"),
         asString(args, "body"),
-        optString(args, "implements"),
+        implementsRaw,
         // The closing gate's per-AC declaration (SP-tgzyfy). Forwarded verbatim — writeSpec
         // normalizes + serializes it to the `ac_verifications:` frontmatter; undefined leaves
         // any existing map intact, `{}` clears it.
@@ -1044,6 +1121,7 @@ export async function dispatchTool(
           ? (args.ac_verifications as Record<string, unknown>)
           : undefined,
       );
+    }
     case "patch_spec_section":
       writeGate(name);
       return patchSpecSection(

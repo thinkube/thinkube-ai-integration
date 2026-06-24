@@ -48,6 +48,15 @@ export type SpecMergeResult =
       opened: boolean;
       /** Trimmed `gh` stdout (the merge confirmation), for the success toast. */
       output: string;
+      /**
+       * True when nothing was merged *here* because the Spec had already landed — no
+       * open PR and the branch is gone (a prior accept merged + deleted it), or the
+       * merge raced and `gh` reported it already merged. Still `merged: true` so the
+       * accept dispatch (`acceptOrder`) retires the worktree on an idempotent
+       * re-accept instead of throwing on a missing branch and stranding a zombie
+       * worktree (SP-th4wqe, #10-residual: already-merged / branch-gone ⇒ success).
+       */
+      alreadyMerged?: boolean;
     }
   | { branch: string; merged: false; reason: "no-pr" };
 
@@ -69,6 +78,15 @@ export interface PrOps {
   openPr(branch: string, cwd: string): Promise<void>;
   /** Merge the branch's PR and delete the branch; returns stdout, throws on failure. */
   merge(branch: string, cwd: string): Promise<string>;
+  /**
+   * Optional. Whether the Spec branch still exists on the remote. Used only on the
+   * no-open-PR path to tell a genuine straight-to-main Spec apart from one that has
+   * **already landed** (branch merged + deleted by a prior accept): no PR and a gone
+   * branch ⇒ idempotent already-merged success rather than throwing on a missing
+   * branch. Returns `true` (or is omitted) ⇒ fall through to the existing ahead-count
+   * path, so the classification is never weakened when no detector is wired.
+   */
+  branchExists?(branch: string, cwd: string): Promise<boolean>;
 }
 
 const ghOps: PrOps = {
@@ -135,6 +153,21 @@ const ghOps: PrOps = {
     );
     return stdout.trim();
   },
+  async branchExists(branch, cwd) {
+    try {
+      const { stdout } = await execFileAsync(
+        "git",
+        ["ls-remote", "--heads", "origin", branch],
+        { cwd, timeout: 60000 },
+      );
+      return stdout.trim().length > 0;
+    } catch {
+      // The probe itself failed (network, auth) — don't claim the branch is gone,
+      // which would skip a merge that may still be needed. Report "exists" so we
+      // fall through to the existing ahead-count path.
+      return true;
+    }
+  },
 };
 
 /**
@@ -142,10 +175,16 @@ const ghOps: PrOps = {
  *   - an open PR → merge it + delete the branch → `{ merged: true, opened: false }`.
  *   - no open PR but the branch is ahead of `main` → push, open the PR, merge it,
  *     delete the branch → `{ merged: true, opened: true }`.
+ *   - no open PR and the branch is **gone** (a prior accept already merged + deleted
+ *     it) → `{ merged: true, alreadyMerged: true }` — an idempotent re-accept, so the
+ *     dispatch still retires any leftover worktree instead of throwing on the missing
+ *     branch (SP-th4wqe, #10-residual).
  *   - no open PR and nothing ahead of `main` → `{ merged: false, reason: "no-pr" }`
  *     (a genuine straight-to-main Spec; caller stamps anyway).
  * Throws (with the underlying detail) on a real failure: `gh`/`git` missing or
- * unauthenticated, a rejected push, or a PR that exists but won't merge.
+ * unauthenticated, a rejected push, or a PR that exists but won't merge. A merge that
+ * `gh` reports as already-merged (a race) is folded into an `alreadyMerged` success,
+ * not a throw.
  */
 export async function mergeSpecPr(
   spec: string,
@@ -165,9 +204,27 @@ export async function mergeSpecPr(
 
   let opened = false;
   if (count === 0) {
-    // No open PR. Distinguish a genuine straight-to-main Spec (nothing ahead of
-    // `main`) from a branch-ahead Spec whose PR was never opened — the latter must
-    // still land, not be dropped as a no-op (the SP-th1jtj failure).
+    // No open PR. Before treating this as a straight-to-main Spec, check whether the
+    // branch is simply *gone*: a prior accept may have already merged it and deleted
+    // the branch. That is an idempotent re-accept, not a no-op — report it as an
+    // already-merged success so the dispatch still retires the (possibly zombie)
+    // worktree rather than throwing on a missing branch (SP-th4wqe, #10-residual).
+    if (ops.branchExists) {
+      const exists = await ops.branchExists(branch, cwd);
+      if (!exists) {
+        return {
+          branch,
+          merged: true,
+          opened: false,
+          output: "",
+          alreadyMerged: true,
+        };
+      }
+    }
+    // The branch is present (or no detector is wired). Distinguish a genuine
+    // straight-to-main Spec (nothing ahead of `main`) from a branch-ahead Spec whose
+    // PR was never opened — the latter must still land, not be dropped as a no-op
+    // (the SP-th1jtj failure).
     let ahead: number;
     try {
       ahead = await ops.unmergedCommits(branch, cwd);
@@ -189,6 +246,24 @@ export async function mergeSpecPr(
   } catch (err) {
     const e = err as { stderr?: string; message?: string };
     const detail = (e.stderr || e.message || "unknown error").trim();
+    // Idempotent re-accept race: the PR merged between the open-PR probe and here, so
+    // `gh` reports it already merged / the branch already gone. That is success, not a
+    // failure — the Spec landed, so report it as such (and let the dispatch retire the
+    // worktree). A *genuine* merge failure (e.g. "not mergeable", conflicts) still
+    // throws with the underlying detail.
+    if (
+      /already[ -](been[ -])?merged|no commits between|no pull requests? found|not found/i.test(
+        detail,
+      )
+    ) {
+      return {
+        branch,
+        merged: true,
+        opened,
+        output: detail,
+        alreadyMerged: true,
+      };
+    }
     throw new Error(`gh pr merge ${branch} failed: ${detail}`);
   }
 }
