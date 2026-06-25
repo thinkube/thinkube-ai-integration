@@ -248,6 +248,15 @@ export interface ContractFirstWorkUnit {
   footprint: string[];
   /** Work-unit / slice handles this unit waits on (ordering). */
   depends_on?: string[];
+  /**
+   * Repo-relative files this unit **reads/depends on** that a SIBLING unit produces —
+   * the contract-first reference. Naming a sibling's footprint here both satisfies the
+   * contract-first gate (the unit is coordinated through that contract, not fanned out
+   * blind) and is resolved by `buildUnitDag` into a real dependency edge on the producing
+   * unit. Unlike `depends_on`, it needs no node-id, so it is authorable at create time
+   * (the slice has no number yet) — the fix for the unsequenced-integration deadlock.
+   */
+  consumes?: string[];
   /** serial (coupled) | mechanize (uniform data-parallel) | fan-out (heterogeneous). */
   execution: "serial" | "mechanize" | "fan-out";
   /** The unit's task text — what this unit does. */
@@ -287,12 +296,13 @@ export const CONTRACT_FIRST_RULE_MSG =
   "beside sibling implementation units. Fanned out unsequenced, each worker will " +
   "invent the shared contract (interface, name, schema, key, message, " +
   "registration) on its own and they will diverge. Author the contract as one " +
-  "unit and route the test AND each implementer through it via `depends_on` that " +
-  "single contract-definition node — the implementers depend only on the contract " +
-  "node, never on each other, so the fan-out is preserved (no producer→consumer→" +
-  "test serialization). If this test is genuinely independent and shares no " +
-  `contract with its siblings, set \`${CONTRACT_FIRST_OPTOUT_FIELD}: true\` on the ` +
-  "unit to bypass this check.";
+  "unit (a sibling whose footprint is the shared file) and route this test AND each " +
+  "implementer through it: add `consumes: [\"<that file>\"]` to each — the contract-" +
+  "first reference. The implementers depend only on the contract, never on each other, " +
+  "so the fan-out is preserved (no producer→consumer→test serialization). `consumes` " +
+  "names a file (not a node-id), so it is authorable here even though the slice has no " +
+  "number yet. If this test is genuinely independent and shares no contract with its " +
+  `siblings, set \`${CONTRACT_FIRST_OPTOUT_FIELD}: true\` on the unit to bypass this check.`;
 
 /** Matches a footprint path that marks a unit as a test / integration unit. A
  *  `.test.`/`.spec.`/`.integration.` marker only counts when it sits on a JS/TS
@@ -343,6 +353,18 @@ export function contractFirstCheck(
     if (u[CONTRACT_FIRST_OPTOUT_FIELD] === true) continue; // explicit escape hatch
     const sequenced = (u.depends_on ?? []).some((d) => d.trim() !== "");
     if (sequenced) continue; // routed through a contract node (or any dep) → fine
+    // …or it declares it `consumes` a file a SIBLING unit produces — the contract-first
+    // reference. That's a real contract edge (buildUnitDag resolves it), authorable
+    // without the unborn slice's node-id, so it coordinates the unit just like a dep.
+    const consumesSibling = (u.consumes ?? []).some((c) => {
+      const cf = normalizeFilePath(c);
+      return list.some(
+        (other) =>
+          other !== u &&
+          (other.footprint ?? []).some((f) => normalizeFilePath(f) === cf),
+      );
+    });
+    if (consumesSibling) continue;
     return { ok: false, message: CONTRACT_FIRST_RULE_MSG, offendingUnit: u };
   }
   return { ok: true };

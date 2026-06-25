@@ -813,6 +813,12 @@ const TOOL_DEFS = [
             properties: {
               footprint: { type: "array", items: { type: "string" } },
               depends_on: { type: "array", items: { type: "string" } },
+              consumes: {
+                type: "array",
+                items: { type: "string" },
+                description:
+                  "Files a SIBLING unit produces that this unit reads — the contract-first reference. Naming a sibling's footprint here satisfies the contract-first gate (the unit is coordinated through that contract, not fanned out blind) and is resolved into a real dependency edge on the producing unit. Unlike `depends_on` it is a file, not a node-id, so it is authorable at create time even though the slice has no number yet.",
+              },
               execution: {
                 type: "string",
                 enum: ["serial", "mechanize", "fan-out"],
@@ -1103,6 +1109,7 @@ export async function dispatchTool(
           ? (args.work_units as {
               footprint: string[];
               depends_on?: string[];
+              consumes?: string[];
               execution: string;
               note?: string;
             }[])
@@ -1778,6 +1785,9 @@ export async function createSlice(
     work_units?: {
       footprint: string[];
       depends_on?: string[];
+      // Contract-first reference: files a sibling unit produces that this unit reads
+      // (satisfies the gate + resolves to a dependency edge; authorable without a node-id).
+      consumes?: string[];
       execution: string;
       note?: string;
       // Contract-first opt-out (SP-th4wqi). The authoritative field name is the
