@@ -233,3 +233,53 @@ test("buildUnitDag keeps contract-node implementers parallel — they share the 
     "implB must not depend on its sibling implementer",
   );
 });
+
+// ── consumes: the authorable contract-first remedy (the SL-new deadlock fix) ──
+test("create_slice accepts an integration test that `consumes` a sibling contract (no node-id needed)", async () => {
+  const store = await seededStore();
+  // 2 producers + a test that would trip the gate — but the test declares it
+  // `consumes` the contract producer's file. That's authorable at create time
+  // (a filename, not the unborn slice's `#eu-0`), so the gate is satisfied.
+  const res = (await create(store, {
+    title: "good: test consumes the contract file",
+    body: "detail",
+    work_units: [
+      { footprint: ["src/contract.ts"], execution: "fan-out", note: "contract+impl" },
+      { footprint: ["src/widget.ts"], execution: "fan-out", note: "impl" },
+      {
+        footprint: ["src/flow.test.ts"],
+        execution: "fan-out",
+        consumes: ["src/contract.ts"],
+        note: "test",
+      },
+    ],
+  })) as { slice: string };
+  assert.match(res.slice, /^SP-demo_SL-\d+$/);
+});
+
+test("buildUnitDag resolves `consumes` to a real edge on the producing sibling", () => {
+  const dag = buildUnitDag([
+    {
+      handle: "SP-1_SL-1",
+      status: "ready",
+      dependsOn: [],
+      files: [],
+      workUnits: [
+        { footprint: ["src/contract.ts"], execution: "fan-out", note: "contract" },
+        {
+          footprint: ["src/flow.test.ts"],
+          execution: "fan-out",
+          consumes: ["src/contract.ts"],
+          note: "test",
+        },
+      ],
+    },
+  ]);
+  const contract = dag.find((u) => u.footprint.includes("src/contract.ts"))!;
+  const test = dag.find((u) => u.footprint.includes("src/flow.test.ts"))!;
+  assert.ok(contract && test, "both nodes present");
+  assert.ok(
+    test.dependsOn.includes(contract.id),
+    "`consumes` resolves to a dependency on the producing unit",
+  );
+});

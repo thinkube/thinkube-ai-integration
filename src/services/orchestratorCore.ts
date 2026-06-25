@@ -93,6 +93,10 @@ export async function runWithConcurrency<T, R>(
 export interface WorkUnit {
   footprint: string[];
   depends_on?: string[];
+  /** Files a SIBLING unit produces that this unit reads (the contract-first reference).
+   *  Resolved by `buildUnitDag` into a real dependency edge on the producing unit —
+   *  authorable without a node-id, so it works before the slice has a number. */
+  consumes?: string[];
   execution: "serial" | "mechanize" | "fan-out";
 }
 
@@ -216,14 +220,36 @@ export function buildUnitDag(slices: SliceForDag[]): SchedUnit[] {
       });
       continue;
     }
-    eusBySlice.get(s.handle)!.forEach((eu, i) => {
+    const eus = eusBySlice.get(s.handle)!;
+    // file → the eu node-id that produces it (within this slice), so a unit's
+    // `consumes` resolves to a real edge on the producing sibling — the authorable
+    // contract-first reference (no node-id / unborn-slice-number needed).
+    const normFile = (f: string) => f.replace(/^\.\//, "");
+    const fileToNode = new Map<string, string>();
+    eus.forEach((eu, i) => {
+      const id = `${s.handle}#eu-${i}`;
+      for (const u of eu.units)
+        for (const f of u.footprint ?? []) fileToNode.set(normFile(f), id);
+    });
+    eus.forEach((eu, i) => {
+      const thisId = `${s.handle}#eu-${i}`;
       const footprint = [
         ...new Set(eu.units.flatMap((u) => u.footprint ?? [])),
       ];
-      const dependsOn = expand([
-        ...sliceDeps,
-        ...eu.units.flatMap((u) => u.depends_on ?? []),
-      ]);
+      const consumesDeps = eu.units.flatMap((u) =>
+        ((u as WorkUnit & { consumes?: string[] }).consumes ?? [])
+          .map((c) => fileToNode.get(normFile(c)))
+          .filter((id): id is string => !!id && id !== thisId),
+      );
+      const dependsOn = [
+        ...new Set([
+          ...expand([
+            ...sliceDeps,
+            ...eu.units.flatMap((u) => u.depends_on ?? []),
+          ]),
+          ...consumesDeps,
+        ]),
+      ];
       const note =
         eu.units
           .map((u) => (u as WorkUnit & { note?: string }).note)
