@@ -12,9 +12,20 @@
 // `emitAcVerifications` mirrors `kanbanMcpServer.ts`'s `normalizeAcVerifications` so the emitted
 // map round-trips through the shipped closing gate's `parseAcVerifications`
 // (`orchestratorCore.ts`) by construction — every AC present, no orphans.
+//
+// Re-audit on AC change (SP-th4wqf_SL-3 / TEP-th3i18 #2): the `ac_verifications` certification is
+// keyed to a hash of the *Acceptance Criteria block* (`acRequirementHash`, a narrowing of the
+// staleness `requirementHash` to that one section). When `/spec-prepare` certifies the ACs the
+// handler stamps that hash under {@link AC_CERT_HASH_KEY}; a later edit to the AC block changes the
+// hash, so `readyGate` (fed the spec's current vs. stamped hash) blocks the next `create_slice`
+// until the ACs are re-certified. Editing *other* sections (Design / Constraints / File Structure
+// Plan), or merely ticking an AC checkbox, leaves the hash — and the certification — intact.
 
 // Import-only reuse of the closing gate's declaration shape — one serialization, both ends.
 import type { AcVerification } from "./orchestratorCore";
+// Re-audit reuses the staleness hash (SP-th1ddy rule: reuse, don't fork). `requirementHash`
+// already normalizes checkbox state + whitespace; we feed it *only* the AC block to narrow it.
+import { requirementHash } from "../methodology/specChange";
 
 /** The auditor's per-AC certification (the model-side judgment from `/spec-prepare`). */
 export type AcVerdictKind = "verifiable" | "needs-reframe";
@@ -44,11 +55,68 @@ export type AcVerificationMap = Record<
 >;
 
 /**
- * `readyGate` result: Ready-eligible (`ok: true`) or blocked, naming the *first* offending AC
- * ordinal (`ok: false`). The shell turns a block into the refused → Ready transition that names
- * the AC.
+ * `readyGate` result. Either Ready-eligible (`ok: true`) or blocked one of two ways:
+ *   - **structural** — `{ ok: false, ordinal }` names the *first* AC ordinal with no runnable
+ *     `ac_verifications` entry (an un-certified / needs-reframe AC).
+ *   - **stale certification** — `{ ok: false, reason: "stale-certification" }` means every AC is
+ *     structurally certified but against an *older* AC block: the ACs were edited since the
+ *     certification was stamped, so re-certification is required (re-audit, AC3).
+ *
+ * The two are discriminated by the presence of `ordinal` vs. `reason`. The shell turns a block
+ * into the refused → Ready transition with the matching diagnosis.
  */
-export type ReadyGateResult = { ok: true } | { ok: false; ordinal: number };
+export type ReadyGateResult =
+  | { ok: true }
+  | { ok: false; ordinal: number }
+  | { ok: false; reason: "stale-certification" };
+
+/** Frontmatter key under which the handler stamps {@link acRequirementHash} when the ACs are
+ * certified (the `ac_verifications` map written). `readyGate` compares the spec's *current* AC-block
+ * hash against this stamp to detect an AC edit that voided the certification. One symbol so the
+ * `write_spec`/`patch_spec_section`/`create_slice` handlers and the dispatch test reference the
+ * exact same field name. */
+export const AC_CERT_HASH_KEY = "ac_verifications_hash";
+
+/**
+ * Captures the `## Acceptance Criteria` section body — from its heading to the next level-≤2
+ * heading (a deeper `###` inside the section is kept as content). Mirrors
+ * `kanbanMcpServer.ts`'s `acceptanceCriteriaOrdinals` regex so both read the same block.
+ */
+const AC_SECTION_RE =
+  /(?:^|\n)##\s*Acceptance Criteria\s*\n([\s\S]*?)(?=\n##\s|$)/i;
+
+/**
+ * The certification key: a stable hash of just the Spec's **Acceptance Criteria block**. A
+ * narrowing of the staleness `requirementHash` (which spans Acceptance Criteria / Design /
+ * Constraints) down to the one section the `ac_verifications` map certifies — so editing the ACs
+ * changes the hash (⇒ re-certify), while editing Design / Constraints / File Structure Plan, or
+ * ticking an AC checkbox (collapsed by `normalizeRequirementSections`), does not.
+ *
+ * Re-feeds the extracted section *with its heading* to `requirementHash` so the existing
+ * AC-only normalization applies verbatim — reuse, not a fork. A spec with no AC section hashes the
+ * empty-normalization constant (stable), and a malformed certification can never match it.
+ */
+export function acRequirementHash(specBody: string | undefined): string {
+  const body = specBody ?? "";
+  const m = AC_SECTION_RE.exec(body);
+  const section = m ? `## Acceptance Criteria\n${m[1]}` : "";
+  return requirementHash(section);
+}
+
+/**
+ * True iff the `ac_verifications` certification is **stale** — i.e. a baseline hash was stamped at
+ * certification (`stampedHash` a non-empty string) and the Spec's `currentHash` no longer matches
+ * it (the AC block was edited since). No stamp ⇒ not stale: a Spec certified before re-audit
+ * shipped, or one with no certification at all, is left to the structural gate (mirrors
+ * `classifySpecChange`'s "no baseline recorded → never flag").
+ */
+export function isAcCertificationStale(
+  currentHash: string,
+  stampedHash: unknown,
+): boolean {
+  if (typeof stampedHash !== "string" || !stampedHash) return false;
+  return stampedHash !== currentHash;
+}
 
 /** True iff `decl` is a usable declaration — an object with a non-empty `run` string. */
 function hasRunnableEntry(decl: unknown): decl is { run: string } {
@@ -66,10 +134,19 @@ function hasRunnableEntry(decl: unknown): decl is { run: string } {
  *
  * Ordinals are taken from `acs` (1-based, in document order) rather than assumed contiguous, so a
  * malformed AC list is judged by what it actually declares.
+ *
+ * Re-audit (AC3): when `certification` is supplied — the Spec's `currentHash` (from
+ * {@link acRequirementHash}) and the `stampedHash` recorded under {@link AC_CERT_HASH_KEY} at
+ * certification — a structurally-complete map is still refused as `{ ok: false, reason:
+ * "stale-certification" }` if the AC block was edited since (the hashes diverge). The structural
+ * check runs first, so an un-certified ordinal is still named precisely; the staleness check is the
+ * fallback that fires when the map *looks* complete but certifies an outdated AC block. Omit
+ * `certification` for the pure structural gate (the existing two-arg contract is unchanged).
  */
 export function readyGate(
   acs: { ordinal: number }[],
   verifications: Record<string, { run: string; env?: "cluster" | "local" }>,
+  certification?: { currentHash: string; stampedHash?: unknown },
 ): ReadyGateResult {
   if (!acs.length) return { ok: false, ordinal: 1 };
   const ordered = [...acs].sort((a, b) => a.ordinal - b.ordinal);
@@ -77,6 +154,12 @@ export function readyGate(
     if (!hasRunnableEntry(verifications?.[String(ac.ordinal)])) {
       return { ok: false, ordinal: ac.ordinal };
     }
+  }
+  if (
+    certification &&
+    isAcCertificationStale(certification.currentHash, certification.stampedHash)
+  ) {
+    return { ok: false, reason: "stale-certification" };
   }
   return { ok: true };
 }

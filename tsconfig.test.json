@@ -83,6 +83,9 @@
     "src/mcp/implementsPromoteDispatch.test.ts",
     "src/mcp/createSliceDagGate.test.ts",
     "src/mcp/createSliceContractFirst.test.ts",
+    "src/services/verificationRunnable.ts",
+    "src/methodology/specStructure.ts",
+    "src/mcp/specGateDispatch.test.ts",
     "src/mcp/productsTools.test.ts",
     "src/mcp/projectsTools.test.ts"
   ],
