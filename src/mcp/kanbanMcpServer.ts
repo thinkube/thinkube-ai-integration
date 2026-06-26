@@ -54,6 +54,7 @@ import * as path from "node:path";
 
 import { requirementHash } from "../methodology/specChange";
 import { sectionPatch } from "../methodology/sectionPatch";
+import { specSectionsPresent } from "../methodology/specStructure";
 import { sliceFilesResolveInRepo } from "../methodology/sliceRepoGuard";
 import {
   // Slice lifecycle contract (SP-th4wqd_SL-1): the single source the `move_slice`
@@ -120,7 +121,16 @@ import {
 } from "../store/implementsRef";
 import { stampOnEnteringDone } from "../github/sliceProvenance";
 import { linkedWorktreeInfo } from "../services/WorktreeService";
-import { readyGate } from "../services/openingGate";
+import {
+  readyGate,
+  acRequirementHash,
+  AC_CERT_HASH_KEY,
+} from "../services/openingGate";
+import {
+  verificationRunnable,
+  repoStateFromTsconfig,
+  type RepoState,
+} from "../services/verificationRunnable";
 import {
   implementsPromoteCheck,
   type PromoteLocator,
@@ -2024,11 +2034,57 @@ export async function createSlice(
       ? (rawVerifs as Record<string, unknown>)
       : {},
   );
-  const readyVerdict = readyGate(acs, verifications);
+  // Re-audit baseline (SP-th4wqf_SL-3 / TEP-th3i18 #2): the `ac_verifications`
+  // certification is keyed to a hash of the Spec's *Acceptance Criteria block*,
+  // stamped under `AC_CERT_HASH_KEY` when /spec-prepare certifies (write_spec with
+  // `ac_verifications`). Feed `readyGate` the Spec's CURRENT AC-block hash and the
+  // stamped one: if the ACs were edited since certification (via a body-only
+  // write_spec or a patch_spec_section of the AC section), the two diverge and the
+  // structurally-complete map is still refused as `stale-certification` — re-cert
+  // required. No stamp (a Spec certified before re-audit shipped) ⇒ never stale.
+  const certification = {
+    currentHash: acRequirementHash(specDoc.body),
+    stampedHash: specDoc.frontmatter?.[AC_CERT_HASH_KEY],
+  };
+  const readyVerdict = readyGate(acs, verifications, certification);
   if (!readyVerdict.ok) {
+    // Structural block — an AC with no runnable declaration — names the ordinal.
+    // (The `stale-certification` variant of ReadyGateResult only arises when a
+    // certification baseline is supplied, which is the re-audit path's concern;
+    // narrow defensively so this handler stays correct as that union grows.)
+    if ("ordinal" in readyVerdict) {
+      throw new Error(
+        `SP-${args.spec} AC ${readyVerdict.ordinal} has no runnable ac_verifications entry — every AC must be certified with a verification before → Ready. Run /spec-prepare ${args.spec} to certify each AC.`,
+      );
+    }
     throw new Error(
-      `SP-${args.spec} AC ${readyVerdict.ordinal} has no runnable ac_verifications entry — every AC must be certified with a verification before → Ready. Run /spec-prepare ${args.spec} to certify each AC.`,
+      `SP-${args.spec}'s acceptance-criteria certification is stale — the ACs changed since they were certified. Run /spec-prepare ${args.spec} to re-certify each AC before → Ready.`,
     );
+  }
+
+  // Runnable-verification precheck (SP-th4wqf_SL-1 / TEP-th3i18 #8). A *declared*
+  // ac_verifications command is not yet a *runnable* one: a check like
+  // `node --test out-test/mcp/foo.test.js` only runs if its source
+  // (`src/mcp/foo.test.ts`) is registered in `tsconfig.test.json`'s `include`. An
+  // unregistered source compiles to nothing, so `node --test` never finds it and
+  // the AC reports ✓ over a check that never executed — the silent-green hole this
+  // precheck closes. The structural readyGate above guarantees every AC now has a
+  // declaration; here we prove each one can actually run.
+  //
+  // The shared predicate (`verificationRunnable`) is single-sourced; THIS handler
+  // owns computing `repoState` from the repo's real `tsconfig.test.json` (the same
+  // `include` the `npm test` toolchain compiles — SP-th1ddy reuse rule). That
+  // wiring, not the predicate, is the load-bearing part (AC1).
+  const repoState = repoStateForRunnableCheck(store.workspaceRoot);
+  if (repoState) {
+    for (const [ordinal, decl] of Object.entries(verifications)) {
+      const verdict = verificationRunnable(decl, repoState);
+      if (!verdict.ok) {
+        throw new Error(
+          `SP-${args.spec} AC ${ordinal}'s verification is not runnable — ${verdict.unrunnable}`,
+        );
+      }
+    }
   }
 
   // Parallel-group disjointness (SP-tgpwbm AC1): a slice joining a
@@ -2265,6 +2321,21 @@ async function writeSpec(
   if (!trimmed) throw new Error("Spec body must not be empty.");
   const rel = store.pathForSpecDoc(spec);
   const existing = await store.getFile(rel);
+  // Structural gate (SP-th4wqf AC2): a newly-authored Spec body must carry all
+  // four canonical sections (Acceptance Criteria / Constraints / Design / File
+  // Structure Plan). Refuse a create whose body is missing any of them, naming
+  // the missing one so the author can fix it. Scoped to creation (no existing
+  // doc) so that partial-body *updates* of an already-structured Spec are not
+  // regressed. The canonical section list lives in `specStructure` — consumed
+  // here, never redefined.
+  if (existing === undefined) {
+    const sections = specSectionsPresent(trimmed);
+    if (!sections.ok) {
+      throw new Error(
+        `Spec body is missing the required \`## ${sections.missing}\` section. A Spec must contain all four canonical sections: Acceptance Criteria, Constraints, Design, File Structure Plan.`,
+      );
+    }
+  }
   const fm: Frontmatter = { ...(existing?.frontmatter ?? {}) };
   // `implements:` is settable (TEP-tgvwct follow-up): a bare `TEP-<id>` or a
   // qualified `<namespace>:TEP-<id>` (umbrella). Omitted → preserved; empty → cleared.
@@ -2278,8 +2349,23 @@ async function writeSpec(
   // (no non-empty `run`, non-positive ordinal) are dropped so a malformed map can't poison the gate.
   if (acVerifications !== undefined) {
     const normalized = normalizeAcVerifications(acVerifications);
-    if (Object.keys(normalized).length) fm.ac_verifications = normalized;
-    else delete fm.ac_verifications;
+    if (Object.keys(normalized).length) {
+      fm.ac_verifications = normalized;
+      // Re-audit stamp (SP-th4wqf_SL-3): writing `ac_verifications` IS the
+      // certification act, so key it to THIS body's Acceptance-Criteria block by
+      // stamping its hash under `AC_CERT_HASH_KEY`. A later edit to the ACs — a
+      // body-only `write_spec` (no `ac_verifications`) or a `patch_spec_section` of
+      // the AC section — leaves this stamp behind, so it diverges from the new AC
+      // block and `create_slice`'s readyGate refuses the slice as stale until the
+      // ACs are re-certified (AC3). Editing other sections leaves the AC hash —
+      // and this stamp — intact.
+      fm[AC_CERT_HASH_KEY] = acRequirementHash(trimmed);
+    } else {
+      // Clearing the certification clears its baseline too — no orphan stamp that
+      // would spuriously go "stale" against a Spec with no `ac_verifications`.
+      delete fm.ac_verifications;
+      delete fm[AC_CERT_HASH_KEY];
+    }
   }
   await store.writeFile(rel, fm, `${trimmed}\n`);
   return {
@@ -2317,6 +2403,15 @@ export async function patchSpecSection(
   const nextBody = sectionPatch(existing.body, section, content);
   // Route through the store's safe-write path so the secret scan refuses a
   // planted secret — never a raw fs write (Constraint: one write boundary).
+  //
+  // Re-audit (SP-th4wqf_SL-3): frontmatter is preserved verbatim, so the
+  // `AC_CERT_HASH_KEY` stamp is NOT refreshed here. Patching the
+  // `## Acceptance Criteria` section therefore changes the AC block while the
+  // certification baseline stays put — the two diverge and `create_slice`'s
+  // readyGate sees a stale certification (re-cert required). Patching any other
+  // section leaves the AC block — and the stamp's match — untouched. (This tool
+  // cannot certify: it carries no `ac_verifications`, so it only ever invalidates,
+  // never re-stamps.)
   await store.writeFile(rel, existing.frontmatter, nextBody);
   return {
     ok: true,
@@ -2324,6 +2419,38 @@ export async function patchSpecSection(
     section,
     relativePath: rel,
   };
+}
+
+/**
+ * Read the repo's `tsconfig.test.json` `include` into a {@link RepoState} for the
+ * runnable-verification precheck (SP-th4wqf_SL-1). The HANDLER owns this parse — not
+ * the predicate — so "registered" is single-sourced to the real on-disk test-compile
+ * set the toolchain actually uses (SP-th1ddy reuse rule).
+ *
+ * Returns `undefined` when no `tsconfig.test.json` exists at the repo root, or it is
+ * unparseable: the precheck only applies to repos that use the `tsconfig.test.json`
+ * test-compile convention, so a repo lacking (or with a broken) one imposes no
+ * runnable requirement here — fail open rather than block every slice on a board that
+ * has no such config to validate against.
+ */
+function repoStateForRunnableCheck(repoRoot: string): RepoState | undefined {
+  let raw: string;
+  try {
+    raw = fsSync.readFileSync(
+      path.join(repoRoot, "tsconfig.test.json"),
+      "utf8",
+    );
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw err;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  return repoStateFromTsconfig(parsed);
 }
 
 /** Normalize a raw `ac_verifications` map (AC ordinal → declaration) into the canonical
