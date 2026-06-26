@@ -26,13 +26,37 @@ export interface Product {
 const MAX_DEPTH = 4;
 const SKIP = new Set([".git", "node_modules"]);
 
-/** A board-shaped dir holds a `specs/` directory. */
-function isBoardShaped(dir: string): boolean {
+/** True when `<dir>/<child>` is a directory (never throws). */
+function hasSubdir(dir: string, child: string): boolean {
   try {
-    return fs.statSync(path.join(dir, "specs")).isDirectory();
+    return fs.statSync(path.join(dir, child)).isDirectory();
   } catch {
     return false;
   }
+}
+
+/**
+ * A board-shaped dir holds either a legacy flat `specs/` directory OR — under
+ * the org-scoped layout (SP-th8m5b / TEP-th8lzj) — an `<org>/teps/` subtree (a
+ * board namespaces its sequential ids one level deeper, under a per-maintainer
+ * org dir). Accepting both keeps discovery working before and after the
+ * one-shot migration moves data into the nested tree.
+ */
+function isBoardShaped(dir: string): boolean {
+  if (hasSubdir(dir, "specs")) return true;
+  // Org-scoped tree: any immediate `<org>` child that itself holds a `teps/`.
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  for (const e of entries) {
+    if (!e.isDirectory() || e.name.startsWith(".") || SKIP.has(e.name))
+      continue;
+    if (hasSubdir(path.join(dir, e.name), "teps")) return true;
+  }
+  return false;
 }
 
 /** Member namespaces under a Product dir (board-shaped dirs are leaves). */
@@ -51,7 +75,8 @@ function collectMembers(productDir: string, productId: string): string[] {
       return;
     }
     for (const e of entries) {
-      if (!e.isDirectory() || e.name.startsWith(".") || SKIP.has(e.name)) continue;
+      if (!e.isDirectory() || e.name.startsWith(".") || SKIP.has(e.name))
+        continue;
       walk(
         path.join(dir, e.name),
         rel ? `${rel}/${e.name}` : e.name,
@@ -92,7 +117,8 @@ export function discoverProducts(boardRoot: string): Product[] {
   }
   const products: Product[] = [];
   for (const t of tops) {
-    if (!t.isDirectory() || t.name.startsWith(".") || SKIP.has(t.name)) continue;
+    if (!t.isDirectory() || t.name.startsWith(".") || SKIP.has(t.name))
+      continue;
     const dir = path.join(boardRoot, t.name);
     const members = collectMembers(dir, t.name);
     if (members.length === 0) continue; // a Product exists by holding board namespaces
