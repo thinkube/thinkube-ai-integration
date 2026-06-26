@@ -350,6 +350,20 @@ export function buildWorkerPrompt(
   context?: { specBody?: string; sliceBody?: string },
 ): string {
   const fp = unit.footprint.join(", ") || "(no declared footprint)";
+  // Files a sibling unit produces that THIS unit reads — the contract-first dependency.
+  // Surface it structurally (not just buried in the prose note): the worker must IMPORT the
+  // sibling's contract for these files, never re-invent it (the prose-pinning the gate replaces).
+  const consumes = [
+    ...new Set(
+      (unit.units ?? []).flatMap(
+        (u) => (u as WorkUnit & { consumes?: string[] }).consumes ?? [],
+      ),
+    ),
+  ];
+  const consumesBlock =
+    consumes.length > 0
+      ? `\nContract dependency: this unit CONSUMES ${consumes.join(", ")} — a sibling unit produces ${consumes.length > 1 ? "these files" : "this file"}. Import ${consumes.length > 1 ? "their" : "its"} contract (types/exports/shape); do NOT re-invent it. If ${consumes.length > 1 ? "they don't exist" : "it doesn't exist"} yet, code to the contract the spec/slice describes.\n`
+      : "";
   const task =
     unit.shape === "mechanize"
       ? `This is a MECHANIZE unit: author ONE transform and apply it across all of [${fp}] — do not hand-edit each object.`
@@ -373,6 +387,7 @@ export function buildWorkerPrompt(
       ? `The board/specs dir is NOT in this worktree; your spec + slice are embedded below — use them, don't search the filesystem for specs/.\n`
       : `(Read the parent spec/slice for context if available — note the specs dir may not be in this worktree.)\n`) +
     `\n${task}\n` +
+    consumesBlock +
     specBlock +
     sliceBlock +
     `\nWork autonomously to the slice's acceptance criteria above. Make reasonable engineering decisions and do NOT ask for confirmation. ` +

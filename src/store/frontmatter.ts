@@ -96,6 +96,11 @@ export interface Frontmatter {
     footprint: string[];
     /** Work-unit/slice handles this unit depends on (ordering). */
     depends_on?: string[];
+    /** Contract-first reference (SP-th4wqk): repo-relative files a *sibling* unit
+     *  produces that this unit reads. `buildUnitDag` resolves each entry to a
+     *  dependency edge on the sibling whose footprint produces it — the typed,
+     *  validated alternative to pinning the contract in `note`. */
+    consumes?: string[];
     /** serial (coupled) | mechanize (uniform data-parallel: one transform applied
      *  N times) | fan-out (heterogeneous: AI per object). */
     execution: "serial" | "mechanize" | "fan-out";

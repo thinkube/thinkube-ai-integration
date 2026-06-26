@@ -65,6 +65,7 @@ import {
   contractFirstCheck,
   CONTRACT_FIRST_RULE_MSG,
   CONTRACT_FIRST_OPTOUT_FIELD,
+  normalizeFilePath,
   type ContractFirstWorkUnit,
   type ParallelSliceInput,
 } from "../methodology/parallelSlices";
@@ -2014,6 +2015,43 @@ export async function createSlice(
     const fp =
       contractVerdict.offendingUnit.footprint?.join(", ") || "(no footprint)";
     throw new Error(`${contractVerdict.message}\n  • offending unit: ${fp}`);
+  }
+
+  // Consumes-resolvability gate (SP-th4wqk AC#2). `buildUnitDag` resolves a unit's
+  // `consumes` to a dependency on the SIBLING unit whose footprint produces the
+  // named file; a `consumes` that matches no sibling footprint silently resolves
+  // to NO edge — a typo or stale path becomes a no-op, exactly the contract the
+  // gate is meant to make load-bearing. Refuse it at the door, naming the offending
+  // unit + the dangling file. File matching reuses `normalizeFilePath` — the same
+  // normalization `contractFirstCheck` and `buildUnitDag` use — so a `consumes`
+  // naming a real sibling footprint passes by the identical rule.
+  {
+    const wus = (args.work_units ?? []) as {
+      footprint?: string[];
+      consumes?: string[];
+    }[];
+    const siblingFiles = (selfIdx: number): Set<string> => {
+      const s = new Set<string>();
+      wus.forEach((w, i) => {
+        if (i === selfIdx) return;
+        for (const f of w.footprint ?? []) s.add(normalizeFilePath(f));
+      });
+      return s;
+    };
+    for (let i = 0; i < wus.length; i++) {
+      const produced = siblingFiles(i);
+      for (const c of wus[i].consumes ?? []) {
+        if (!produced.has(normalizeFilePath(c))) {
+          const fp = wus[i].footprint?.join(", ") || "(no footprint)";
+          throw new Error(
+            `Dangling \`consumes\` — refusing to create the slice: unit [${fp}] ` +
+              `consumes \`${c}\`, but no sibling work_unit's footprint produces that file. ` +
+              `A \`consumes\` must name a file another unit in this slice produces (so it ` +
+              `resolves to a real contract-first dependency edge), else it is a silent no-op.`,
+          );
+        }
+      }
+    }
   }
 
   const sliceNumber = await store.nextSliceNumber(args.spec);
