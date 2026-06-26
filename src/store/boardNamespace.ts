@@ -15,8 +15,12 @@
  * host-neutral key.
  *
  * Pure (path-only, no `vscode`/`fs`) so both the navigator (extension) and the
- * MCP server (subprocess) can share it; each side supplies its folder list.
+ * MCP server (subprocess) can share it; each side supplies its folder list. The
+ * lone exception is `gitUserName` — the thin, impure caller that reads git
+ * `user.name` as the org source; the pure `resolveOrg` it feeds stays
+ * git-free and unit-testable.
  */
+import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 
 export interface WorkspaceFolderRef {
@@ -32,6 +36,54 @@ export function containerSegment(folderName: string): string {
     .trim()
     .replace(/[/\\]+/g, "-")
     .replace(/\s+/g, "-");
+}
+
+/**
+ * The per-maintainer **organization segment** (SP-th8m5b / TEP-th8lzj) — the
+ * directory that namespaces the sequential ids (`<board>/<org>/teps/TEP-n/…`) so
+ * concurrent maintainers on one board never collide. It is DERIVED from git
+ * `user.name`, sanitized into a filesystem-safe segment with the same
+ * `containerSegment` convention (single source of sanitization).
+ *
+ * There is **no default and no `tandem.org` setting**: an unset / empty /
+ * whitespace-only name throws a clear error, so every operation that needs the
+ * org fails fast at the boundary rather than silently writing under a fallback.
+ *
+ * Pure — the caller supplies the name string, so this is unit-testable without
+ * spawning git or depending on ambient git state. The `git config user.name`
+ * read lives in the thin {@link gitUserName} caller.
+ */
+export function resolveOrg(userName: string | undefined): string {
+  const trimmed = (userName ?? "").trim();
+  if (!trimmed) {
+    throw new Error(
+      "Cannot resolve the organization segment: git `user.name` is unset or " +
+        'empty. Set it with `git config user.name "Your Name"` — there is no ' +
+        "default organization (org-scoped sequential ids are namespaced per " +
+        "maintainer, TEP-th8lzj).",
+    );
+  }
+  return containerSegment(trimmed);
+}
+
+/**
+ * Thin, impure caller: read git `user.name` (the org source for
+ * {@link resolveOrg}). Returns the trimmed name, or `undefined` when git has no
+ * `user.name` configured — or git is unavailable — so `resolveOrg` turns that
+ * into its fail-fast error. Kept separate from `resolveOrg` so the resolver
+ * stays pure and git-free under `node --test`.
+ */
+export function gitUserName(cwd?: string): string | undefined {
+  try {
+    const out = execFileSync("git", ["config", "user.name"], {
+      cwd,
+      encoding: "utf8",
+    });
+    const name = out.trim();
+    return name === "" ? undefined : name;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Forward-slash an OS path so namespaces are stable across platforms. */

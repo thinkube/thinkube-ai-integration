@@ -99,6 +99,147 @@ test("buildSliceBoard lays out three columns and places slices by status", () =>
   assert.equal(card.description, "a");
 });
 
+// ── org-scoped nested tree projection (SP-th8m5b / TEP-th8lzj, AC 5) ──
+// Slices discovered at `<org>/teps/TEP-n/SP-m/SL-k.md` carry their parent TEP
+// number. The projection flattens each handle to the tep-qualified
+// `TEP-n_SP-m_SL-k` form and groups under the tep-qualified spec key, so bare
+// SP/SL numbers that repeat across TEPs never collide.
+
+test("buildSliceBoard projects the nested tree: tep-qualified handles grouped under their parent spec", () => {
+  const slices: SliceInput[] = [
+    {
+      tepNumber: 1,
+      specNumber: "1",
+      sliceNumber: 1,
+      title: "a",
+      status: "ready",
+    },
+    {
+      tepNumber: 1,
+      specNumber: "1",
+      sliceNumber: 2,
+      title: "b",
+      status: "doing",
+    },
+    {
+      tepNumber: 1,
+      specNumber: "2",
+      sliceNumber: 1,
+      title: "c",
+      status: "done",
+    },
+    // Same bare SP-1 / SL-1 under a DIFFERENT TEP — must stay distinct.
+    {
+      tepNumber: 2,
+      specNumber: "1",
+      sliceNumber: 1,
+      title: "d",
+      status: "ready",
+    },
+  ];
+  const board = buildSliceBoard(slices, "demo");
+
+  // Handles are tep-qualified and unique even though SP-1/SL-1 repeats.
+  assert.ok(board.tasks["TEP-1_SP-1_SL-1"]);
+  assert.ok(board.tasks["TEP-2_SP-1_SL-1"]);
+  assert.notEqual(
+    board.tasks["TEP-1_SP-1_SL-1"].id,
+    board.tasks["TEP-2_SP-1_SL-1"].id,
+  );
+
+  // Grouped under their parent spec: parentId is the tep-qualified spec key,
+  // and a Spec's slices share a colour.
+  assert.equal(board.tasks["TEP-1_SP-1_SL-1"].parentId, "TEP-1_SP-1");
+  assert.equal(board.tasks["TEP-1_SP-1_SL-2"].parentId, "TEP-1_SP-1");
+  assert.equal(
+    board.tasks["TEP-1_SP-1_SL-1"].colorSlug,
+    board.tasks["TEP-1_SP-1_SL-2"].colorSlug,
+  );
+  assert.equal(board.tasks["TEP-1_SP-2_SL-1"].parentId, "TEP-1_SP-2");
+  assert.equal(board.tasks["TEP-2_SP-1_SL-1"].parentId, "TEP-2_SP-1");
+
+  // Column placement still follows status.
+  const ready = board.columns.find((c) => c.title === "Ready")!;
+  assert.ok(ready.tasksIds.includes("TEP-1_SP-1_SL-1"));
+  assert.ok(ready.tasksIds.includes("TEP-2_SP-1_SL-1"));
+  const doing = board.columns.find((c) => c.title === "Doing")!;
+  assert.ok(doing.tasksIds.includes("TEP-1_SP-1_SL-2"));
+
+  // One acceptance close-card per parent spec, tep-qualified + unique.
+  assert.ok(board.tasks["TEP-1_SP-1_accept"]?.isAcceptance);
+  assert.ok(board.tasks["TEP-1_SP-2_accept"]?.isAcceptance);
+  assert.ok(board.tasks["TEP-2_SP-1_accept"]?.isAcceptance);
+  assert.equal(board.tasks["TEP-1_SP-1_accept"].slicesTotal, 2);
+  assert.equal(board.tasks["TEP-1_SP-2_accept"].slicesDone, 1);
+  assert.equal(board.tasks["TEP-1_SP-1_accept"].description, "TEP-1_SP-1");
+});
+
+test("nested specMeta is keyed by the tep-qualified spec key", () => {
+  const board = buildSliceBoard(
+    [
+      {
+        tepNumber: 1,
+        specNumber: "1",
+        sliceNumber: 1,
+        title: "x",
+        status: "done",
+      },
+    ],
+    "demo",
+    new Map([
+      [
+        "TEP-1_SP-1",
+        {
+          accepted: true,
+          allAcsChecked: true,
+          criteria: [{ label: "a", checked: true }],
+          archived: false,
+        },
+      ],
+    ]),
+  );
+  // Accepted → the close card rests in Done, keyed by the tep-qualified spec.
+  assert.equal(board.tasks["TEP-1_SP-1_accept"].columnId, "column-done");
+  assert.equal(board.tasks["TEP-1_SP-1_accept"].accepted, true);
+});
+
+test("an archived nested Spec drops its slices AND acceptance card off the board", () => {
+  const board = buildSliceBoard(
+    [
+      {
+        tepNumber: 1,
+        specNumber: "1",
+        sliceNumber: 1,
+        title: "live",
+        status: "done",
+      },
+      {
+        tepNumber: 1,
+        specNumber: "2",
+        sliceNumber: 1,
+        title: "gone",
+        status: "done",
+      },
+    ],
+    "demo",
+    new Map([
+      [
+        "TEP-1_SP-2",
+        {
+          accepted: true,
+          allAcsChecked: true,
+          criteria: [{ label: "a", checked: true }],
+          archived: true,
+        },
+      ],
+    ]),
+  );
+  assert.ok(board.tasks["TEP-1_SP-1_SL-1"]);
+  assert.ok(board.tasks["TEP-1_SP-1_accept"]);
+  assert.equal(board.tasks["TEP-1_SP-2_SL-1"], undefined);
+  assert.equal(board.tasks["TEP-1_SP-2_accept"], undefined);
+});
+
 test("archived slices are excluded from the board", () => {
   const board = buildSliceBoard(
     [

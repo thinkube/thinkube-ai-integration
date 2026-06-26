@@ -1,35 +1,119 @@
 /**
- * Unit tests for the pure id helpers (TEP-0009). No vscode, no fs.
+ * Unit tests for the pure scope-sequential id allocator (SP-th8m5b / TEP-th8lzj,
+ * AC 1–2). No vscode. The scan-max+1 core is tested over name lists; the scope
+ * allocators are tested over real tmp directory trees.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 
-import { parseTepId, mintEpochId } from "./ids";
+import {
+  parseTepId,
+  nextNumberFromNames,
+  nextTepNumber,
+  nextSpecNumber,
+  nextSliceNumber,
+} from "./ids";
 
-test("parseTepId accepts both legacy sequential and base36-epoch forms", () => {
-  assert.equal(parseTepId("TEP-0009"), "0009"); // legacy sequential
-  assert.equal(parseTepId("TEP-tg7y99"), "tg7y99"); // base36-epoch
-  assert.equal(parseTepId("  TEP-0010  "), "0010"); // trimmed
+test("parseTepId stays permissive across id forms", () => {
+  assert.equal(parseTepId("TEP-1"), "1"); // sequential
+  assert.equal(parseTepId("TEP-0009"), "0009"); // legacy zero-padded
+  assert.equal(parseTepId("TEP-tg7y99"), "tg7y99"); // legacy base36-epoch
+  assert.equal(parseTepId("  TEP-2  "), "2"); // trimmed
   // Not a TEP handle → undefined (no false positives).
   assert.equal(parseTepId("SP-3"), undefined);
   assert.equal(parseTepId("TEP-"), undefined);
   assert.equal(parseTepId("tep-1"), undefined); // case-sensitive prefix
 });
 
-test("mintEpochId is base36, zero-padded to ≥6, and monotonic", () => {
-  // A fixed instant → floor(ms/1000) in base36, padded.
-  const at = 1_700_000_000_000; // ms
-  const first = mintEpochId(at, 0);
-  assert.equal(first.epoch, Math.floor(at / 1000));
-  assert.equal(first.id, first.epoch.toString(36).padStart(6, "0"));
-  assert.ok(first.id.length >= 6);
+test("nextNumberFromNames returns scan-max+1, archive-aware, prefix-scoped", () => {
+  // Empty scope → the first number is 1.
+  assert.equal(nextNumberFromNames([], "TEP"), 1);
 
-  // Same second as the guard → bumped by one, never reused.
-  const same = mintEpochId(at, first.epoch);
-  assert.equal(same.epoch, first.epoch + 1);
-  assert.notEqual(same.id, first.id);
+  // Highest wins (not the count): a gap from a deleted/retired entry is kept,
+  // so a number is never reused.
+  assert.equal(nextNumberFromNames(["TEP-1", "TEP-2"], "TEP"), 3);
+  assert.equal(nextNumberFromNames(["TEP-1", "TEP-5"], "TEP"), 6); // gap reserved
 
-  // An earlier clock reading still advances past the guard (monotonic).
-  const earlier = mintEpochId(at - 5000, same.epoch);
-  assert.equal(earlier.epoch, same.epoch + 1);
+  // `SL-k.md` slice files are matched (the `.md` suffix is tolerated).
+  assert.equal(nextNumberFromNames(["SL-1.md", "SL-2.md"], "SL"), 3);
+
+  // Unrelated siblings never perturb the counter.
+  assert.equal(
+    nextNumberFromNames(["TEP-1", "tep.md", "SP-9", "SP-1_SL-2"], "TEP"),
+    2,
+  );
+  // Prefix is exact: a `SP-*` is not a `TEP-*`.
+  assert.equal(nextNumberFromNames(["SP-1", "SP-2"], "TEP"), 1);
+});
+
+/** mkdir -p every path under `root`, then return `root`. */
+async function tree(root: string, dirs: string[]): Promise<string> {
+  for (const d of dirs) await fs.mkdir(path.join(root, d), { recursive: true });
+  return root;
+}
+
+test("nextTepNumber is scan-max+1 per (board, org), restarting per scope", async () => {
+  const boardA = await fs.mkdtemp(path.join(os.tmpdir(), "ids-boardA-"));
+  const boardB = await fs.mkdtemp(path.join(os.tmpdir(), "ids-boardB-"));
+  try {
+    // Acme has TEP-1, TEP-2 under boardA → next is TEP-3.
+    await tree(boardA, ["Acme/teps/TEP-1", "Acme/teps/TEP-2"]);
+    assert.equal(await nextTepNumber(boardA, "Acme"), 3);
+
+    // A different org on the SAME board has its own (empty) teps dir → restarts at 1.
+    assert.equal(await nextTepNumber(boardA, "Globex"), 1);
+
+    // The SAME org on a DIFFERENT board is independent → restarts at 1.
+    assert.equal(await nextTepNumber(boardB, "Acme"), 1);
+  } finally {
+    await fs.rm(boardA, { recursive: true, force: true });
+    await fs.rm(boardB, { recursive: true, force: true });
+  }
+});
+
+test("nextSpecNumber is scoped to its TEP (restarting at 1 per TEP)", async () => {
+  const board = await fs.mkdtemp(path.join(os.tmpdir(), "ids-spec-"));
+  try {
+    await tree(board, [
+      "Acme/teps/TEP-1/SP-1",
+      "Acme/teps/TEP-1/SP-2",
+      "Acme/teps/TEP-2", // no specs yet
+    ]);
+    const tep1 = path.join(board, "Acme", "teps", "TEP-1");
+    const tep2 = path.join(board, "Acme", "teps", "TEP-2");
+
+    assert.equal(await nextSpecNumber(tep1), 3); // SP-1, SP-2 → SP-3
+    assert.equal(await nextSpecNumber(tep2), 1); // independent counter restarts
+  } finally {
+    await fs.rm(board, { recursive: true, force: true });
+  }
+});
+
+test("nextSliceNumber is scoped to its spec and archive-aware", async () => {
+  const board = await fs.mkdtemp(path.join(os.tmpdir(), "ids-slice-"));
+  try {
+    const sp1 = path.join(board, "Acme", "teps", "TEP-1", "SP-1");
+    const sp2 = path.join(board, "Acme", "teps", "TEP-1", "SP-2");
+    await fs.mkdir(sp1, { recursive: true });
+    await fs.mkdir(sp2, { recursive: true });
+
+    // SP-1 has SL-1, SL-2 plus the spec doc → next slice is SL-3.
+    await fs.writeFile(path.join(sp1, "spec.md"), "");
+    await fs.writeFile(path.join(sp1, "SL-1.md"), "");
+    await fs.writeFile(path.join(sp1, "SL-2.md"), "");
+    assert.equal(await nextSliceNumber(sp1), 3);
+
+    // A retired SL-5 leaves a gap (SL-3, SL-4 never existed); its number stays
+    // reserved → next is SL-6, not SL-3.
+    await fs.writeFile(path.join(sp1, "SL-5.md"), "");
+    assert.equal(await nextSliceNumber(sp1), 6);
+
+    // A different spec under the same TEP has its own counter → restarts at 1.
+    assert.equal(await nextSliceNumber(sp2), 1);
+  } finally {
+    await fs.rm(board, { recursive: true, force: true });
+  }
 });

@@ -10,6 +10,7 @@
  */
 import { Board, BoardColumn, TaskCard } from "../types";
 import { buildUnitDag } from "../../../../services/orchestratorCore";
+import { sliceHandle as treeSliceHandle } from "../../../../store/treePaths";
 import {
   classifySpecChange,
   SpecChangeKind,
@@ -83,6 +84,35 @@ export function sliceHandle(specId: string, sliceNumber: number): string {
   return `SP-${specId}_SL-${sliceNumber}`;
 }
 
+/**
+ * The grouping key + card identity for a slice's parent Spec. In the org-scoped
+ * nested tree a bare `SP-m` repeats across TEPs, so a slice carrying a
+ * `tepNumber` keys on the tep-qualified `TEP-n_SP-m`; a legacy (flat) slice keys
+ * on its bare opaque spec id. Cards, colour, the per-Spec tally, and the
+ * acceptance close-card all group on this key.
+ */
+function specKeyOf(s: SliceInput): string {
+  return s.tepNumber != null
+    ? `TEP-${s.tepNumber}_SP-${s.specNumber}`
+    : s.specNumber;
+}
+
+/**
+ * The slice's card handle: the tep-qualified `TEP-n_SP-m_SL-k` flattening for a
+ * nested-tree slice (so cross-spec `depends_on`, branches, and worktrees stay
+ * unique when bare SP/SL numbers repeat), else the legacy `SP-{id}_SL-{m}`.
+ */
+function handleOf(s: SliceInput): string {
+  return s.tepNumber != null
+    ? treeSliceHandle(s.tepNumber, Number(s.specNumber), s.sliceNumber)
+    : sliceHandle(s.specNumber, s.sliceNumber);
+}
+
+/** The acceptance close-card id for a parent-spec grouping key. */
+function acceptIdForKey(specKey: string, nested: boolean): string {
+  return nested ? `${specKey}_accept` : `SP-${specKey}_accept`;
+}
+
 export type SliceGraphNode = {
   id: string;
   status: string;
@@ -141,6 +171,15 @@ export function buildSliceGraph(
 export interface SliceInput {
   /** Parent Spec id — an opaque string (base36-epoch, or a legacy integer). */
   specNumber: string;
+  /**
+   * Parent TEP number when the slice was discovered in the org-scoped nested
+   * tree (`<org>/teps/TEP-n/SP-m/SL-k.md`, SP-th8m5b / TEP-th8lzj). Present ⇒ the
+   * card handle flattens to the tep-qualified `TEP-n_SP-m_SL-k` form and the
+   * slice groups under the tep-qualified spec key `TEP-n_SP-m`, so bare SP/SL
+   * numbers that repeat across TEPs never collide. Omitted ⇒ the legacy flat
+   * `SP-{id}_SL-{m}` handle and bare-spec-id grouping (back-compat).
+   */
+  tepNumber?: number;
   sliceNumber: number;
   title: string;
   body?: string;
@@ -226,12 +265,17 @@ export function buildSliceBoard(
   const tasks: Record<string, TaskCard> = {};
   const byColumn = new Map<string, string[]>();
   for (const c of TANDEM_COLUMNS) byColumn.set(c.id, []);
-  // Per-Spec slice tally → the acceptance card's readiness.
-  const specSlices = new Map<string, { total: number; done: number }>();
+  // Per-Spec slice tally → the acceptance card's readiness. Keyed by the
+  // (possibly tep-qualified) spec grouping key so SP-m's that repeat across TEPs
+  // stay distinct, and carrying `tep` so the close card can be formatted.
+  const specSlices = new Map<
+    string,
+    { total: number; done: number; nested: boolean }
+  >();
 
   const ordered = [...slices].sort(
     (a, b) =>
-      a.specNumber.localeCompare(b.specNumber) || a.sliceNumber - b.sliceNumber,
+      specKeyOf(a).localeCompare(specKeyOf(b)) || a.sliceNumber - b.sliceNumber,
   );
 
   for (const s of ordered) {
@@ -241,10 +285,11 @@ export function buildSliceBoard(
     // re-cut Spec can still close. Its SL-{m} stays reserved on disk (numbering reads files,
     // not the board projection), so a retired number is never reused.
     if (isRetiredStatus(s.status ?? "")) continue;
+    const specKey = specKeyOf(s);
     // An archived parent Spec drops off the board entirely (TEP-tg86v7): skip its
     // slices, which (via the tally below) also suppresses its acceptance card.
-    if (specMeta?.get(s.specNumber)?.archived) continue;
-    const id = sliceHandle(s.specNumber, s.sliceNumber);
+    if (specMeta?.get(specKey)?.archived) continue;
+    const id = handleOf(s);
     const columnId = statusToColumnId(s.status);
     const specChange: SpecChangeKind = classifySpecChange({
       stampedReqHash: s.stampedReqHash,
@@ -257,8 +302,8 @@ export function buildSliceBoard(
       description: s.title,
       body: s.body,
       columnId,
-      colorSlug: paletteForParent(s.specNumber),
-      parentId: s.specNumber,
+      colorSlug: paletteForParent(specKey),
+      parentId: specKey,
       updatedAt: s.updatedAt,
       dueDate: s.due,
       priority: s.priority,
@@ -291,10 +336,14 @@ export function buildSliceBoard(
     };
     tasks[id] = card;
     byColumn.get(columnId)?.push(id);
-    const agg = specSlices.get(s.specNumber) ?? { total: 0, done: 0 };
+    const agg = specSlices.get(specKey) ?? {
+      total: 0,
+      done: 0,
+      nested: s.tepNumber != null,
+    };
     agg.total++;
     if ((s.status ?? "").toLowerCase() === "done") agg.done++;
-    specSlices.set(s.specNumber, agg);
+    specSlices.set(specKey, agg);
   }
 
   // One close card per Spec that has slices (TEP-0010), auto-derived — not a
@@ -304,19 +353,22 @@ export function buildSliceBoard(
   // Ready, its "Approve & close" button gated by `acceptReady` (all slices Done
   // AND all ACs checked). Historical Specs are stamped `accepted:` so they rest
   // in Done rather than begging in Ready.
-  for (const [specId, agg] of specSlices) {
-    const meta = specMeta?.get(specId);
+  for (const [specKey, agg] of specSlices) {
+    const meta = specMeta?.get(specKey);
     const accepted = meta?.accepted ?? false;
     const acceptReady =
       agg.total > 0 && agg.done === agg.total && (meta?.allAcsChecked ?? false);
-    const id = `SP-${specId}_accept`;
+    const id = acceptIdForKey(specKey, agg.nested);
+    // The legacy flat card shows `SP-{id}`; a nested card's key already carries
+    // the `TEP-n_SP-m` qualification, so show it verbatim.
+    const description = agg.nested ? specKey : `SP-${specKey}`;
     const columnId = accepted ? "column-done" : "column-ready";
     tasks[id] = {
       id,
-      description: `SP-${specId}`,
+      description,
       columnId,
-      colorSlug: paletteForParent(specId),
-      parentId: specId,
+      colorSlug: paletteForParent(specKey),
+      parentId: specKey,
       isAcceptance: true,
       accepted,
       acceptReady,
