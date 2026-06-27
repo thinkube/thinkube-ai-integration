@@ -265,6 +265,19 @@ export function migrate(opts) {
     tepFilesByNs.set(ns.rel, teps);
   }
 
+  // Synthetic umbrella TEP per namespace for pre-hierarchy "orphan" specs (no
+  // `implements:`). Allocated lazily and numbered AFTER the namespace's real TEPs so
+  // their numbering is never disturbed; the orphans stay in their home namespace.
+  const dummyByNs = new Map(); // nsRel → newNum
+  const ensureDummyTep = (nsRel) => {
+    let num = dummyByNs.get(nsRel);
+    if (num === undefined) {
+      num = (tepFilesByNs.get(nsRel)?.length ?? 0) + 1;
+      dummyByNs.set(nsRel, num);
+    }
+    return num;
+  };
+
   // ── Pass 2: collect specs, resolve parent TEP, assign per-TEP numbers ──
   // specRec: { homeNsRel, oldId, dir, fm, body, refNamespace, refId, ownerNsRel,
   //            tepNewNum, newNum }
@@ -284,6 +297,25 @@ export function migrate(opts) {
       }
       const ref = parseImplements(fm.implements);
       if (!ref) {
+        // Orphan (no `implements:`) — a pre-hierarchy spec. Host it under the
+        // namespace's synthetic dummy umbrella TEP so it migrates cleanly and stays
+        // in its home namespace.
+        specs.push({
+          homeNsRel: ns.rel,
+          oldId,
+          dir,
+          fm,
+          body,
+          refNamespace: undefined,
+          refId: undefined,
+          ownerNsRel: ns.rel,
+          tepNewNum: ensureDummyTep(ns.rel),
+          newNum: 0,
+        });
+        continue;
+      }
+      // (dead — the no-implements case is now handled above by the dummy umbrella)
+      if (false) {
         errors.push(
           `Spec SP-${oldId} (${ns.rel}) has no \`implements:\` — cannot place it under a TEP.`,
         );
@@ -351,6 +383,69 @@ export function migrate(opts) {
     }
   }
 
+  // ── Body cross-reference rewrite ──────────────────────────────────────────
+  // Old ids are globally unique (one cross-board dup — SP-th4wqi — resolved by the
+  // referencing file's namespace below), so prose references remap deterministically.
+  // A reference to an entity in the SAME namespace as the file becomes the new
+  // board-local handle; a cross-namespace one is namespace-qualified so it stays
+  // unambiguous. Applied as a post-pass over every `.md` write (Pass 3 builds them).
+  const tepRefByOldId = new Map(); // oldTepId → { ns, num }
+  for (const { nsRel, oldId, newNum } of tepMap.values())
+    tepRefByOldId.set(oldId, { ns: nsRel, num: newNum });
+  const specsByOldId = new Map(); // oldSpecId → specRec[] (≥2 only for a dup id)
+  for (const s of specs) {
+    const arr = specsByOldId.get(s.oldId) ?? [];
+    arr.push(s);
+    specsByOldId.set(s.oldId, arr);
+  }
+  const refLog = []; // { file, from, to } — samples + the cross-board dup mentions
+  let bodyRefsRewritten = 0;
+
+  const qualTep = (ns, num, fileNs) =>
+    ns === fileNs ? `TEP-${num}` : `${ns}/${org}:TEP-${num}`;
+  const qualSpec = (s, fileNs) => {
+    const h = `TEP-${s.tepNewNum}_SP-${s.newNum}`;
+    return s.ownerNsRel === fileNs ? h : `${s.ownerNsRel}/${org}:${h}`;
+  };
+  const pickSpec = (oldId, fileNs) => {
+    const arr = specsByOldId.get(oldId);
+    if (!arr) return undefined;
+    if (arr.length === 1) return arr[0];
+    return arr.find((s) => s.ownerNsRel === fileNs) ?? arr[0]; // dup → prefer same ns
+  };
+
+  const rewriteBody = (text, fileNs, fileLabel) => {
+    const note = (from, to) => {
+      bodyRefsRewritten++;
+      if (refLog.length < 30) refLog.push({ file: fileLabel, from, to });
+    };
+    // Slice handles first (longest), then bare spec codes, then TEP codes. Only a
+    // token that resolves to a KNOWN old id is replaced — new short ids and unrelated
+    // look-alikes fall through untouched.
+    return text
+      .replace(/\bSP-([a-z0-9]{4,8})_SL-(\d+)\b/g, (m, id, k) => {
+        const s = pickSpec(id, fileNs);
+        if (!s) return m;
+        const to = `${qualSpec(s, fileNs)}_SL-${k}`;
+        note(m, to);
+        return to;
+      })
+      .replace(/\bSP-([a-z0-9]{4,8})\b/g, (m, id) => {
+        const s = pickSpec(id, fileNs);
+        if (!s) return m;
+        const to = qualSpec(s, fileNs);
+        note(m, to);
+        return to;
+      })
+      .replace(/\bTEP-([a-z0-9]{4,8})\b/g, (m, id) => {
+        const t = tepRefByOldId.get(id);
+        if (!t) return m;
+        const to = qualTep(t.ns, t.num, fileNs);
+        note(m, to);
+        return to;
+      });
+  };
+
   // ── Pass 3: compute every write/remove, then apply ──
   const writes = []; // { path, content }
   const removes = []; // dir paths
@@ -387,6 +482,36 @@ export function migrate(opts) {
       );
       writes.push({ path: target, content: joinFrontmatter(nfm, body) });
     }
+    // Synthetic dummy umbrella for this namespace's orphan specs, if any.
+    const dummyNum = dummyByNs.get(ns.rel);
+    if (dummyNum !== undefined) {
+      const members = specs
+        .filter((s) => s.ownerNsRel === ns.rel && s.tepNewNum === dummyNum)
+        .sort((a, b) => a.newNum - b.newNum)
+        .map((s) => `SP-${s.newNum}`);
+      const dfm = {
+        kind: "tep",
+        id: `TEP-${dummyNum}`,
+        status: "accepted",
+        title: "Unfiled — pre-hierarchy specs",
+        implemented_by: members,
+      };
+      const dbody =
+        `# TEP-${dummyNum} — Unfiled (pre-hierarchy specs)\n\n` +
+        `Synthetic umbrella created by the id migration to host specs that predate ` +
+        `the TEP→Spec hierarchy (they had no \`implements:\`). Not a real proposal.\n`;
+      writes.push({
+        path: path.join(
+          boardRoot,
+          ...ns.rel.split("/").filter(Boolean),
+          org,
+          "teps",
+          `TEP-${dummyNum}`,
+          "tep.md",
+        ),
+        content: joinFrontmatter(dfm, dbody),
+      });
+    }
     removes.push(path.join(ns.dir, "teps"));
     removes.push(path.join(ns.dir, "specs"));
   }
@@ -412,6 +537,10 @@ export function migrate(opts) {
       // Qualified, cross-board — deepen the namespace with the <org> segment.
       sfm.implements = `${s.refNamespace}/${org}:TEP-${s.tepNewNum}`;
     }
+    // Cross-board member (nested under another namespace's TEP — e.g. a project
+    // umbrella): preserve its home code-repo identity in `repo:`, since the path now
+    // encodes the project, not the repo. Realizes the contract this migration documents.
+    if (s.homeNsRel !== s.ownerNsRel) sfm.repo = s.homeNsRel;
     writes.push({
       path: path.join(newSpecDirAbs, "spec.md"),
       content: joinFrontmatter(sfm, s.body),
@@ -488,6 +617,21 @@ export function migrate(opts) {
     });
   }
 
+  // Rewrite cross-references in every `.md` body. The file's namespace is the path
+  // segment before the `<org>` segment (`<ns>/<org>/teps/…`); the template
+  // (`<ns>/teps/TEP-TEMPLATE.md`, no `<org>`) has no id refs and is skipped.
+  for (const w of writes) {
+    if (!w.path.endsWith(".md")) continue;
+    const segs = path.relative(boardRoot, w.path).split(path.sep);
+    const oi = segs.indexOf(org);
+    if (oi <= 0) continue;
+    const fileNs = segs.slice(0, oi).join("/");
+    const text = Buffer.isBuffer(w.content)
+      ? w.content.toString("utf8")
+      : w.content;
+    w.content = rewriteBody(text, fileNs, path.relative(boardRoot, w.path));
+  }
+
   // ── apply ──
   if (dryRun) {
     log(
@@ -498,6 +642,9 @@ export function migrate(opts) {
     for (const r of removes) log(`  remove ${path.relative(boardRoot, r)}`);
     for (const w of templateWrites)
       log(`  keep   ${path.relative(boardRoot, w.path)} (template, unchanged)`);
+    log(`  body-refs rewritten: ${bodyRefsRewritten}`);
+    for (const r of refLog.slice(0, 20))
+      log(`    ${r.file}: ${r.from} -> ${r.to}`);
     return {
       org,
       namespaces: namespaces.map((n) => n.rel),
@@ -579,7 +726,8 @@ export function migrate(opts) {
 
   log(
     `migrate-ids: org=${org}, ${namespaces.length} namespace(s), ` +
-      `${tepMap.size} TEP(s), ${specs.length} spec(s), ${sliceHandleMap.size} slice(s)` +
+      `${tepMap.size} TEP(s), ${specs.length} spec(s), ${sliceHandleMap.size} slice(s), ` +
+      `${bodyRefsRewritten} body-ref(s) rewritten` +
       (opts.repos?.length ? `, ${branchesRenamed} branch(es) renamed` : "") +
       ".",
   );

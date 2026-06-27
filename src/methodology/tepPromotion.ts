@@ -76,13 +76,15 @@ export type TepWritePath =
     }
   | { kind: "refuse"; refuse: TepPromoteRefusal; message: string };
 
-/** The project copy's board-root-relative path — matches `promote_tep`'s `movedTo`. */
+/** The project copy's board-root-relative path — matches `promote_tep`'s
+ *  `movedTo`. A promoted TEP is the nested org-tree dir `teps/TEP-{id}/tep.md`
+ *  (a project uses the bare `teps/` root — no per-maintainer `<org>/` segment). */
 export function projectTepPath(
   product: string,
   projectId: string,
   tepId: string,
 ): string {
-  return `${product}/projects/${projectId}/teps/TEP-${normalizeTepId(tepId)}.md`;
+  return `${product}/projects/${projectId}/teps/TEP-${normalizeTepId(tepId)}/tep.md`;
 }
 
 /**

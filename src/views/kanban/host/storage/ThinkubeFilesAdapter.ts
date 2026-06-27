@@ -27,11 +27,11 @@ import {
   columnIdToStatus,
   deriveSpecMeta,
   SliceInput,
-  sliceHandle,
   SpecMeta,
 } from "./sliceBoard";
 
-const SLICE_PATH_RE = /specs\/SP-([A-Za-z0-9]+)\/SL-(\d+)\.md$/;
+// Org-scoped tree path: `<org>/teps/TEP-n/SP-m/SL-k.md` → [_, tep, spec, slice].
+const SLICE_PATH_RE = /teps\/TEP-(\d+)\/SP-(\d+)\/SL-(\d+)\.md$/;
 
 export class ThinkubeFilesAdapter implements StorageAdapter {
   private readonly _onExternalChange = new vscode.EventEmitter<Board>();
@@ -80,13 +80,15 @@ export class ThinkubeFilesAdapter implements StorageAdapter {
     const specDirs = this.specFilter
       ? [this.specFilter]
       : await this.store.listSpecDirs();
-    for (const specNumber of specDirs) {
-      const doc = await this.store.getFile(
-        this.store.pathForSpecDoc(specNumber),
-      );
-      if (doc?.body) reqHashBySpec.set(specNumber, requirementHash(doc.body));
-      specMeta.set(specNumber, deriveSpecMeta(doc?.frontmatter, doc?.body));
-      if (this.specFilter && specNumber === this.specFilter) {
+    for (const specId of specDirs) {
+      const doc = await this.store.getFile(this.store.pathForSpecDoc(specId));
+      // Key meta by the tep-qualified spec key (`TEP-n_SP-m`) so it matches the
+      // projection's `specKeyOf` — bare SP-m repeats across TEPs.
+      const [tep, sp] = specId.split("/");
+      const key = `TEP-${tep}_SP-${sp}`;
+      if (doc?.body) reqHashBySpec.set(key, requirementHash(doc.body));
+      specMeta.set(key, deriveSpecMeta(doc?.frontmatter, doc?.body));
+      if (this.specFilter && specId === this.specFilter) {
         const h = doc?.body ? /^#\s+(.+)$/m.exec(doc.body) : null;
         subtitle = h?.[1]?.trim() || undefined;
       }
@@ -101,16 +103,19 @@ export class ThinkubeFilesAdapter implements StorageAdapter {
     for (const rel of await this.store.listSlices(this.specFilter)) {
       const m = SLICE_PATH_RE.exec(rel);
       if (!m) continue;
-      const specNumber = m[1];
-      const sliceNumber = Number(m[2]);
+      const tepNumber = Number(m[1]);
+      const specNumber = m[2];
+      const sliceNumber = Number(m[3]);
+      const specKey = `TEP-${tepNumber}_SP-${specNumber}`;
       const parsed = await this.store.getFile(rel);
       const fm: Frontmatter = parsed?.frontmatter ?? {};
       const { title, detail } = splitSlice(
         parsed?.body,
-        sliceHandle(specNumber, sliceNumber),
+        `${specKey}_SL-${sliceNumber}`,
       );
       inputs.push({
         specNumber,
+        tepNumber,
         sliceNumber,
         title,
         body: detail,
@@ -118,7 +123,7 @@ export class ThinkubeFilesAdapter implements StorageAdapter {
         due: fm.due,
         priority: fm.priority,
         stampedReqHash: fm.verified_req_hash,
-        currentReqHash: reqHashBySpec.get(specNumber),
+        currentReqHash: reqHashBySpec.get(specKey),
         commit: fm.commit,
         commitUrl:
           fm.commit && coords ? buildCommitUrl(coords, fm.commit) : undefined,
@@ -196,9 +201,13 @@ export class ThinkubeFilesAdapter implements StorageAdapter {
   private refForCard(
     id: string,
   ): { specNumber: string; sliceNumber: number } | undefined {
-    const m = /^SP-([A-Za-z0-9]+)_SL-(\d+)$/.exec(id);
-    if (!m) return undefined;
-    return { specNumber: m[1], sliceNumber: Number(m[2]) };
+    // Tep-qualified handle `TEP-n_SP-m_SL-k` → composite spec id `n/m`.
+    const m = /^TEP-(\d+)_SP-(\d+)_SL-(\d+)$/.exec(id);
+    if (m) return { specNumber: `${m[1]}/${m[2]}`, sliceNumber: Number(m[3]) };
+    // Legacy flat handle `SP-{id}_SL-{m}`.
+    const lm = /^SP-([A-Za-z0-9]+)_SL-(\d+)$/.exec(id);
+    if (lm) return { specNumber: lm[1], sliceNumber: Number(lm[2]) };
+    return undefined;
   }
 
   private async fireReload(): Promise<void> {

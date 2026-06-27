@@ -30,19 +30,32 @@ function boardRootWithProjects(): string {
     fs.writeFileSync(path.join(root, rel, "project.yaml"), yaml);
   };
   proj("Platform/projects/rebrand", "name: The Rebrand\nstate: open\n");
-  // The umbrella TEP the project owns.
-  fs.mkdirSync(path.join(root, "Platform", "projects", "rebrand", "teps"), {
-    recursive: true,
-  });
+  // The umbrella TEP the project owns — nested org-tree form `teps/TEP-reb/tep.md`.
+  fs.mkdirSync(
+    path.join(root, "Platform", "projects", "rebrand", "teps", "TEP-reb"),
+    { recursive: true },
+  );
   fs.writeFileSync(
-    path.join(root, "Platform", "projects", "rebrand", "teps", "TEP-reb.md"),
+    path.join(
+      root,
+      "Platform",
+      "projects",
+      "rebrand",
+      "teps",
+      "TEP-reb",
+      "tep.md",
+    ),
     "---\nkind: tep\nid: TEP-reb\n---\n# Rebrand\n",
   );
   proj("Apps/projects/search", "name: Search\n");
   return root;
 }
 
-/** A tmp board store with one Spec (given `implements`) that has acceptance criteria. */
+/**
+ * A tmp board store with one Spec (given `implements`) that has acceptance
+ * criteria. `spec` is the org-scoped composite `<tep>/<spec>` (numeric, so the
+ * slice handle/path regexes resolve).
+ */
 async function seededStore(
   spec: string,
   implementsRef: string,
@@ -72,12 +85,14 @@ test("list_projects returns every product's projects, sorted", () => {
 
 test("get_project members = specs implementing the umbrella TEP + their slices (not tags)", async () => {
   const root = boardRootWithProjects();
-  // member: implements the project's umbrella TEP via the qualified ref.
-  const a = await seededStore("aaa", "Platform/projects/rebrand:TEP-reb");
+  // member: implements the project's umbrella TEP via the qualified ref. Its
+  // own org-tree home is TEP-1/SP-1 (where the file sits), independent of the
+  // logical `implements:` link to the umbrella TEP-reb.
+  const a = await seededStore("1/1", "Platform/projects/rebrand:TEP-reb");
   // non-member: implements something else.
-  const b = await seededStore("bbb", "Apps/projects/other:TEP-zzz");
+  const b = await seededStore("2/1", "Apps/projects/other:TEP-zzz");
   const sl = (await createSlice(a, {
-    spec: "aaa",
+    spec: "1/1",
     title: "a member slice",
     body: "d",
   })) as { slice: string };
@@ -98,9 +113,10 @@ test("get_project members = specs implementing the umbrella TEP + their slices (
   };
   assert.deepEqual(res.teps, ["TEP-reb"]);
   const handles = res.members.map((m) => m.handle).sort();
-  // the implementing spec + its (inherited) slice; the non-member excluded
-  assert.deepEqual(handles, ["SP-aaa", sl.slice].sort());
-  assert.ok(!handles.includes("SP-bbb"));
+  // the implementing spec (tep-qualified handle) + its (inherited) slice; the
+  // non-member excluded.
+  assert.deepEqual(handles, ["TEP-1_SP-1", sl.slice].sort());
+  assert.ok(!handles.includes("TEP-2_SP-1"));
 });
 
 test("promote_tep moves the TEP and rewrites EVERY dependent (SP-tgvpbm_SL-3)", async () => {
@@ -122,25 +138,30 @@ test("promote_tep moves the TEP and rewrites EVERY dependent (SP-tgvpbm_SL-3)", 
   const control = mk("Platform/core/control");
   const ac = "## Acceptance Criteria\n\n- [ ] x\n";
 
-  // TEP lives in origin; SP-a implements it bare; SP-b (other repo) implements it
-  // qualified to origin; SP-c implements something else (non-dependent).
+  // TEP-reb lives in the origin repo board as the nested org-tree dir
+  // `teps/TEP-reb/tep.md` (via the store) — a TEP IS its directory (tep.md + its
+  // SP-m specs), and promote_tep moves that whole dir into the project.
   await origin.writeFile(
     origin.pathForTep("reb"),
     { kind: "tep", id: "TEP-reb" },
     "# Reb\n",
   );
+  // SP-a (origin) implements TEP-reb bare; SP-b (other repo) implements it
+  // qualified to origin; SP-c implements something else (non-dependent). The spec
+  // ids are org-scoped composites `<tep>/<spec>` (numeric) — distinct per board so
+  // their tep-qualified handles don't collide.
   await origin.writeFile(
-    origin.pathForSpecDoc("a"),
+    origin.pathForSpecDoc("1/1"),
     { implements: "TEP-reb" },
     `# A\n\n${ac}`,
   );
   await control.writeFile(
-    control.pathForSpecDoc("b"),
+    control.pathForSpecDoc("2/1"),
     { implements: "Platform/core/thinkube:TEP-reb" },
     `# B\n\n${ac}`,
   );
   await control.writeFile(
-    control.pathForSpecDoc("c"),
+    control.pathForSpecDoc("3/1"),
     { implements: "TEP-other" },
     `# C\n\n${ac}`,
   );
@@ -161,37 +182,139 @@ test("promote_tep moves the TEP and rewrites EVERY dependent (SP-tgvpbm_SL-3)", 
     "Platform",
     "rebrand",
   )) as {
+    tep: string;
+    fromTep: string;
     rewritten: string[];
   };
 
-  // moved under the project; gone from the origin repo
+  // RE-ID'd into the project's scope: the empty project's next number is 1, so
+  // TEP-reb becomes TEP-1 there. (The number is unique only within a board+org
+  // scope — preserving "reb"/a colliding number would clash with the project.)
+  assert.equal(res.tep, "TEP-1");
+  assert.equal(res.fromTep, "TEP-reb");
+  // moved as the nested dir under the project; gone from the origin repo, and the
+  // moved tep.md's own frontmatter id is re-stamped to the new number.
   assert.ok(
     fs.existsSync(
-      path.join(root, "Platform", "projects", "rebrand", "teps", "TEP-reb.md"),
+      path.join(
+        root,
+        "Platform",
+        "projects",
+        "rebrand",
+        "teps",
+        "TEP-1",
+        "tep.md",
+      ),
     ),
   );
   assert.ok(
     !fs.existsSync(
-      path.join(root, "Platform", "core", "thinkube", "teps", "TEP-reb.md"),
+      path.join(root, "Platform", "core", "thinkube", "teps", "TEP-reb"),
     ),
   );
-  // EVERY dependent rewritten to the qualified umbrella ref; none dangling
-  assert.deepEqual(res.rewritten.sort(), ["SP-a", "SP-b"]);
-  const want = "Platform/projects/rebrand:TEP-reb";
+  const moved = await new ThinkubeStore(
+    path.join(root, "Platform", "projects", "rebrand"),
+    path.join(root, "Platform", "projects", "rebrand"),
+  ).getFile(path.join("teps", "TEP-1", "tep.md"));
+  assert.equal(moved?.frontmatter?.id, "TEP-1");
+  // EVERY dependent rewritten to the qualified umbrella ref at the NEW id; none
+  // dangling. The rewritten handles are the dependents' tep-qualified spec handles.
+  assert.deepEqual(res.rewritten.sort(), ["TEP-1_SP-1", "TEP-2_SP-1"]);
+  const want = "Platform/projects/rebrand:TEP-1";
   assert.equal(
-    (await origin.getFile(origin.pathForSpecDoc("a")))?.frontmatter?.implements,
+    (await origin.getFile(origin.pathForSpecDoc("1/1")))?.frontmatter
+      ?.implements,
     want,
   );
   assert.equal(
-    (await control.getFile(control.pathForSpecDoc("b")))?.frontmatter
+    (await control.getFile(control.pathForSpecDoc("2/1")))?.frontmatter
       ?.implements,
     want,
   );
   // non-dependent untouched
   assert.equal(
-    (await control.getFile(control.pathForSpecDoc("c")))?.frontmatter
+    (await control.getFile(control.pathForSpecDoc("3/1")))?.frontmatter
       ?.implements,
     "TEP-other",
+  );
+});
+
+test("promote_tep re-ids to avoid a collision with the project's existing TEP", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tk-promote-clash-"));
+  fs.mkdirSync(path.join(root, "Platform", "projects", "rebrand"), {
+    recursive: true,
+  });
+  fs.writeFileSync(
+    path.join(root, "Platform", "projects", "rebrand", "project.yaml"),
+    "name: Rebrand\n",
+  );
+  // The project ALREADY owns a TEP-1 (nested). The incoming TEP also numbered 1
+  // on its origin board — the classic collision the sequential scheme creates.
+  fs.mkdirSync(
+    path.join(root, "Platform", "projects", "rebrand", "teps", "TEP-1"),
+    { recursive: true },
+  );
+  fs.writeFileSync(
+    path.join(
+      root,
+      "Platform",
+      "projects",
+      "rebrand",
+      "teps",
+      "TEP-1",
+      "tep.md",
+    ),
+    "---\nkind: tep\nid: TEP-1\n---\n# the project's own TEP-1\n",
+  );
+
+  const origin = new ThinkubeStore(
+    (() => {
+      const bd = path.join(root, "Platform", "core", "thinkube");
+      fs.mkdirSync(bd, { recursive: true });
+      return bd;
+    })(),
+    path.join(root, "Platform", "core", "thinkube"),
+  );
+  await origin.writeFile(
+    origin.pathForTep("1"),
+    { kind: "tep", id: "TEP-1" },
+    "# incoming\n",
+  );
+
+  const ctx = {
+    env: { boardRoot: root },
+    boards: {
+      list: () => [{ id: "O", worktree: false }],
+      resolve: () => origin,
+    },
+  };
+  const res = (await promoteTep(ctx as never, "1", "Platform", "rebrand")) as {
+    tep: string;
+  };
+
+  // Re-allocated to TEP-2 (max existing + 1) — NOT overwriting the project's TEP-1.
+  assert.equal(res.tep, "TEP-2");
+  assert.equal(
+    (
+      await new ThinkubeStore(
+        path.join(root, "Platform", "projects", "rebrand"),
+        path.join(root, "Platform", "projects", "rebrand"),
+      ).getFile(path.join("teps", "TEP-1", "tep.md"))
+    )?.body.trim(),
+    "# the project's own TEP-1", // untouched
+  );
+  assert.ok(
+    fs.existsSync(
+      path.join(
+        root,
+        "Platform",
+        "projects",
+        "rebrand",
+        "teps",
+        "TEP-2",
+        "tep.md",
+      ),
+    ),
   );
 });
 

@@ -1017,9 +1017,9 @@ export class OrchestratorService {
 
   /** Default advance: stamp the slice `status: done` in its file. */
   private async defaultAdvance(handle: string): Promise<void> {
-    const m = /^SP-(.+)_SL-(\d+)$/.exec(handle);
+    const m = /^TEP-(\d+)_SP-(\d+)_SL-(\d+)$/.exec(handle);
     if (!m) return;
-    const rel = this.deps.store.pathForSlice(m[1], Number(m[2]));
+    const rel = this.deps.store.pathForSlice(`${m[1]}/${m[2]}`, Number(m[3]));
     const parsed = await this.deps.store.getFile(rel);
     if (!parsed?.frontmatter) return;
     await this.deps.store.writeFile(
@@ -1044,9 +1044,9 @@ export class OrchestratorService {
     handle: string,
     diagnosis: string,
   ): Promise<void> {
-    const m = /^SP-(.+)_SL-(\d+)$/.exec(handle);
+    const m = /^TEP-(\d+)_SP-(\d+)_SL-(\d+)$/.exec(handle);
     if (!m) return;
-    const rel = this.deps.store.pathForSlice(m[1], Number(m[2]));
+    const rel = this.deps.store.pathForSlice(`${m[1]}/${m[2]}`, Number(m[3]));
     const parsed = await this.deps.store.getFile(rel);
     if (!parsed?.frontmatter) return;
     const note = `\n\n## ⚑ Requires attention\n\n${diagnosis}\n`;
@@ -1081,9 +1081,9 @@ export class OrchestratorService {
     sessionId?: string,
     unitId?: string,
   ): Promise<void> {
-    const m = /^SP-(.+)_SL-(\d+)$/.exec(handle);
+    const m = /^TEP-(\d+)_SP-(\d+)_SL-(\d+)$/.exec(handle);
     if (!m) return;
-    const rel = this.deps.store.pathForSlice(m[1], Number(m[2]));
+    const rel = this.deps.store.pathForSlice(`${m[1]}/${m[2]}`, Number(m[3]));
     const parsed = await this.deps.store.getFile(rel);
     if (!parsed?.frontmatter) return;
     const note = `\n\n## ❓ Needs input\n\n${question}\n`;
@@ -1124,9 +1124,9 @@ export class OrchestratorService {
    *  later run re-attempts it. The work itself stays in the worktree — a re-run RESUMES (commits)
    *  rather than re-authors only when the run records `units_landed` without a commit. */
   private async defaultRollbackToReady(handle: string): Promise<void> {
-    const m = /^SP-(.+)_SL-(\d+)$/.exec(handle);
+    const m = /^TEP-(\d+)_SP-(\d+)_SL-(\d+)$/.exec(handle);
     if (!m) return;
-    const rel = this.deps.store.pathForSlice(m[1], Number(m[2]));
+    const rel = this.deps.store.pathForSlice(`${m[1]}/${m[2]}`, Number(m[3]));
     const parsed = await this.deps.store.getFile(rel);
     if (!parsed?.frontmatter) return;
     await this.deps.store.writeFile(
@@ -1172,7 +1172,12 @@ export class OrchestratorService {
         commit.on("close", () => {
           const push = spawn(
             "git",
-            ["push", "-u", "origin", `spec/SP-${specNumber}`],
+            [
+              "push",
+              "-u",
+              "origin",
+              `spec/TEP-${specNumber.replace("/", "_SP-")}`,
+            ],
             { cwd, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } },
           );
           push.on("error", () => resolve());

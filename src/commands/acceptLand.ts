@@ -11,9 +11,14 @@
  */
 import * as vscode from "vscode";
 
+import { execFile } from "child_process";
+import { promisify } from "util";
+
 import { mergeSpecPr, SpecMergeResult } from "../github/specMerge";
 import { acceptOrder } from "../services/acceptOrder";
 import { WorktreeService } from "../services/WorktreeService";
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Retire the Spec's worktree after its merge succeeded and return a short note for
@@ -39,6 +44,39 @@ export async function retireWorktreeNote(
         : "";
   } catch (e) {
     return ` (Worktree retire failed: ${(e as Error).message})`;
+  }
+}
+
+/**
+ * Fast-forward the **canonical** repo's local `main` to `origin/main` after a Spec's
+ * PR has merged. The merge half (`mergeSpecPr`) lands the PR on the REMOTE via
+ * `gh pr merge`, which leaves the local checkout behind origin — so without this every
+ * post-accept local action (running a delivered script, rebuilding, continuing work)
+ * silently operates on stale code (the gap that stranded the org-id migration script).
+ * Resolves the canonical repo (a Spec runs in a worktree on `spec/SP-…`, never on
+ * `main`) and fast-forwards there. **Best-effort**: a dirty / non-`main` canonical tree
+ * is folded into the returned note, never thrown — the Spec already landed, so a sync
+ * hiccup must not fail a completed accept.
+ */
+export async function fastForwardBaseNote(
+  worktrees: WorktreeService,
+  repoPath: string,
+): Promise<string> {
+  try {
+    const canonical = (await worktrees.canonicalRepo(repoPath)) ?? repoPath;
+    await execFileAsync("git", ["fetch", "origin", "main", "--quiet"], {
+      cwd: canonical,
+      timeout: 60000,
+    });
+    await execFileAsync("git", ["merge", "--ff-only", "origin/main"], {
+      cwd: canonical,
+      timeout: 60000,
+    });
+    return " Local main synced.";
+  } catch (e) {
+    const err = e as { stderr?: string; message?: string };
+    const detail = (err.stderr || err.message || "").trim();
+    return ` (Local main not synced — ${detail || "unknown"}; pull manually.)`;
   }
 }
 
@@ -102,5 +140,13 @@ export async function acceptLandSpec(
       ? ` (Worktree retire failed: ${result.retireError.message})`
       : "");
 
-  return { merge: result.merge, retireNote };
+  // After the PR merged on the remote, fast-forward the canonical local `main` so the
+  // accepted work is actually present locally — closing the stale-checkout gap that
+  // strands delivered scripts and stale builds. Only when something landed; best-effort,
+  // appended to the toast note.
+  const syncNote = result.merge.merged
+    ? await fastForwardBaseNote(args.worktrees, args.repoPath)
+    : "";
+
+  return { merge: result.merge, retireNote: retireNote + syncNote };
 }

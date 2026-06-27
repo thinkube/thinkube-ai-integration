@@ -42,8 +42,10 @@ const ctxFor = (store: ThinkubeStore) => ({
   promoteLocator: (() => undefined) as never,
 });
 
+// The spec id is the composite `<tep>/<spec>` in the org-scoped tree layout.
+const SPEC = "1/1";
 const writeSpec = (store: ThinkubeStore, body: string) =>
-  dispatchTool("write_spec", { spec: "demo", body }, ctxFor(store), () => {});
+  dispatchTool("write_spec", { spec: SPEC, body }, ctxFor(store), () => {});
 
 /** A spec body containing exactly the given canonical sections, each as a `##` heading. */
 function bodyWith(sections: ReadonlyArray<string>): string {
@@ -74,7 +76,7 @@ for (const missing of CANONICAL_SECTIONS) {
     );
 
     // ...and the refusal is total: nothing was persisted.
-    const doc = await store.getFile(store.pathForSpecDoc("demo"));
+    const doc = await store.getFile(store.pathForSpecDoc(SPEC));
     assert.equal(
       doc,
       undefined,
@@ -93,7 +95,7 @@ test("write_spec accepts a body with all four canonical sections", async () => {
   assert.equal(res.ok, true, "a complete body must be accepted");
 
   // ...and it actually landed on disk.
-  const doc = await store.getFile(store.pathForSpecDoc("demo"));
+  const doc = await store.getFile(store.pathForSpecDoc(SPEC));
   assert.ok(doc, "the accepted spec doc must be persisted");
 });
 
@@ -139,8 +141,8 @@ async function seededRunnableStore(opts: {
   // `ac_verifications` entry with a `run`) — so the only thing left to decide is
   // whether that declared check is actually RUNNABLE.
   await store.writeFile(
-    store.pathForSpecDoc("demo"),
-    { implements: "TEP-x", ac_verifications: { "1": { run: opts.run } } },
+    store.pathForSpecDoc(SPEC),
+    { implements: "TEP-1", ac_verifications: { "1": { run: opts.run } } },
     "# Demo Spec\n\n## Acceptance Criteria\n\n- [ ] something\n",
   );
   return store;
@@ -151,7 +153,7 @@ async function seededRunnableStore(opts: {
 const createSliceVia = (store: ThinkubeStore, args: Record<string, unknown>) =>
   dispatchTool(
     "create_slice",
-    { spec: "demo", ...args },
+    { spec: SPEC, ...args },
     ctxFor(store),
     () => {},
   );
@@ -189,7 +191,7 @@ test("create_slice refuses a slice whose AC verification target is NOT in tsconf
 
   // The refusal is total: a slice that fails the runnable gate never lands.
   assert.deepEqual(
-    await store.listSlices("demo"),
+    await store.listSlices(SPEC),
     [],
     "a slice refused at the runnable gate must not be persisted",
   );
@@ -210,11 +212,11 @@ test("create_slice accepts a slice whose AC verification target IS registered in
 
   assert.match(
     res.slice,
-    /^SP-demo_SL-\d+$/,
+    /^TEP-1_SP-1_SL-\d+$/,
     "a registered/compilable verification target must clear the runnable gate",
   );
   assert.equal(
-    (await store.listSlices("demo")).length,
+    (await store.listSlices(SPEC)).length,
     1,
     "the accepted slice must be persisted on the board",
   );
@@ -281,7 +283,7 @@ const writeSpecCertified = (
   dispatchTool(
     "write_spec",
     {
-      spec: "demo",
+      spec: SPEC,
       body,
       ...(acVerifications ? { ac_verifications: acVerifications } : {}),
     },
@@ -295,7 +297,7 @@ const writeSpecCertified = (
 const patchSection = (store: ThinkubeStore, section: string, content: string) =>
   dispatchTool(
     "patch_spec_section",
-    { spec: "demo", section, content },
+    { spec: SPEC, section, content },
     ctxFor(store),
     () => {},
   );
@@ -324,7 +326,7 @@ test("create_slice is BLOCKED after the ACs are edited via write_spec (certifica
   })) as { slice: string };
   assert.match(
     first.slice,
-    /^SP-demo_SL-\d+$/,
+    /^TEP-1_SP-1_SL-\d+$/,
     "the baseline create_slice must clear the gate while certification is fresh",
   );
 
@@ -358,7 +360,7 @@ test("create_slice is BLOCKED after the ACs are edited via write_spec (certifica
   // The block is total: only the baseline slice exists; the stale-gated one
   // never landed.
   assert.equal(
-    (await store.listSlices("demo")).length,
+    (await store.listSlices(SPEC)).length,
     1,
     "a slice refused at the re-audit gate must not be persisted",
   );
@@ -401,7 +403,7 @@ test("create_slice is BLOCKED after the ACs are edited via patch_spec_section (c
     },
   );
   assert.equal(
-    (await store.listSlices("demo")).length,
+    (await store.listSlices(SPEC)).length,
     1,
     "a slice refused at the re-audit gate must not be persisted",
   );
@@ -436,11 +438,11 @@ test("create_slice still clears the gate after a NON-AC section is edited (certi
   })) as { slice: string };
   assert.match(
     second.slice,
-    /^SP-demo_SL-\d+$/,
+    /^TEP-1_SP-1_SL-\d+$/,
     "editing a non-AC section must not invalidate the AC certification",
   );
   assert.equal(
-    (await store.listSlices("demo")).length,
+    (await store.listSlices(SPEC)).length,
     2,
     "both slices must persist — the second was never gated stale",
   );

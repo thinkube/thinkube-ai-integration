@@ -20,7 +20,7 @@ import * as path from "node:path";
 import { ThinkubeStore } from "../store/ThinkubeStore";
 import { dispatchTool } from "./kanbanMcpServer";
 
-async function seededStore(spec = "demo"): Promise<ThinkubeStore> {
+async function seededStore(spec = "1/1"): Promise<ThinkubeStore> {
   const board = fs.mkdtempSync(path.join(os.tmpdir(), "tk-wu-board-"));
   const store = new ThinkubeStore(board, board);
   await store.writeFile(
@@ -42,7 +42,7 @@ test("create_slice through the dispatcher persists work_units", async () => {
   const res = (await dispatchTool(
     "create_slice",
     {
-      spec: "demo",
+      spec: "1/1",
       title: "A multi-file component",
       body: "detail",
       work_units: [
@@ -54,11 +54,12 @@ test("create_slice through the dispatcher persists work_units", async () => {
     () => {},
   )) as { slice: string };
 
-  const m = /SP-([^_]+)_SL-(\d+)/.exec(res.slice)!;
-  const parsed = await store.getFile(store.pathForSlice(m[1], Number(m[2])));
+  const m = /TEP-([^_]+)_SP-([^_]+)_SL-(\d+)/.exec(res.slice)!;
+  const parsed = await store.getFile(
+    store.pathForSlice(`${m[1]}/${m[2]}`, Number(m[3])),
+  );
   const wu = parsed?.frontmatter?.work_units as
-    | { footprint: string[]; execution: string; note?: string }[]
-    | undefined;
+    { footprint: string[]; execution: string; note?: string }[] | undefined;
 
   assert.equal(
     wu?.length,

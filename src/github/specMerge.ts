@@ -37,7 +37,10 @@ const BASE_BRANCH = "main";
 
 /** Branch convention for a Spec (TEP-0010): one branch per Spec. */
 export function specBranch(spec: string): string {
-  return `spec/SP-${spec}`;
+  // Org-scoped tree: a composite spec id `${tep}/${spec}` → the tep-qualified
+  // branch `spec/TEP-n_SP-m`; a legacy bare id keeps `spec/SP-{id}`.
+  const [tep, sp] = spec.split("/");
+  return sp ? `spec/TEP-${tep}_SP-${sp}` : `spec/SP-${spec}`;
 }
 
 export type SpecMergeResult =

@@ -66,29 +66,29 @@ test("tolerates a trailing record with no terminating blank line", () => {
   assert.equal(entries[0].branch, "main");
 });
 
-test("findSpecWorktree matches the spec/SP-{n} branch, or returns undefined", () => {
+test("findSpecWorktree matches the spec/TEP-n_SP-m branch, or returns undefined", () => {
   const entries = parseWorktreeList(
     [
       "worktree /home/u/repo",
       "branch refs/heads/main",
       "",
-      "worktree /home/u/repo-worktrees/SP-5",
-      "branch refs/heads/spec/SP-5",
+      "worktree /home/u/repo-worktrees/TEP-1_SP-5",
+      "branch refs/heads/spec/TEP-1_SP-5",
       "",
-      "worktree /home/u/repo-worktrees/SP-12",
-      "branch refs/heads/spec/SP-12",
+      "worktree /home/u/repo-worktrees/TEP-1_SP-12",
+      "branch refs/heads/spec/TEP-1_SP-12",
       "",
     ].join("\n"),
   );
   assert.equal(
-    findSpecWorktree(entries, "5")?.path,
-    "/home/u/repo-worktrees/SP-5",
+    findSpecWorktree(entries, "1/5")?.path,
+    "/home/u/repo-worktrees/TEP-1_SP-5",
   );
   // No false prefix match: SP-1 must not match SP-12.
-  assert.equal(findSpecWorktree(entries, "1"), undefined);
+  assert.equal(findSpecWorktree(entries, "1/1"), undefined);
   assert.equal(
-    findSpecWorktree(entries, "12")?.path,
-    "/home/u/repo-worktrees/SP-12",
+    findSpecWorktree(entries, "1/12")?.path,
+    "/home/u/repo-worktrees/TEP-1_SP-12",
   );
 });
 
@@ -121,29 +121,29 @@ test("planWorktree REUSES an existing worktree for the Spec (no re-add → no th
       "worktree /home/u/repo",
       "branch refs/heads/main",
       "",
-      "worktree /home/u/repo-worktrees/SP-5",
-      "branch refs/heads/spec/SP-5",
+      "worktree /home/u/repo-worktrees/TEP-1_SP-5",
+      "branch refs/heads/spec/TEP-1_SP-5",
       "",
     ].join("\n"),
   );
-  const plan = planWorktree(existing, "/home/u/repo", "5");
+  const plan = planWorktree(existing, "/home/u/repo", "1/5");
   assert.equal(plan.reuse, true);
-  assert.equal(plan.path, "/home/u/repo-worktrees/SP-5");
+  assert.equal(plan.path, "/home/u/repo-worktrees/TEP-1_SP-5");
 });
 
 test("planWorktree computes a fresh sibling path when no worktree exists yet", () => {
   const existing = parseWorktreeList(
     ["worktree /home/u/repo", "branch refs/heads/main", ""].join("\n"),
   );
-  const plan = planWorktree(existing, "/home/u/repo", "7");
+  const plan = planWorktree(existing, "/home/u/repo", "1/7");
   assert.equal(plan.reuse, false);
-  assert.equal(plan.path, "/home/u/repo-worktrees/SP-7");
+  assert.equal(plan.path, "/home/u/repo-worktrees/TEP-1_SP-7");
 });
 
 test("planWorktree honours an explicit baseDir for a fresh worktree", () => {
-  const plan = planWorktree([], "/home/u/repo", "9", "/tmp/wts");
+  const plan = planWorktree([], "/home/u/repo", "1/9", "/tmp/wts");
   assert.equal(plan.reuse, false);
-  assert.equal(plan.path, "/tmp/wts/SP-9");
+  assert.equal(plan.path, "/tmp/wts/TEP-1_SP-9");
 });
 
 test("mcpWithBoardRoot injects THINKUBE_BOARD_ROOT into the kanban server env", () => {

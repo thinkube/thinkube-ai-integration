@@ -35,26 +35,48 @@ function str(v: unknown, fallback: string): string {
   return typeof v === "string" && v.trim() ? v.trim() : fallback;
 }
 
-/** The umbrella TEP ids under a project's `teps/` (SP-tgvpbm) — the TEPs a
+/** The board-relative `teps` dir of a board namespace, org-scoped-tree-aware
+ *  (TEP-th8lzj): `<org>/teps` when an `<org>/` child holds a `teps/`, else the
+ *  bare `teps`. Mirrors `ThinkubeStore.orgSeg`/`tepsRoot` for the pure (no-store)
+ *  Project readers. */
+function tepsRootDir(boardDir: string): string {
+  try {
+    for (const e of fs.readdirSync(boardDir, { withFileTypes: true })) {
+      if (!e.isDirectory() || e.name.startsWith(".") || SKIP.has(e.name))
+        continue;
+      if (fs.existsSync(path.join(boardDir, e.name, "teps")))
+        return path.join(boardDir, e.name, "teps");
+    }
+  } catch {
+    /* board dir missing → fall through to the bare-teps default */
+  }
+  return path.join(boardDir, "teps");
+}
+
+/** The umbrella TEP ids under a project's teps tree (SP-tgvpbm) — the TEPs a
  *  project owns. A project is code-less, so this (plus `project.yaml`) is its
- *  only content. Returns [] when the project / its `teps/` is absent. */
+ *  only content. In the org-scoped tree a TEP is the directory `TEP-{id}/`
+ *  (holding `tep.md` + its `SP-m` specs), under `<org>/teps` or bare `teps`.
+ *  Returns [] when the project / its teps dir is absent. */
 export function projectTeps(
   boardRoot: string,
   product: string,
   projectId: string,
 ): string[] {
-  let names: string[];
+  const tepsDir = tepsRootDir(
+    path.join(boardRoot, product, "projects", projectId),
+  );
+  let entries: fs.Dirent[];
   try {
-    names = fs.readdirSync(
-      path.join(boardRoot, product, "projects", projectId, "teps"),
-    );
+    entries = fs.readdirSync(tepsDir, { withFileTypes: true });
   } catch {
     return [];
   }
   const ids: string[] = [];
-  for (const n of names) {
-    const mm = /^TEP-([A-Za-z0-9]+)\.md$/.exec(n);
-    if (mm) ids.push(mm[1]);
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const mm = /^TEP-([A-Za-z0-9]+)$/.exec(e.name);
+    if (mm && mm[1] !== "TEMPLATE") ids.push(mm[1]);
   }
   return ids.sort();
 }
@@ -68,7 +90,8 @@ function readProject(boardRoot: string, product: string, id: string): Project {
         "utf8",
       ),
     );
-    if (parsed && typeof parsed === "object") m = parsed as Record<string, unknown>;
+    if (parsed && typeof parsed === "object")
+      m = parsed as Record<string, unknown>;
   } catch {
     // missing or malformed manifest → all defaults
   }

@@ -339,12 +339,17 @@ export function activate(context: vscode.ExtensionContext) {
       }
       try {
         const store = new ThinkubeStore(repo.path, repo.boardDir);
-        const n = await store.nextSpecNumber();
-        // If a TEP is drilled into, pre-assign the new Spec to it (implements:).
+        // A Spec lives under a TEP in the org-scoped tree, so a parent TEP is
+        // required to allocate its per-TEP `SP-m` number.
         const tep = specsProvider.selectedTep;
-        const prefill = tep
-          ? `/spec-prepare ${n} (implements TEP-${tep})`
-          : `/spec-prepare ${n} `;
+        if (!tep) {
+          vscode.window.showInformationMessage(
+            "Open a TEP first — a Spec is created under its TEP.",
+          );
+          return;
+        }
+        const m = await store.nextSpecNumber(tep);
+        const prefill = `/spec-prepare ${tep}/${m} (implements TEP-${tep})`;
         await launcher.openHere(vscode.Uri.file(repo.path), prefill);
       } catch (err) {
         vscode.window.showErrorMessage(
