@@ -17,14 +17,19 @@ import { listProducts } from "./kanbanMcpServer";
 
 function boardRootFixture(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tk-prodtool-"));
-  fs.mkdirSync(path.join(root, "Platform", "core", "thinkube", "specs"), {
-    recursive: true,
-  });
+  // Org-scoped tree: the board dir holds its methodology under an `<org>/`
+  // segment, so the `teps` marker sits one level below the board (TEP-th8lzj).
+  fs.mkdirSync(
+    path.join(root, "Platform", "core", "thinkube", "cmxela", "teps"),
+    {
+      recursive: true,
+    },
+  );
   fs.writeFileSync(
     path.join(root, "Platform", "product.yaml"),
     "name: Thinkube Platform\n",
   );
-  fs.mkdirSync(path.join(root, "Apps", "payments", "specs"), {
+  fs.mkdirSync(path.join(root, "Apps", "payments", "cmxela", "teps"), {
     recursive: true,
   });
   return root;

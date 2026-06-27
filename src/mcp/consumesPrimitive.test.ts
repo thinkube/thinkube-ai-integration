@@ -37,7 +37,7 @@ import {
 import { buildUnitDag, buildWorkerPrompt } from "../services/orchestratorCore";
 
 // ── tmp-store scaffolding (mirrors createSliceContractFirst.test.ts) ─────────
-async function seededStore(spec = "demo"): Promise<ThinkubeStore> {
+async function seededStore(spec = "1/1"): Promise<ThinkubeStore> {
   const board = fs.mkdtempSync(path.join(os.tmpdir(), "tk-consumes-board-"));
   const store = new ThinkubeStore(board, board);
   await store.writeFile(
@@ -56,7 +56,7 @@ const ctxFor = (store: ThinkubeStore) => ({
 const create = (store: ThinkubeStore, args: Record<string, unknown>) =>
   dispatchTool(
     "create_slice",
-    { spec: "demo", ...args },
+    { spec: "1/1", ...args },
     ctxFor(store),
     () => {},
   );
@@ -69,7 +69,7 @@ test("consumes round-trip — serialize + parseFrontmatter returns it on the typ
   const fm: Frontmatter = {
     kind: "slice",
     uid: "demo-consumes",
-    parent: "SP-demo",
+    parent: "SP-1",
     status: "ready",
     work_units: [
       {
@@ -160,7 +160,7 @@ test("create_slice refuses a dangling consumes and accepts a real-sibling consum
   })) as { slice: string };
   assert.match(
     res.slice,
-    /^SP-demo_SL-\d+$/,
+    /^TEP-1_SP-1_SL-\d+$/,
     "a consumes naming a real sibling footprint is accepted",
   );
 });
@@ -172,7 +172,7 @@ test("buildWorkerPrompt surfaces the consumed file as a contract dependency to i
   // hand-rolled one.
   const dag = buildUnitDag([
     {
-      handle: "SP-demo_SL-1",
+      handle: "TEP-1_SP-1_SL-1",
       status: "ready",
       dependsOn: [],
       files: [],
@@ -195,7 +195,7 @@ test("buildWorkerPrompt surfaces the consumed file as a contract dependency to i
   const consumer = dag.find((u) => u.footprint.includes("src/flow.test.ts"));
   assert.ok(consumer, "the consuming unit is in the DAG");
 
-  const prompt = buildWorkerPrompt(consumer!, "demo");
+  const prompt = buildWorkerPrompt(consumer!, "1/1");
 
   // The consumed file appears, framed as a contract dependency to import.
   assert.match(

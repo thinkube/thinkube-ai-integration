@@ -13,20 +13,29 @@ import { discoverProducts } from "./products";
 /** Build a tmp board-root fixture and return its path. */
 function fixture(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tk-products-"));
+  // A board namespaces its methodology under an `<org>/` segment (org-scoped
+  // tree, TEP-th8lzj): the marker (`teps`) sits one level below the board dir,
+  // so the board is the PARENT of the org segment.
   const boardShaped = (rel: string) =>
-    fs.mkdirSync(path.join(root, rel, "specs"), { recursive: true });
+    fs.mkdirSync(path.join(root, rel, "cmxela", "teps"), { recursive: true });
 
   // Product A: two members nested 2 deep + a product.yaml display name.
   boardShaped("ProdA/core/thinkube");
   boardShaped("ProdA/docs/site");
-  fs.writeFileSync(path.join(root, "ProdA", "product.yaml"), "name: Product A\n");
+  fs.writeFileSync(
+    path.join(root, "ProdA", "product.yaml"),
+    "name: Product A\n",
+  );
 
   // Product B: one member 1 deep, no manifest.
   boardShaped("ProdB/app");
 
   // Malformed manifest → still a Product, name falls back to the dir id.
   boardShaped("Mal/x");
-  fs.writeFileSync(path.join(root, "Mal", "product.yaml"), "name: [unterminated\n");
+  fs.writeFileSync(
+    path.join(root, "Mal", "product.yaml"),
+    "name: [unterminated\n",
+  );
 
   // Not a product: a top dir with no board-shaped descendant.
   fs.mkdirSync(path.join(root, "Empty", "notaboard"), { recursive: true });

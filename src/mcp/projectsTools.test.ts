@@ -42,7 +42,11 @@ function boardRootWithProjects(): string {
   return root;
 }
 
-/** A tmp board store with one Spec (given `implements`) that has acceptance criteria. */
+/**
+ * A tmp board store with one Spec (given `implements`) that has acceptance
+ * criteria. `spec` is the org-scoped composite `<tep>/<spec>` (numeric, so the
+ * slice handle/path regexes resolve).
+ */
 async function seededStore(
   spec: string,
   implementsRef: string,
@@ -72,12 +76,14 @@ test("list_projects returns every product's projects, sorted", () => {
 
 test("get_project members = specs implementing the umbrella TEP + their slices (not tags)", async () => {
   const root = boardRootWithProjects();
-  // member: implements the project's umbrella TEP via the qualified ref.
-  const a = await seededStore("aaa", "Platform/projects/rebrand:TEP-reb");
+  // member: implements the project's umbrella TEP via the qualified ref. Its
+  // own org-tree home is TEP-1/SP-1 (where the file sits), independent of the
+  // logical `implements:` link to the umbrella TEP-reb.
+  const a = await seededStore("1/1", "Platform/projects/rebrand:TEP-reb");
   // non-member: implements something else.
-  const b = await seededStore("bbb", "Apps/projects/other:TEP-zzz");
+  const b = await seededStore("2/1", "Apps/projects/other:TEP-zzz");
   const sl = (await createSlice(a, {
-    spec: "aaa",
+    spec: "1/1",
     title: "a member slice",
     body: "d",
   })) as { slice: string };
@@ -98,9 +104,10 @@ test("get_project members = specs implementing the umbrella TEP + their slices (
   };
   assert.deepEqual(res.teps, ["TEP-reb"]);
   const handles = res.members.map((m) => m.handle).sort();
-  // the implementing spec + its (inherited) slice; the non-member excluded
-  assert.deepEqual(handles, ["SP-aaa", sl.slice].sort());
-  assert.ok(!handles.includes("SP-bbb"));
+  // the implementing spec (tep-qualified handle) + its (inherited) slice; the
+  // non-member excluded.
+  assert.deepEqual(handles, ["TEP-1_SP-1", sl.slice].sort());
+  assert.ok(!handles.includes("TEP-2_SP-1"));
 });
 
 test("promote_tep moves the TEP and rewrites EVERY dependent (SP-tgvpbm_SL-3)", async () => {
@@ -122,25 +129,37 @@ test("promote_tep moves the TEP and rewrites EVERY dependent (SP-tgvpbm_SL-3)", 
   const control = mk("Platform/core/control");
   const ac = "## Acceptance Criteria\n\n- [ ] x\n";
 
-  // TEP lives in origin; SP-a implements it bare; SP-b (other repo) implements it
-  // qualified to origin; SP-c implements something else (non-dependent).
+  // TEP-reb lives in the origin repo board. Two on-disk forms are seeded for the
+  // two code paths promote_tep exercises: (1) the org-tree nested `teps/TEP-reb/
+  // tep.md` (via the store) is what `listTeps()` enumerates to LOCATE the origin
+  // board, and (2) the flat `teps/TEP-reb.md` is what the move (renameSync) lifts
+  // into the project's flat `teps/` (the project copy is a flat file —
+  // discoverProjects/projectTeps read `<product>/projects/<id>/teps/TEP-<id>.md`).
   await origin.writeFile(
     origin.pathForTep("reb"),
     { kind: "tep", id: "TEP-reb" },
     "# Reb\n",
   );
+  fs.writeFileSync(
+    path.join(origin.thinkubeDir, "teps", "TEP-reb.md"),
+    "---\nkind: tep\nid: TEP-reb\n---\n# Reb\n",
+  );
+  // SP-a (origin) implements TEP-reb bare; SP-b (other repo) implements it
+  // qualified to origin; SP-c implements something else (non-dependent). The spec
+  // ids are org-scoped composites `<tep>/<spec>` (numeric) — distinct per board so
+  // their tep-qualified handles don't collide.
   await origin.writeFile(
-    origin.pathForSpecDoc("a"),
+    origin.pathForSpecDoc("1/1"),
     { implements: "TEP-reb" },
     `# A\n\n${ac}`,
   );
   await control.writeFile(
-    control.pathForSpecDoc("b"),
+    control.pathForSpecDoc("2/1"),
     { implements: "Platform/core/thinkube:TEP-reb" },
     `# B\n\n${ac}`,
   );
   await control.writeFile(
-    control.pathForSpecDoc("c"),
+    control.pathForSpecDoc("3/1"),
     { implements: "TEP-other" },
     `# C\n\n${ac}`,
   );
@@ -175,21 +194,23 @@ test("promote_tep moves the TEP and rewrites EVERY dependent (SP-tgvpbm_SL-3)", 
       path.join(root, "Platform", "core", "thinkube", "teps", "TEP-reb.md"),
     ),
   );
-  // EVERY dependent rewritten to the qualified umbrella ref; none dangling
-  assert.deepEqual(res.rewritten.sort(), ["SP-a", "SP-b"]);
+  // EVERY dependent rewritten to the qualified umbrella ref; none dangling. The
+  // rewritten handles are the new tep-qualified `TEP-<tep>_SP-<spec>` form.
+  assert.deepEqual(res.rewritten.sort(), ["TEP-1_SP-1", "TEP-2_SP-1"]);
   const want = "Platform/projects/rebrand:TEP-reb";
   assert.equal(
-    (await origin.getFile(origin.pathForSpecDoc("a")))?.frontmatter?.implements,
+    (await origin.getFile(origin.pathForSpecDoc("1/1")))?.frontmatter
+      ?.implements,
     want,
   );
   assert.equal(
-    (await control.getFile(control.pathForSpecDoc("b")))?.frontmatter
+    (await control.getFile(control.pathForSpecDoc("2/1")))?.frontmatter
       ?.implements,
     want,
   );
   // non-dependent untouched
   assert.equal(
-    (await control.getFile(control.pathForSpecDoc("c")))?.frontmatter
+    (await control.getFile(control.pathForSpecDoc("3/1")))?.frontmatter
       ?.implements,
     "TEP-other",
   );

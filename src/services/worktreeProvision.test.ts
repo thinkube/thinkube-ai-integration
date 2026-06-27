@@ -78,7 +78,7 @@ test("create() runs the repo's declared recipe once inside the fresh worktree", 
   const baseDir = `${repo}-wt`; // unique per run (repo is a fresh mkdtemp)
 
   const svc = new WorktreeService();
-  const wt = await svc.create(repo, "prov1", baseDir);
+  const wt = await svc.create(repo, "1/1", baseDir);
 
   // The marker proves the command ran, and ran *inside the worktree*.
   assert.ok(
@@ -98,7 +98,7 @@ test("no declaration → provisions nothing, no Node/node_modules assumption", a
   const baseDir = `${repo}-wt`; // unique per run (repo is a fresh mkdtemp)
 
   const svc = new WorktreeService();
-  const wt = await svc.create(repo, "prov2", baseDir);
+  const wt = await svc.create(repo, "1/2", baseDir);
 
   // The worktree exists, but nothing was provisioned…
   assert.ok(await exists(wt), "worktree should still be created");

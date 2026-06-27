@@ -19,10 +19,11 @@
  *    SAME `sliceFilesResolveInRepo` rejection `create_slice` gives — proving the
  *    re-cut routes through the shared guard, not a copy.
  *
- *  - `mint` (SP-th4wqd_SL-2): `write_spec` with `spec` OMITTED mints a
- *    base36-epoch id via the allocator and returns it (parity with `write_tep`);
- *    the id is monotonic across two mints (a constant stub fails the monotonic
- *    assertion), and the document lands at `specs/SP-{id}/spec.md`.
+ *  - `mint` (SP-th4wqd_SL-2): `write_spec` with `spec` OMITTED but
+ *    `implements: TEP-<n>` supplied allocates the NEXT sequential `SP-m` UNDER
+ *    that TEP and returns the composite id `<tep>/<m>`; two omitted mints under
+ *    the same TEP allocate SP-1 then SP-2 (sequential, monotonic — a constant
+ *    stub fails), and the document lands at `teps/TEP-<n>/SP-<m>/spec.md`.
  *
  *  - `promotion` (SP-th4wqd_SL-3 / TEP-th3i18 #14): driving `write_tep` over a
  *    `{env:{boardRoot}, boards}` fixture whose board root holds a PROMOTED TEP
@@ -68,7 +69,12 @@ function ctxFor(store: ThinkubeStore) {
 
 const ALLOW = () => {}; // writeGate: AI writes permitted.
 
-/** The bare minted id from a `write_spec` result, tolerating an `SP-` prefix. */
+// A complete 4-section spec body (so `write_spec`'s structural section gate passes).
+const SPEC_BODY =
+  "# Minted Spec\n\n## Acceptance Criteria\n\n- [ ] x\n\n" +
+  "## Constraints\n\n- c\n\n## Design\n\nd\n\n## File Structure Plan\n\n- f\n";
+
+/** The composite minted id (`<tep>/<spec>`) from a `write_spec` result. */
 function mintedId(res: unknown): string {
   const spec = (res as { spec?: unknown }).spec;
   assert.equal(
@@ -76,37 +82,42 @@ function mintedId(res: unknown): string {
     "string",
     "write_spec must return a string `spec` id when minting",
   );
-  return String(spec).replace(/^SP-/, "");
+  return String(spec);
 }
 
-test("write_spec with spec omitted mints a base36-epoch id and writes specs/SP-{id}/spec.md", async () => {
+/** Seed a parent TEP under `teps/TEP-<n>/tep.md` so a new spec can be placed
+ *  beneath it (write_spec allocates `SP-m` UNDER an `implements:`-named TEP). */
+async function seedTep(store: ThinkubeStore, tep: string): Promise<void> {
+  await store.writeFile(
+    store.pathForTep(tep),
+    { kind: "tep", id: `TEP-${tep}`, status: "accepted" },
+    `# TEP-${tep}\n`,
+  );
+}
+
+test("write_spec with spec omitted allocates the next SP-m under its implements: TEP and writes teps/TEP-{n}/SP-{m}/spec.md", async () => {
   const store = freshStore();
+  await seedTep(store, "1");
 
   const res = await dispatchTool(
     "write_spec",
-    {
-      body:
-        "# Minted Spec\n\n## Acceptance Criteria\n\n- [ ] x\n\n" +
-        "## Constraints\n\n- c\n\n## Design\n\nd\n\n## File Structure Plan\n\n- f\n",
-    },
+    { body: SPEC_BODY, implements: "TEP-1" },
     ctxFor(store),
     ALLOW,
   );
 
   const id = mintedId(res);
 
-  // base36-epoch shape (lowercase digits, ≥6 chars — same shape nextSpecNumber
-  // produces). A handler that forgot to mint (e.g. returned "undefined"/empty)
-  // fails here.
-  assert.match(
+  // First allocation under TEP-1 → composite id "1/1".
+  assert.equal(
     id,
-    /^[0-9a-z]{6,}$/,
-    `minted id ${JSON.stringify(id)} must be a base36-epoch id`,
+    "1/1",
+    `minted id ${JSON.stringify(id)} must be the composite <tep>/<spec> "1/1"`,
   );
 
-  // The document landed at specs/SP-{id}/spec.md on the tmp store.
+  // The document landed at teps/TEP-1/SP-1/spec.md on the tmp (org-less) store.
   const rel = store.pathForSpecDoc(id);
-  assert.equal(rel, `specs/SP-${id}/spec.md`);
+  assert.equal(rel, "teps/TEP-1/SP-1/spec.md");
   assert.ok(
     fs.existsSync(path.join(store.thinkubeDir, rel)),
     `expected the minted spec doc at ${rel}`,
@@ -115,29 +126,40 @@ test("write_spec with spec omitted mints a base36-epoch id and writes specs/SP-{
   assert.ok(doc, "the minted spec must be readable through the store");
 });
 
-test("write_spec mints are monotonic across two omitted-spec calls (catches a constant stub)", async () => {
+test("write_spec allocations are sequential + monotonic across two omitted-spec calls under the same TEP (catches a constant stub)", async () => {
   const store = freshStore();
+  await seedTep(store, "1");
   const ctx = ctxFor(store);
-  const body =
-    "# A\n\n## Acceptance Criteria\n\n- [ ] x\n\n" +
-    "## Constraints\n\n- c\n\n## Design\n\nd\n\n## File Structure Plan\n\n- f\n";
 
   const first = mintedId(
-    await dispatchTool("write_spec", { body }, ctx, ALLOW),
+    await dispatchTool(
+      "write_spec",
+      { body: SPEC_BODY, implements: "TEP-1" },
+      ctx,
+      ALLOW,
+    ),
   );
   const second = mintedId(
-    await dispatchTool("write_spec", { body }, ctx, ALLOW),
+    await dispatchTool(
+      "write_spec",
+      { body: SPEC_BODY, implements: "TEP-1" },
+      ctx,
+      ALLOW,
+    ),
   );
 
+  // Two consecutive allocations under TEP-1 are SP-1 then SP-2 — sequential,
+  // not a constant stub (which would reuse "1/1").
+  assert.equal(first, "1/1", "the first allocation under TEP-1 must be SP-1");
+  assert.equal(
+    second,
+    "1/2",
+    "the second allocation under the same TEP must be the NEXT SP — monotonic",
+  );
   assert.notEqual(
     first,
     second,
-    "two consecutive mints must differ — a constant id stub fails here",
-  );
-  // base36-epoch ids are fixed-width and increasing, so monotonic ⇒ lexical >.
-  assert.ok(
-    second > first,
-    `second mint ${second} must be monotonically after the first ${first}`,
+    "two consecutive allocations must differ — a constant id stub fails here",
   );
   // Both docs exist independently.
   assert.ok(
@@ -150,7 +172,8 @@ test("write_spec mints are monotonic across two omitted-spec calls (catches a co
 
 // ─── retire + re-cut (SP-th4wqd_SL-1) ────────────────────────────────────────
 
-const SPEC = "demo";
+// The spec id is the composite `<tep>/<spec>` in the org-scoped tree layout.
+const SPEC = "1/1";
 
 /**
  * A fresh tmp board store seeded with a `## Acceptance Criteria`-bearing spec so
@@ -162,17 +185,18 @@ async function seededStore(): Promise<ThinkubeStore> {
   const store = new ThinkubeStore(board, board);
   await store.writeFile(
     store.pathForSpecDoc(SPEC),
-    { implements: "TEP-x", ac_verifications: { "1": { run: "npm test" } } },
+    { implements: "TEP-1", ac_verifications: { "1": { run: "npm test" } } },
     "# Demo Spec\n\n## Acceptance Criteria\n\n- [ ] something\n",
   );
   return store;
 }
 
-/** The `{specNumber, sliceNumber}` parsed out of a `SP-{n}_SL-{m}` handle. */
+/** The `{spec, num}` parsed out of a `TEP-{n}_SP-{m}_SL-{k}` slice handle —
+ *  `spec` is the composite `<tep>/<spec>` id. */
 function parseHandle(handle: string): { spec: string; num: number } {
-  const m = /^SP-([^_]+)_SL-(\d+)$/.exec(handle);
+  const m = /^TEP-(\d+)_SP-(\d+)_SL-(\d+)$/.exec(handle);
   assert.ok(m, `expected a slice handle, got ${JSON.stringify(handle)}`);
-  return { spec: m![1], num: Number(m![2]) };
+  return { spec: `${m![1]}/${m![2]}`, num: Number(m![3]) };
 }
 
 /** Create a slice through the dispatcher and return its handle. */
@@ -218,7 +242,7 @@ async function boardCardIds(store: ThinkubeStore): Promise<string[]> {
 test("move_slice → Retired retires the slice (terminal, reason recorded), drops it off list_board, and reserves SL-{m} for max+1", async () => {
   const store = await seededStore();
 
-  const first = await createSliceVia(store); // SP-demo_SL-1
+  const first = await createSliceVia(store); // TEP-1_SP-1_SL-1
   assert.equal(parseHandle(first).num, 1);
 
   const reason = "superseded by a cleaner re-cut approach";

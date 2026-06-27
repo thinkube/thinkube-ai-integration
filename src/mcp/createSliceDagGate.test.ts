@@ -17,7 +17,7 @@ import * as path from "node:path";
 import { ThinkubeStore } from "../store/ThinkubeStore";
 import { dispatchTool } from "./kanbanMcpServer";
 
-async function seededStore(spec = "demo"): Promise<ThinkubeStore> {
+async function seededStore(spec = "1/1"): Promise<ThinkubeStore> {
   const board = fs.mkdtempSync(path.join(os.tmpdir(), "tk-dag-board-"));
   const store = new ThinkubeStore(board, board);
   await store.writeFile(
@@ -34,7 +34,12 @@ const ctxFor = (store: ThinkubeStore) => ({
 });
 
 const create = (store: ThinkubeStore, args: Record<string, unknown>) =>
-  dispatchTool("create_slice", { spec: "demo", ...args }, ctxFor(store), () => {});
+  dispatchTool(
+    "create_slice",
+    { spec: "1/1", ...args },
+    ctxFor(store),
+    () => {},
+  );
 
 test("create_slice REFUSES a work_unit depends_on that is a footprint path (teaching message)", async () => {
   const store = await seededStore();
@@ -61,7 +66,7 @@ test("create_slice REFUSES a dangling slice-handle depends_on (DAG unresolved)",
     create(store, {
       title: "bad: dangling dep",
       body: "detail",
-      depends_on: ["SP-demo_SL-99"], // no such sibling
+      depends_on: ["TEP-1_SP-1_SL-99"], // no such sibling
       files: ["src/x.ts"],
     }),
     /malformed|unresolved/i,
@@ -78,7 +83,7 @@ test("create_slice ACCEPTS a well-formed slice with disjoint fan-out units", asy
       { footprint: ["src/a.test.ts"], execution: "fan-out", note: "test a" },
     ],
   })) as { slice: string };
-  assert.match(res.slice, /^SP-demo_SL-\d+$/);
+  assert.match(res.slice, /^TEP-1_SP-1_SL-\d+$/);
 });
 
 test("create_slice ACCEPTS an inter-slice dep on a UNIT-BEARING slice (the #18 win)", async () => {
@@ -102,5 +107,5 @@ test("create_slice ACCEPTS an inter-slice dep on a UNIT-BEARING slice (the #18 w
       { footprint: ["src/extra.ts"], execution: "fan-out", note: "extra" },
     ],
   })) as { slice: string };
-  assert.match(res.slice, /^SP-demo_SL-\d+$/);
+  assert.match(res.slice, /^TEP-1_SP-1_SL-\d+$/);
 });

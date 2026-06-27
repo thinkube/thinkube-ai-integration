@@ -41,7 +41,7 @@ import {
 
 // ── tmp-store scaffolding (mirrors createSliceDagGate.test.ts) ───────────────
 // A fresh board + a seeded, Ready-able Spec, so `create_slice` runs end-to-end.
-async function seededStore(spec = "demo"): Promise<ThinkubeStore> {
+async function seededStore(spec = "1/1"): Promise<ThinkubeStore> {
   const board = fs.mkdtempSync(path.join(os.tmpdir(), "tk-cf-board-"));
   const store = new ThinkubeStore(board, board);
   await store.writeFile(
@@ -60,7 +60,7 @@ const ctxFor = (store: ThinkubeStore) => ({
 const create = (store: ThinkubeStore, args: Record<string, unknown>) =>
   dispatchTool(
     "create_slice",
-    { spec: "demo", ...args },
+    { spec: "1/1", ...args },
     ctxFor(store),
     () => {},
   );
@@ -146,7 +146,7 @@ test("create_slice accepts contract-node-routed integration (a common depends_on
     ],
   })) as { slice: string };
 
-  assert.match(res.slice, /^SP-demo_SL-\d+$/);
+  assert.match(res.slice, /^TEP-1_SP-1_SL-\d+$/);
 });
 
 // ── AC3: the opt-out escape hatch accepts a genuinely-independent test ───────
@@ -171,17 +171,17 @@ test("create_slice honors the opt-out flag: an unsequenced test is accepted when
     ],
   })) as { slice: string };
 
-  assert.match(res.slice, /^SP-demo_SL-\d+$/);
+  assert.match(res.slice, /^TEP-1_SP-1_SL-\d+$/);
 });
 
 // ── AC4: the remedy preserves parallelism (pure buildUnitDag) ────────────────
 test("buildUnitDag keeps contract-node implementers parallel — they share the dep, not each other", () => {
   // Two implementers + the contract node in one slice. The contract unit is
-  // `serial` → eu-0 (`SP-1_SL-1#eu-0`); each fan-out implementer depends_on THAT
-  // node, never on the sibling. Explicit handle ⇒ the eu ids are deterministic.
+  // `serial` → eu-0 (`TEP-1_SP-1_SL-1#eu-0`); each fan-out implementer depends_on
+  // THAT node, never on the sibling. Explicit handle ⇒ the eu ids are deterministic.
   const dag = buildUnitDag([
     {
-      handle: "SP-1_SL-1",
+      handle: "TEP-1_SP-1_SL-1",
       status: "ready",
       dependsOn: [],
       files: [],
@@ -194,13 +194,13 @@ test("buildUnitDag keeps contract-node implementers parallel — they share the 
         {
           footprint: ["src/implA.ts"],
           execution: "fan-out",
-          depends_on: ["SP-1_SL-1#eu-0"],
+          depends_on: ["TEP-1_SP-1_SL-1#eu-0"],
           note: "A",
         },
         {
           footprint: ["src/implB.ts"],
           execution: "fan-out",
-          depends_on: ["SP-1_SL-1#eu-0"],
+          depends_on: ["TEP-1_SP-1_SL-1#eu-0"],
           note: "B",
         },
       ],
@@ -244,7 +244,11 @@ test("create_slice accepts an integration test that `consumes` a sibling contrac
     title: "good: test consumes the contract file",
     body: "detail",
     work_units: [
-      { footprint: ["src/contract.ts"], execution: "fan-out", note: "contract+impl" },
+      {
+        footprint: ["src/contract.ts"],
+        execution: "fan-out",
+        note: "contract+impl",
+      },
       { footprint: ["src/widget.ts"], execution: "fan-out", note: "impl" },
       {
         footprint: ["src/flow.test.ts"],
@@ -254,18 +258,22 @@ test("create_slice accepts an integration test that `consumes` a sibling contrac
       },
     ],
   })) as { slice: string };
-  assert.match(res.slice, /^SP-demo_SL-\d+$/);
+  assert.match(res.slice, /^TEP-1_SP-1_SL-\d+$/);
 });
 
 test("buildUnitDag resolves `consumes` to a real edge on the producing sibling", () => {
   const dag = buildUnitDag([
     {
-      handle: "SP-1_SL-1",
+      handle: "TEP-1_SP-1_SL-1",
       status: "ready",
       dependsOn: [],
       files: [],
       workUnits: [
-        { footprint: ["src/contract.ts"], execution: "fan-out", note: "contract" },
+        {
+          footprint: ["src/contract.ts"],
+          execution: "fan-out",
+          note: "contract",
+        },
         {
           footprint: ["src/flow.test.ts"],
           execution: "fan-out",

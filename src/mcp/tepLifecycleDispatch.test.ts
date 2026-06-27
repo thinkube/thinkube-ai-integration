@@ -43,19 +43,20 @@ async function singleBoardFixture(opts: {
   fs.mkdirSync(boardDir, { recursive: true });
   const store = new ThinkubeStore(boardDir, boardDir);
 
+  // Composite-id tree layout: TEP "1" and a Spec "1/1" implementing it bare.
   await store.writeFile(
-    store.pathForTep("demo"),
+    store.pathForTep("1"),
     {
       kind: "tep",
-      id: "TEP-demo",
+      id: "TEP-1",
       status: opts.tepStatus as "proposed" | "accepted",
     },
     "# Demo TEP\n",
   );
   await store.writeFile(
-    store.pathForSpecDoc("aaa"),
+    store.pathForSpecDoc("1/1"),
     {
-      implements: "TEP-demo",
+      implements: "TEP-1",
       ac_verifications: { "1": { run: "npm test" } },
       ...(opts.specAccepted ? { accepted: "2026-06-26T00:00:00.000Z" } : {}),
     },
@@ -81,7 +82,7 @@ test("approval: create_slice → Ready is refused while the implements: TEP is p
       dispatchTool(
         "create_slice",
         {
-          spec: "aaa",
+          spec: "1/1",
           title: "a slice",
           body: "body",
           docs: "n/a",
@@ -92,7 +93,7 @@ test("approval: create_slice → Ready is refused while the implements: TEP is p
       ),
     (err: Error) => {
       // The refusal names the TEP and its blocking status.
-      assert.match(err.message, /TEP-demo/);
+      assert.match(err.message, /TEP-1/);
       assert.match(err.message, /proposed/);
       return true;
     },
@@ -104,7 +105,7 @@ test("approval: create_slice succeeds once the implements: TEP is accepted", asy
   const res = (await dispatchTool(
     "create_slice",
     {
-      spec: "aaa",
+      spec: "1/1",
       title: "a slice",
       body: "body",
       docs: "n/a",
@@ -113,7 +114,7 @@ test("approval: create_slice succeeds once the implements: TEP is accepted", asy
     ctx as never,
     ALLOW,
   )) as { slice: string };
-  assert.match(res.slice, /^SP-aaa_SL-\d+$/);
+  assert.match(res.slice, /^TEP-1_SP-1_SL-\d+$/);
 });
 
 // ── AC#2: completeness on get_project ────────────────────────────────────────
@@ -136,8 +137,9 @@ async function projectFixture(specAccepted: boolean): Promise<unknown> {
   const memberDir = path.join(root, "Platform", "core", "thinkube");
   fs.mkdirSync(memberDir, { recursive: true });
   const member = new ThinkubeStore(memberDir, memberDir);
+  // Composite-id tree layout: the member Spec is "1/1" (handle TEP-1_SP-1).
   await member.writeFile(
-    member.pathForSpecDoc("aaa"),
+    member.pathForSpecDoc("1/1"),
     {
       implements: "Platform/projects/rebrand:TEP-reb",
       ...(specAccepted ? { accepted: "2026-06-26T00:00:00.000Z" } : {}),
@@ -162,10 +164,10 @@ test("complete: get_project reports not-complete and names the open spec while a
     completeness: { tep: string; complete: boolean; openSpecs: string[] }[];
   };
   assert.equal(res.complete, false);
-  assert.deepEqual(res.openSpecs, ["SP-aaa"]);
+  assert.deepEqual(res.openSpecs, ["TEP-1_SP-1"]);
   const reb = res.completeness.find((c) => c.tep === "TEP-reb");
   assert.equal(reb?.complete, false);
-  assert.deepEqual(reb?.openSpecs, ["SP-aaa"]);
+  assert.deepEqual(reb?.openSpecs, ["TEP-1_SP-1"]);
 });
 
 test("complete: get_project reports complete once every implementing spec is accepted", async () => {
@@ -194,13 +196,14 @@ test("implemented: write_tep status:implemented is refused while a spec is unacc
     () =>
       dispatchTool(
         "write_tep",
-        { tep: "demo", status: "implemented" },
+        { tep: "1", status: "implemented" },
         ctx as never,
         ALLOW,
       ),
     (err: Error) => {
       assert.match(err.message, /implemented/);
-      assert.match(err.message, /SP-aaa/);
+      // The open Spec is named by its tep-qualified handle (TEP-1_SP-1).
+      assert.match(err.message, /TEP-1_SP-1/);
       return true;
     },
   );
@@ -213,12 +216,12 @@ test("implemented: write_tep status:implemented succeeds once every spec is acce
   });
   const res = (await dispatchTool(
     "write_tep",
-    { tep: "demo", status: "implemented" },
+    { tep: "1", status: "implemented" },
     ctx as never,
     ALLOW,
   )) as { tep: string };
-  assert.equal(res.tep, "TEP-demo");
+  assert.equal(res.tep, "TEP-1");
   // The terminal status was actually persisted.
-  const fm = (await store.getFile(store.pathForTep("demo")))?.frontmatter;
+  const fm = (await store.getFile(store.pathForTep("1")))?.frontmatter;
   assert.equal(fm?.status, "implemented");
 });

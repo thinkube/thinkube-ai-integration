@@ -25,8 +25,12 @@ import {
   aggregateTagsAcrossBoards,
 } from "./kanbanMcpServer";
 
-/** A tmp board dir seeded with one Spec that has acceptance criteria. */
-async function seededStore(spec = "demo"): Promise<ThinkubeStore> {
+/**
+ * A tmp board dir seeded with one Spec that has acceptance criteria. The spec id
+ * is the org-scoped composite `<tep>/<spec>` (numeric, so the slice handle/path
+ * regexes resolve); defaults to `"1/1"`.
+ */
+async function seededStore(spec = "1/1"): Promise<ThinkubeStore> {
   const board = fs.mkdtempSync(path.join(os.tmpdir(), "tk-tags-board-"));
   const store = new ThinkubeStore(board, board);
   await store.writeFile(
@@ -37,10 +41,13 @@ async function seededStore(spec = "demo"): Promise<ThinkubeStore> {
   return store;
 }
 
-/** Read a slice's persisted frontmatter (what `get_slice` returns). */
+/** Read a slice's persisted frontmatter (what `get_slice` returns). The handle
+ *  is the tep-qualified `TEP-<tep>_SP-<spec>_SL-<k>` flattening. */
 async function sliceFm(store: ThinkubeStore, handle: string) {
-  const m = /SP-([^_]+)_SL-(\d+)/.exec(handle)!;
-  const parsed = await store.getFile(store.pathForSlice(m[1], Number(m[2])));
+  const m = /TEP-(\d+)_SP-(\d+)_SL-(\d+)/.exec(handle)!;
+  const parsed = await store.getFile(
+    store.pathForSlice(`${m[1]}/${m[2]}`, Number(m[3])),
+  );
   return parsed?.frontmatter;
 }
 
@@ -62,7 +69,7 @@ function cardFor(
 test("create_slice persists tags; they appear in get_slice and on the list_board card", async () => {
   const store = await seededStore();
   const res = (await createSlice(store, {
-    spec: "demo",
+    spec: "1/1",
     title: "A tagged slice",
     body: "detail",
     tags: ["security", "inference"],
@@ -82,7 +89,7 @@ test("create_slice persists tags; they appear in get_slice and on the list_board
 test("update_slice replaces tags; omitting them leaves tags unchanged", async () => {
   const store = await seededStore();
   const res = (await createSlice(store, {
-    spec: "demo",
+    spec: "1/1",
     title: "Slice to retag",
     body: "detail",
     tags: ["old"],
@@ -103,13 +110,13 @@ test("update_slice replaces tags; omitting them leaves tags unchanged", async ()
 test("list_board card folds a legacy `theme` into the card tags (back-compat)", async () => {
   const store = await seededStore();
   const res = (await createSlice(store, {
-    spec: "demo",
+    spec: "1/1",
     title: "Slice with a legacy theme",
     body: "detail",
   })) as { slice: string };
   // Stamp a legacy `theme` directly (no tool sets it anymore).
-  const m = /SP-([^_]+)_SL-(\d+)/.exec(res.slice)!;
-  const rel = store.pathForSlice(m[1], Number(m[2]));
+  const m = /TEP-(\d+)_SP-(\d+)_SL-(\d+)/.exec(res.slice)!;
+  const rel = store.pathForSlice(`${m[1]}/${m[2]}`, Number(m[3]));
   const parsed = await store.getFile(rel);
   await store.writeFile(
     rel,
@@ -134,16 +141,16 @@ test("write_tep persists tags on the TEP frontmatter", async () => {
 });
 
 test("list_tags aggregates tagged items across boards (SL-3, AC3+AC4)", async () => {
-  const a = await seededStore("aaa");
-  const b = await seededStore("bbb");
+  const a = await seededStore("1/1");
+  const b = await seededStore("2/1");
   await createSlice(a, {
-    spec: "aaa",
+    spec: "1/1",
     title: "A slice",
     body: "d",
     tags: ["security", "auth"],
   });
   await createSlice(b, {
-    spec: "bbb",
+    spec: "2/1",
     title: "B slice",
     body: "d",
     tags: ["security"],
