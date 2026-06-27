@@ -48,7 +48,7 @@ interface FakeFile {
 }
 type FakeFiles = Record<string, FakeFile>;
 
-const SPEC_DOC = "specs/SP-1/spec.md";
+const SPEC_DOC = "teps/TEP-1/SP-1/spec.md";
 
 interface Calls {
   /** Slice handles passed to `commit` whose commit ACTUALLY succeeded (no throw). */
@@ -109,9 +109,15 @@ function makeDeps(
               raw: "",
             }
           : { frontmatter: files[rel], body: "", raw: "" },
-      sliceHandle: (spec: string, n: number) => `SP-${spec}_SL-${n}`,
+      sliceHandle: (spec: string, n: number) => {
+        const [t, s] = spec.split("/");
+        return `TEP-${t}_SP-${s}_SL-${n}`;
+      },
       pathForSpecDoc: () => SPEC_DOC,
-      pathForSlice: (spec: string, n: number) => `specs/SP-${spec}/SL-${n}.md`,
+      pathForSlice: (spec: string, n: number) => {
+        const [t, s] = spec.split("/");
+        return `teps/TEP-${t}/SP-${s}/SL-${n}.md`;
+      },
       writeFile: async () => {},
     } as unknown as OrchestratorDeps["store"],
     arbiter: {
@@ -119,7 +125,7 @@ function makeDeps(
       release: async () => {},
     } as unknown as OrchestratorDeps["arbiter"],
     worktrees: {
-      create: async () => "/tmp/wt/SP-1",
+      create: async () => "/tmp/wt/TEP-1_SP-1",
     } as unknown as OrchestratorDeps["worktrees"],
     output: {
       appendLine: (l: string) => calls.log.push(l),
@@ -159,16 +165,16 @@ function makeDeps(
 
 test("dispatchSpec: a fake git failing one slice's commit leaves NO slice Done with uncommitted work (passed → committed+Done, failed → rolled back to ready)", async () => {
   // Two independent ready slices (disjoint footprints), each satisfying a distinct, green AC, so
-  // BOTH are gate-eligible to commit-then-Done. The fake git then fails SP-1_SL-2's commit only.
-  const FAIL = "SP-1_SL-2";
+  // BOTH are gate-eligible to commit-then-Done. The fake git then fails TEP-1_SP-1_SL-2's commit only.
+  const FAIL = "TEP-1_SP-1_SL-2";
   const { deps, calls } = makeDeps(
     {
-      "specs/SP-1/SL-1.md": {
+      "teps/TEP-1/SP-1/SL-1.md": {
         status: "ready",
         files: ["src/a.ts"],
         satisfies: [1],
       },
-      "specs/SP-1/SL-2.md": {
+      "teps/TEP-1/SP-1/SL-2.md": {
         status: "ready",
         files: ["src/b.ts"],
         satisfies: [2],
@@ -177,20 +183,20 @@ test("dispatchSpec: a fake git failing one slice's commit leaves NO slice Done w
     { commitFailFor: FAIL },
   );
 
-  const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
 
   // Both units landed and the gate was green, so the shell ATTEMPTED to commit both slices
   // (commit-before-Done is per slice — never a single whole-Spec commit).
   assert.deepEqual(
     [...calls.committedAttempt].sort(),
-    ["SP-1_SL-1", "SP-1_SL-2"],
+    ["TEP-1_SP-1_SL-1", "TEP-1_SP-1_SL-2"],
     "commit is attempted once per gate-green slice (per-slice, commit-before-Done)",
   );
 
-  // Only SP-1_SL-1's commit succeeded; SP-1_SL-2's threw.
+  // Only TEP-1_SP-1_SL-1's commit succeeded; TEP-1_SP-1_SL-2's threw.
   assert.deepEqual(
     calls.committedOk,
-    ["SP-1_SL-1"],
+    ["TEP-1_SP-1_SL-1"],
     "only the slice whose commit did not throw is actually committed",
   );
 
@@ -207,7 +213,7 @@ test("dispatchSpec: a fake git failing one slice's commit leaves NO slice Done w
   // `ready` so a later run re-attempts (or resumes) it.
   assert.deepEqual(
     r.advanced,
-    ["SP-1_SL-1"],
+    ["TEP-1_SP-1_SL-1"],
     "only the committed slice is Done",
   );
   assert.ok(
@@ -232,7 +238,7 @@ test("dispatchSpec: a re-run over a seeded complete-but-uncommitted slice COMMIT
   // The slice is seeded complete-but-uncommitted: `units_landed: true`, two fan-out work units that
   // a naive run WOULD dispatch as two workers. Status is not Done, so it is eligible to finalize.
   const { deps, calls } = makeDeps({
-    "specs/SP-1/SL-1.md": {
+    "teps/TEP-1/SP-1/SL-1.md": {
       status: "ready",
       units_landed: true,
       satisfies: [1],
@@ -243,7 +249,7 @@ test("dispatchSpec: a re-run over a seeded complete-but-uncommitted slice COMMIT
     },
   });
 
-  const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
 
   // RESUME, not re-author: the worker seam is never dispatched for the already-landed slice's units.
   assert.deepEqual(
@@ -259,12 +265,12 @@ test("dispatchSpec: a re-run over a seeded complete-but-uncommitted slice COMMIT
 
   // It is COMMITTED on the re-run (the missing finalize marker is supplied) and reaches Done.
   assert.ok(
-    calls.committedOk.includes("SP-1_SL-1"),
+    calls.committedOk.includes("TEP-1_SP-1_SL-1"),
     "the resumed slice's commit is applied on the re-run",
   );
   assert.deepEqual(
     r.advanced,
-    ["SP-1_SL-1"],
+    ["TEP-1_SP-1_SL-1"],
     "the resumed-and-committed slice reaches Done",
   );
   assert.equal(r.committed, true, "the Spec finalizes once the resume commits");

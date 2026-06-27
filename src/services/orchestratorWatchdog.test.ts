@@ -55,8 +55,8 @@ function makeWedgeDeps(): { deps: OrchestratorDeps; calls: CapturedCalls } {
     torndown: [],
   };
 
-  const SPEC_DOC = "specs/SP-1/spec.md";
-  const SLICE_DOC = "specs/SP-1/SL-1.md";
+  const SPEC_DOC = "teps/TEP-1/SP-1/spec.md";
+  const SLICE_DOC = "teps/TEP-1/SP-1/SL-1.md";
   // The lone ready slice: one unit-less (legacy) footprint, satisfying AC #1.
   const sliceFm = { status: "ready", files: ["src/a.ts"], satisfies: [1] };
 
@@ -75,7 +75,10 @@ function makeWedgeDeps(): { deps: OrchestratorDeps; calls: CapturedCalls } {
               raw: "",
             }
           : { frontmatter: sliceFm, body: "", raw: "" },
-      sliceHandle: (spec: string, n: number) => `SP-${spec}_SL-${n}`,
+      sliceHandle: (spec: string, n: number) => {
+        const [t, s] = spec.split("/");
+        return `TEP-${t}_SP-${s}_SL-${n}`;
+      },
       pathForSpecDoc: () => SPEC_DOC,
       // NOTE: no `thinkubeDir` — `writeDeliverySummary` will throw and write no DELIVERY.md
       // (the second suppressed finalize marker).
@@ -125,7 +128,7 @@ function makeWedgeDeps(): { deps: OrchestratorDeps; calls: CapturedCalls } {
 test("dispatchSpec: units all land but finalize is suppressed → watchdog surfaces requires-attention with the wedge diagnosis", async () => {
   const { deps, calls } = makeWedgeDeps();
 
-  const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
 
   // Precondition — every execution unit landed (the "units done" half of the wedge).
   assert.equal(r.dispatched, 1, "the lone unit was dispatched");
@@ -150,13 +153,13 @@ test("dispatchSpec: units all land but finalize is suppressed → watchdog surfa
   // The watchdog surfaced Requires-attention for the landed slice.
   assert.deepEqual(
     r.attention,
-    ["SP-1_SL-1"],
+    ["TEP-1_SP-1_SL-1"],
     "the landed-but-unfinalized slice is flagged requires-attention",
   );
 
   // The diagnosis names the wedge — asserted VIA the imported constant, never a hardcoded copy,
   // so the surfaced message and this assertion can never silently diverge.
-  const flag = calls.attentionFlags.find((f) => f.handle === "SP-1_SL-1");
+  const flag = calls.attentionFlags.find((f) => f.handle === "TEP-1_SP-1_SL-1");
   assert.ok(flag, "the slice was flagged with a diagnosis");
   assert.ok(
     flag!.diagnosis.includes(FINALIZATION_WEDGED_DIAGNOSIS),

@@ -66,7 +66,7 @@ export type OnPark = (
   answer: (a: string) => void,
 ) => void;
 
-const SLICE_REL_RE = /specs\/SP-(.+?)\/SL-(\d+)\.md$/;
+const SLICE_REL_RE = /teps\/TEP-(\d+)\/SP-(\d+)\/SL-(\d+)\.md$/;
 
 export interface OrchestratorDeps {
   worktrees: WorktreeService;
@@ -223,7 +223,7 @@ export class OrchestratorService {
       const m = SLICE_REL_RE.exec(rel);
       if (!m) continue;
       const fm = (await store.getFile(rel))?.frontmatter;
-      const handle = store.sliceHandle(specNumber, Number(m[2]));
+      const handle = store.sliceHandle(specNumber, Number(m[3]));
       // Resume markers (SP-th4wqc_SL-3): a prior run that landed the units but couldn't commit
       // stamps `units_landed: true` without a `commit_sha`; `resumeDecision` then COMMITS rather
       // than re-authoring it on the next run. `committed`/`commit_sha` mark an already-landed slice.

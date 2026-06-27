@@ -50,7 +50,7 @@ interface FakeFile {
 }
 type FakeFiles = Record<string, FakeFile>;
 
-const SPEC_DOC = "specs/SP-1/spec.md";
+const SPEC_DOC = "teps/TEP-1/SP-1/spec.md";
 
 function makeDeps(
   files: FakeFiles,
@@ -101,7 +101,7 @@ function makeDeps(
   const specVerifs = opts.verifs === undefined ? defaultVerifs : opts.verifs;
 
   // A real (throwaway) board dir so the closing run's `writeDeliverySummary` can land
-  // `specs/SP-1/DELIVERY.md` — the finalization watchdog (SP-th4wqc_SL-2) treats a missing
+  // `teps/TEP-1/SP-1/DELIVERY.md` — the finalization watchdog (SP-th4wqc_SL-2) treats a missing
   // report as a wedge, so the integration fake must let the report write.
   const boardDir = fs.mkdtempSync(path.join(os.tmpdir(), "tk-orch-test-"));
   fs.mkdirSync(path.join(boardDir, path.dirname(SPEC_DOC)), {
@@ -122,7 +122,10 @@ function makeDeps(
               raw: "",
             }
           : { frontmatter: files[rel], body: "", raw: "" },
-      sliceHandle: (spec: string, n: number) => `SP-${spec}_SL-${n}`,
+      sliceHandle: (spec: string, n: number) => {
+        const [t, s] = spec.split("/");
+        return `TEP-${t}_SP-${s}_SL-${n}`;
+      },
       pathForSpecDoc: () => SPEC_DOC,
     } as unknown as OrchestratorDeps["store"],
     arbiter: {
@@ -131,7 +134,7 @@ function makeDeps(
         return opts.acquireOk === false
           ? {
               ok: false as const,
-              conflicts: [{ file: "x", heldBy: "SP-9_SL-9" }],
+              conflicts: [{ file: "x", heldBy: "TEP-9_SP-9_SL-9" }],
             }
           : { ok: true as const, state: {}, acquired: [] };
       },
@@ -189,28 +192,28 @@ function makeDeps(
 
 test("dispatchSpec: a legacy (unit-less) ready slice runs, lands, the gate advances + commits", async () => {
   const { deps, calls } = makeDeps({
-    "specs/SP-1/SL-1.md": { status: "done" },
-    "specs/SP-1/SL-2.md": {
+    "teps/TEP-1/SP-1/SL-1.md": { status: "done" },
+    "teps/TEP-1/SP-1/SL-2.md": {
       status: "ready",
-      depends_on: ["SP-1_SL-1"],
+      depends_on: ["TEP-1_SP-1_SL-1"],
       files: ["src/a.ts"],
     },
   });
-  const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
   assert.equal(r.ok, true);
   assert.equal(r.dispatched, 1);
-  assert.deepEqual(r.advanced, ["SP-1_SL-2"]);
+  assert.deepEqual(r.advanced, ["TEP-1_SP-1_SL-2"]);
   assert.equal(r.committed, true);
-  assert.deepEqual(calls.advanced, ["SP-1_SL-2"]);
+  assert.deepEqual(calls.advanced, ["TEP-1_SP-1_SL-2"]);
   assert.equal(calls.committed, 1);
-  assert.deepEqual(calls.released, ["SP-1_SL-2"]);
+  assert.deepEqual(calls.released, ["TEP-1_SP-1_SL-2"]);
   // the closing gate ran the declared plan
   assert.ok(r.acResults.length >= 1 && r.acResults.every((x) => x.pass));
 });
 
 test("dispatchSpec: a slice's fan-out units dispatch as SEPARATE workers; gate advances after all land", async () => {
   const { deps, calls } = makeDeps({
-    "specs/SP-1/SL-1.md": {
+    "teps/TEP-1/SP-1/SL-1.md": {
       status: "ready",
       work_units: [
         { footprint: ["src/a.ts"], execution: "fan-out", note: "do a" },
@@ -218,16 +221,16 @@ test("dispatchSpec: a slice's fan-out units dispatch as SEPARATE workers; gate a
       ],
     },
   });
-  const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
   assert.equal(r.dispatched, 2, "two fan-out units → two workers");
-  assert.deepEqual(r.advanced, ["SP-1_SL-1"]); // slice advances once after BOTH units + the gate
+  assert.deepEqual(r.advanced, ["TEP-1_SP-1_SL-1"]); // slice advances once after BOTH units + the gate
   assert.equal(r.committed, true);
   assert.equal(calls.acquired.length, 2);
 });
 
 test("dispatchSpec: serial units of a slice collapse into ONE worker", async () => {
   const { deps } = makeDeps({
-    "specs/SP-1/SL-1.md": {
+    "teps/TEP-1/SP-1/SL-1.md": {
       status: "ready",
       work_units: [
         { footprint: ["src/a.ts"], execution: "serial" },
@@ -235,23 +238,23 @@ test("dispatchSpec: serial units of a slice collapse into ONE worker", async () 
       ],
     },
   });
-  const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
   assert.equal(
     r.dispatched,
     1,
     "two serial units batch into one execution unit",
   );
-  assert.deepEqual(r.advanced, ["SP-1_SL-1"]);
+  assert.deepEqual(r.advanced, ["TEP-1_SP-1_SL-1"]);
 });
 
 test("dispatchSpec: units pool ACROSS slices — both slices' units co-schedule, then the gate advances both", async () => {
   const { deps, calls } = makeDeps({
-    "specs/SP-1/SL-1.md": { status: "ready", files: ["src/a.ts"] },
-    "specs/SP-1/SL-2.md": { status: "ready", files: ["src/b.ts"] },
+    "teps/TEP-1/SP-1/SL-1.md": { status: "ready", files: ["src/a.ts"] },
+    "teps/TEP-1/SP-1/SL-2.md": { status: "ready", files: ["src/b.ts"] },
   });
-  const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
   assert.equal(r.dispatched, 2);
-  assert.deepEqual(r.advanced.sort(), ["SP-1_SL-1", "SP-1_SL-2"]);
+  assert.deepEqual(r.advanced.sort(), ["TEP-1_SP-1_SL-1", "TEP-1_SP-1_SL-2"]);
   assert.equal(r.committed, true);
   assert.equal(calls.created, 1, "one worktree for the whole Spec");
 });
@@ -259,10 +262,10 @@ test("dispatchSpec: units pool ACROSS slices — both slices' units co-schedule,
 test("dispatchSpec: a dependent slice waits until its dep is Done", async () => {
   const order: string[] = [];
   const { deps } = makeDeps({
-    "specs/SP-1/SL-1.md": { status: "ready", files: ["src/a.ts"] },
-    "specs/SP-1/SL-2.md": {
+    "teps/TEP-1/SP-1/SL-1.md": { status: "ready", files: ["src/a.ts"] },
+    "teps/TEP-1/SP-1/SL-2.md": {
       status: "ready",
-      depends_on: ["SP-1_SL-1"],
+      depends_on: ["TEP-1_SP-1_SL-1"],
       files: ["src/b.ts"],
     },
   });
@@ -271,22 +274,26 @@ test("dispatchSpec: a dependent slice waits until its dep is Done", async () => 
     order.push(h);
     await realAdvance(h);
   };
-  const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
   assert.equal(r.committed, true);
-  assert.deepEqual(order, ["SP-1_SL-1", "SP-1_SL-2"], "dep advances first");
+  assert.deepEqual(
+    order,
+    ["TEP-1_SP-1_SL-1", "TEP-1_SP-1_SL-2"],
+    "dep advances first",
+  );
 });
 
 test("dispatchSpec: a worker failure flags its slice requires-attention; the gate never runs; nothing committed", async () => {
   const { deps, calls } = makeDeps(
-    { "specs/SP-1/SL-1.md": { status: "ready", files: ["src/a.ts"] } },
+    { "teps/TEP-1/SP-1/SL-1.md": { status: "ready", files: ["src/a.ts"] } },
     { run: runOutcome("failed") },
   );
-  const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
   assert.deepEqual(
     r.results.map((x) => x.outcome),
     ["failed"],
   );
-  assert.deepEqual(r.attention, ["SP-1_SL-1"]);
+  assert.deepEqual(r.attention, ["TEP-1_SP-1_SL-1"]);
   assert.equal(r.committed, false);
   assert.deepEqual(calls.advanced, []);
   assert.equal(calls.committed, 0);
@@ -297,10 +304,10 @@ test("dispatchSpec: a worker failure flags its slice requires-attention; the gat
 
 test("dispatchSpec: NO SKIP — units land but no ac_verifications declared → requires-attention, nothing committed", async () => {
   const { deps, calls } = makeDeps(
-    { "specs/SP-1/SL-1.md": { status: "ready", files: ["src/a.ts"] } },
+    { "teps/TEP-1/SP-1/SL-1.md": { status: "ready", files: ["src/a.ts"] } },
     { verifs: null }, // the Spec declares no verifications
   );
-  const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
   assert.deepEqual(
     r.results.map((x) => x.outcome),
     ["success"],
@@ -308,7 +315,7 @@ test("dispatchSpec: NO SKIP — units land but no ac_verifications declared → 
   assert.deepEqual(r.advanced, [], "no advance on an un-runnable gate");
   assert.deepEqual(
     r.attention,
-    ["SP-1_SL-1"],
+    ["TEP-1_SP-1_SL-1"],
     "left requires-attention (no skip)",
   );
   assert.equal(r.committed, false);
@@ -319,12 +326,12 @@ test("dispatchSpec: NO SKIP — units land but no ac_verifications declared → 
 test("dispatchSpec: ACs gate Done — green AC → slice Done + its ordinals checked; red AC → requires-attention, unchecked", async () => {
   const { deps, calls } = makeDeps(
     {
-      "specs/SP-1/SL-1.md": {
+      "teps/TEP-1/SP-1/SL-1.md": {
         status: "ready",
         files: ["src/a.ts"],
         satisfies: [1],
       },
-      "specs/SP-1/SL-2.md": {
+      "teps/TEP-1/SP-1/SL-2.md": {
         status: "ready",
         files: ["src/b.ts"],
         satisfies: [2],
@@ -332,15 +339,15 @@ test("dispatchSpec: ACs gate Done — green AC → slice Done + its ordinals che
     },
     { acPass: { 1: true, 2: false } }, // AC#1 green, AC#2 red
   );
-  const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
   assert.deepEqual(
     r.advanced,
-    ["SP-1_SL-1"],
+    ["TEP-1_SP-1_SL-1"],
     "only the green-AC slice advances",
   );
   assert.deepEqual(
     r.attention,
-    ["SP-1_SL-2"],
+    ["TEP-1_SP-1_SL-2"],
     "the red-AC slice → requires-attention",
   );
   assert.deepEqual(
@@ -363,14 +370,14 @@ test("dispatchSpec: ACs gate Done — green AC → slice Done + its ordinals che
 
 test("dispatchSpec: all-green per-AC plan → satisfied ordinals checked, all slices Done, committed once", async () => {
   const { deps, calls } = makeDeps({
-    "specs/SP-1/SL-1.md": {
+    "teps/TEP-1/SP-1/SL-1.md": {
       status: "ready",
       files: ["src/a.ts"],
       satisfies: [1, 2],
     },
   });
-  const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
-  assert.deepEqual(r.advanced, ["SP-1_SL-1"]);
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
+  assert.deepEqual(r.advanced, ["TEP-1_SP-1_SL-1"]);
   assert.deepEqual(
     calls.checked.sort((a, b) => a - b),
     [1, 2],
@@ -379,25 +386,25 @@ test("dispatchSpec: all-green per-AC plan → satisfied ordinals checked, all sl
   assert.equal(calls.committed, 1);
   assert.deepEqual(
     calls.torndown,
-    ["1"],
+    ["1/1"],
     "a committed Spec tears down its worktree",
   );
 });
 
 test("dispatchSpec: a malformed DAG (cycle) is rejected — nothing dispatched", async () => {
   const { deps, calls } = makeDeps({
-    "specs/SP-1/SL-1.md": {
+    "teps/TEP-1/SP-1/SL-1.md": {
       status: "ready",
-      depends_on: ["SP-1_SL-2"],
+      depends_on: ["TEP-1_SP-1_SL-2"],
       files: ["a.ts"],
     },
-    "specs/SP-1/SL-2.md": {
+    "teps/TEP-1/SP-1/SL-2.md": {
       status: "ready",
-      depends_on: ["SP-1_SL-1"],
+      depends_on: ["TEP-1_SP-1_SL-1"],
       files: ["b.ts"],
     },
   });
-  const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
   assert.equal(r.ok, false);
   assert.match(r.reason ?? "", /cycle/i);
   assert.equal(r.dispatched, 0);
@@ -406,10 +413,13 @@ test("dispatchSpec: a malformed DAG (cycle) is rejected — nothing dispatched",
 
 test("dispatchSpec: nothing ready → no worktree, no commit", async () => {
   const { deps, calls } = makeDeps({
-    "specs/SP-1/SL-1.md": { status: "doing" },
-    "specs/SP-1/SL-2.md": { status: "ready", depends_on: ["SP-1_SL-1"] },
+    "teps/TEP-1/SP-1/SL-1.md": { status: "doing" },
+    "teps/TEP-1/SP-1/SL-2.md": {
+      status: "ready",
+      depends_on: ["TEP-1_SP-1_SL-1"],
+    },
   });
-  const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
   assert.equal(r.dispatched, 0);
   assert.equal(r.committed, false);
   assert.equal(calls.created, 0);
@@ -417,11 +427,14 @@ test("dispatchSpec: nothing ready → no worktree, no commit", async () => {
 
 test("dispatchSpec: a requires-attention slice is re-dispatchable (retry on a new run)", async () => {
   const { deps, calls } = makeDeps({
-    "specs/SP-1/SL-1.md": { status: "requires-attention", files: ["src/a.ts"] },
+    "teps/TEP-1/SP-1/SL-1.md": {
+      status: "requires-attention",
+      files: ["src/a.ts"],
+    },
   });
-  const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
   assert.equal(r.dispatched, 1, "the requires-attention slice re-dispatches");
-  assert.deepEqual(r.advanced, ["SP-1_SL-1"]);
+  assert.deepEqual(r.advanced, ["TEP-1_SP-1_SL-1"]);
   assert.equal(r.committed, true);
   assert.equal(calls.committed, 1);
 });
@@ -430,7 +443,7 @@ test("dispatchSpec: the worker pool never exceeds the cap", async () => {
   const track = { inFlight: 0, max: 0 };
   const { deps } = makeDeps(
     {
-      "specs/SP-1/SL-1.md": {
+      "teps/TEP-1/SP-1/SL-1.md": {
         status: "ready",
         work_units: [
           { footprint: ["a.ts"], execution: "fan-out" },
@@ -443,38 +456,38 @@ test("dispatchSpec: the worker pool never exceeds the cap", async () => {
     },
     { run: runTracked(track) },
   );
-  const r = await new OrchestratorService(deps).dispatchSpec("1", 2);
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 2);
   assert.equal(r.dispatched, 5, "all five units run");
-  assert.deepEqual(r.advanced, ["SP-1_SL-1"]);
+  assert.deepEqual(r.advanced, ["TEP-1_SP-1_SL-1"]);
   assert.ok(track.max <= 2, `peak concurrency ${track.max} should be ≤ cap 2`);
 });
 
 test("dispatchSpec: a worker that RETURNS needs-input parks the slice (not failed, not committed, gate skipped)", async () => {
   const { deps, calls } = makeDeps(
-    { "specs/SP-1/SL-1.md": { status: "ready", files: ["src/a.ts"] } },
+    { "teps/TEP-1/SP-1/SL-1.md": { status: "ready", files: ["src/a.ts"] } },
     {
       run: runOutcome("needs-input", {
         question: "Which database — pg or sqlite?",
       }),
     },
   );
-  const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
   assert.deepEqual(
     r.results.map((x) => x.outcome),
     ["needs-input"],
   );
-  assert.deepEqual(r.needsInput, ["SP-1_SL-1"]);
+  assert.deepEqual(r.needsInput, ["TEP-1_SP-1_SL-1"]);
   assert.equal(r.committed, false);
   assert.deepEqual(calls.advanced, []);
   assert.deepEqual(calls.attention, []); // needs-input is NOT a failure
-  assert.deepEqual(calls.needsInput, ["SP-1_SL-1"]);
-  assert.match(r.results[0].slice, /SP-1_SL-1/);
+  assert.deepEqual(calls.needsInput, ["TEP-1_SP-1_SL-1"]);
+  assert.match(r.results[0].slice, /TEP-1_SP-1_SL-1/);
 });
 
 test("dispatchSpec: a resident worker PARKS (frees its slot), then an external answer resumes it → gate → Done + commit", async () => {
-  const parkedId = "SP-1_SL-1#eu-0";
+  const parkedId = "TEP-1_SP-1_SL-1#eu-0";
   const { deps, calls } = makeDeps({
-    "specs/SP-1/SL-1.md": {
+    "teps/TEP-1/SP-1/SL-1.md": {
       status: "ready",
       work_units: [
         { footprint: ["a.ts"], execution: "fan-out", note: "asks" },
@@ -491,14 +504,14 @@ test("dispatchSpec: a resident worker PARKS (frees its slot), then an external a
     setImmediate(() => answerParkedWorker(parkedId, "use postgres"));
     return { outcome: "success" };
   };
-  const r = await new OrchestratorService(deps).dispatchSpec("1", 4);
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
   assert.equal(r.dispatched, 2);
-  assert.ok(r.needsInput.includes("SP-1_SL-1"), "parked at least once");
+  assert.ok(r.needsInput.includes("TEP-1_SP-1_SL-1"), "parked at least once");
   assert.deepEqual(
     r.advanced,
-    ["SP-1_SL-1"],
+    ["TEP-1_SP-1_SL-1"],
     "resumed + verified by the gate after the answer",
   );
   assert.equal(r.committed, true);
-  assert.deepEqual(calls.needsInput, ["SP-1_SL-1"]); // flagged needs-input on park
+  assert.deepEqual(calls.needsInput, ["TEP-1_SP-1_SL-1"]); // flagged needs-input on park
 });
