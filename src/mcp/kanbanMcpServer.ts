@@ -1550,6 +1550,43 @@ export async function getProject(
       }
     }
   }
+  // Org-scoped tree: a project's member specs are NESTED under its umbrella TEPs
+  // (`<project>/<org>/teps/TEP-n/SP-m/`) — promote_tep relocated them there. Read
+  // them location-based; each carries `repo:` = its WORKING repository (the repo
+  // the orchestrator branches a worktree in), which is what we surface as the
+  // member's `board`. (The cross-board sweep above only catches any legacy
+  // flat-model member still living in a repo board with a qualified `implements:`.)
+  const projDir = path.join(boardRoot!, product, "projects", id);
+  const projStore = new ThinkubeStore(projDir, projDir);
+  for (const spec of await projStore.listSpecDirs()) {
+    const tep = normalizeTepId(spec.split("/")[0]);
+    if (!tepIds.includes(tep)) continue;
+    const fm = (await projStore.getFile(projStore.pathForSpecDoc(spec)))
+      ?.frontmatter;
+    const workingRepo =
+      typeof fm?.repo === "string" && fm.repo.trim()
+        ? fm.repo.trim()
+        : projectNamespace;
+    members.push({
+      board: workingRepo,
+      handle: specHandle(spec),
+      kind: "spec",
+    });
+    implByTep.get(tep)!.push({
+      id: specHandle(spec),
+      accepted: typeof fm?.accepted === "string" ? fm.accepted : undefined,
+    });
+    for (const rel of await projStore.listSlices(spec)) {
+      const m = SLICE_PATH_RE.exec(rel);
+      if (m)
+        members.push({
+          board: workingRepo,
+          handle: sliceHandleFromMatch(m),
+          kind: "slice",
+        });
+    }
+  }
+
   // Completeness (SP-th4wqg_SL-2): a TEP is complete only when every implementing
   // Spec is `accepted`; otherwise `openSpecs` names the unaccepted ones. Surfaced
   // per-umbrella-TEP plus an aggregate (the project is complete iff all its TEPs

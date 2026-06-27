@@ -39,6 +39,34 @@ import { retireWorktreeNote } from "./acceptLand";
 import type { OwnershipArbiter } from "../services/OwnershipArbiter";
 import type { LauncherService } from "../services/LauncherService";
 import type { SpecsProvider } from "../views/boards/SpecsProvider";
+import { discoverRepos } from "../views/boards/BoardNavigatorProvider";
+import { namespaceForRepo } from "../store/boardNamespace";
+
+/**
+ * The WORKING repository for a Spec — the repo the orchestrator branches a
+ * worktree in. For a normal Spec that is the board's own repo (`fallback`); for
+ * a **project member** Spec (which lives nested under a cross-repo project
+ * umbrella, not in any code repo's board) the working repo is named by the
+ * spec's `repo:` frontmatter (a board namespace), resolved to a path the same
+ * way `SpecsProvider.crossBoardSpecs` does. So the spec's *location* never
+ * decides the worktree — its `repo:` does (TEP-5 / the project-layer cutover).
+ */
+async function workingRepoPath(
+  store: ThinkubeStore,
+  spec: string,
+  fallback: string,
+): Promise<string> {
+  const fm = (await store.getFile(store.pathForSpecDoc(spec)))?.frontmatter;
+  const repoNs = typeof fm?.repo === "string" ? fm.repo.trim() : "";
+  if (!repoNs) return fallback;
+  const folders = (vscode.workspace.workspaceFolders ?? []).map((f) => ({
+    name: f.name,
+    path: f.uri.fsPath,
+  }));
+  for (const r of discoverRepos())
+    if (namespaceForRepo(r.path, folders) === repoNs) return r.path;
+  return fallback; // unresolvable `repo:` → fall back to the board repo
+}
 
 export interface OrchestrateDeps {
   specsProvider: SpecsProvider;
@@ -127,8 +155,8 @@ export function registerOrchestrateCommands(
             spec = specId.replace(/^SP-/, "");
           }
 
-          const canonical =
-            (await worktrees.canonicalRepo(repoPath)) ?? repoPath;
+          const wrp = await workingRepoPath(store, spec, repoPath);
+          const canonical = (await worktrees.canonicalRepo(wrp)) ?? wrp;
           const baseDir =
             vscode.workspace
               .getConfiguration("thinkube")
@@ -235,8 +263,8 @@ export function registerOrchestrateCommands(
           const fm = (parsed?.frontmatter ?? {}) as Record<string, unknown>;
           const body = parsed?.body ?? "";
 
-          const canonical =
-            (await worktrees.canonicalRepo(repoPath)) ?? repoPath;
+          const wrp = await workingRepoPath(store, specId, repoPath);
+          const canonical = (await worktrees.canonicalRepo(wrp)) ?? wrp;
           const baseDir =
             vscode.workspace
               .getConfiguration("thinkube")
@@ -464,8 +492,8 @@ export function registerOrchestrateCommands(
             report = undefined;
           }
 
-          const canonical =
-            (await worktrees.canonicalRepo(repoPath)) ?? repoPath;
+          const wrp = await workingRepoPath(store, specId, repoPath);
+          const canonical = (await worktrees.canonicalRepo(wrp)) ?? wrp;
           const baseDir =
             vscode.workspace
               .getConfiguration("thinkube")

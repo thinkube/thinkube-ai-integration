@@ -120,6 +120,39 @@ test("get_project members = specs implementing the umbrella TEP + their slices (
   assert.ok(!handles.includes("TEP-2_SP-1"));
 });
 
+test("get_project surfaces a NESTED member spec with its repo: as the working repo", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tk-proj-nested-"));
+  const projDir = path.join(root, "Platform", "projects", "rebrand");
+  fs.mkdirSync(projDir, { recursive: true });
+  fs.writeFileSync(path.join(projDir, "project.yaml"), "name: Rebrand\n");
+  // The umbrella TEP-1 and its member spec live NESTED under the project (where
+  // promote_tep relocated them); the member carries `repo:` = its working repo.
+  const projStore = new ThinkubeStore(projDir, projDir);
+  await projStore.writeFile(
+    projStore.pathForTep("1"),
+    { kind: "tep", id: "TEP-1" },
+    "# umbrella\n",
+  );
+  await projStore.writeFile(
+    projStore.pathForSpecDoc("1/1"),
+    { repo: "Platform/extensions/thinkube-ai-integration" },
+    "# member\n\n## Acceptance Criteria\n\n- [ ] x\n",
+  );
+
+  const ctx = {
+    env: { boardRoot: root },
+    boards: { list: () => [], resolve: () => undefined },
+  };
+  const res = (await getProject(ctx as never, "Platform", "rebrand")) as {
+    members: { board: string; handle: string; kind: string }[];
+  };
+  // The nested member is found location-based, and its `board` is its WORKING
+  // repo (from repo:) — not the project — so the orchestrator knows where to branch.
+  const member = res.members.find((m) => m.handle === "TEP-1_SP-1");
+  assert.ok(member, "the nested member spec must be surfaced");
+  assert.equal(member?.board, "Platform/extensions/thinkube-ai-integration");
+});
+
 test("promote_tep moves the TEP and rewrites EVERY dependent (SP-tgvpbm_SL-3)", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tk-promote-"));
   // The target project exists (empty teps/).
