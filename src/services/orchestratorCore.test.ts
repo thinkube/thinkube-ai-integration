@@ -221,10 +221,12 @@ test("batchExecutionUnits: serial units collapse to one; mechanize/fan-out stay 
 
 // ── buildUnitDag + readyFrontier (SP-tgs8nz makespan scheduler) ────────────
 
+// `dependsOn` is intentionally omitted: SP-5/1 retired the authored slice-level
+// `depends_on` — `buildUnitDag` sources every edge from `consumes`+footprint, so a
+// slice's dependencies are now expressed by a unit's `consumes`, never a slice handle.
 const slice = (handle: string, o: Partial<SliceForDag> = {}): SliceForDag => ({
   handle,
   status: o.status ?? "ready",
-  dependsOn: o.dependsOn ?? [],
   files: o.files ?? [],
   workUnits: o.workUnits ?? [],
 });
@@ -258,24 +260,72 @@ test("buildUnitDag: serial units of a slice collapse into one node; fan-out spli
   assert.equal(fans[0].note, "do c");
 });
 
-test("buildUnitDag: units inherit their slice's depends_on, pooled across slices", () => {
+test("buildUnitDag: units from multiple slices pool into one DAG; a `consumes` edge crosses the slice boundary", () => {
   const dag = buildUnitDag([
-    slice("SP-1_SL-1", { files: ["a.ts"] }),
+    slice("SP-1_SL-1", {
+      workUnits: [{ footprint: ["a.ts"], execution: "fan-out" }],
+    }),
     slice("SP-1_SL-2", {
-      dependsOn: ["SP-1_SL-1"],
       workUnits: [
-        { footprint: ["b.ts"], execution: "fan-out" },
-        { footprint: ["c.ts"], execution: "fan-out" },
+        { footprint: ["b.ts"], execution: "fan-out", consumes: ["a.ts"] },
+        { footprint: ["c.ts"], execution: "fan-out", consumes: ["a.ts"] },
       ],
     }),
   ]);
   // one node for SL-1, two for SL-2 — pooled into one DAG across slices
   assert.equal(dag.length, 3);
+  // both SL-2 units read a.ts → both depend on its (cross-slice) producer, by edge not by inheritance
   for (const u of dag.filter((u) => u.slice === "SP-1_SL-2"))
-    assert.deepEqual(u.dependsOn, ["SP-1_SL-1"]);
+    assert.deepEqual(u.dependsOn, ["SP-1_SL-1#eu-0"]);
 });
 
-test("buildUnitDag: a dep on a UNIT-BEARING slice expands to its unit ids — validateDag accepts it (TEP-th3i18 #18)", () => {
+test("buildUnitDag: a cross-slice `consumes` resolves to the EXACT producing #eu-k, not all-to-all (AC1)", () => {
+  const dag = buildUnitDag([
+    slice("SP-1_SL-1", {
+      workUnits: [
+        { footprint: ["a.ts"], execution: "fan-out" }, // produces a.ts → #eu-0
+        { footprint: ["b.ts"], execution: "fan-out" }, // produces b.ts → #eu-1
+      ],
+    }),
+    slice("SP-1_SL-2", {
+      workUnits: [
+        { footprint: ["c.ts"], execution: "fan-out", consumes: ["a.ts"] },
+      ],
+    }),
+  ]);
+  const sl2 = dag.find((u) => u.slice === "SP-1_SL-2")!;
+  // lands on the producer of a.ts ONLY (#eu-0) — NOT the sibling #eu-1, NOT a coarse slice-wide fan-in
+  assert.deepEqual(sl2.dependsOn, ["SP-1_SL-1#eu-0"]);
+  // and the pooled DAG validates — the edge is a real, resolvable node id
+  const verdict = validateDag(
+    dag.map((u) => ({ id: u.id, dependsOn: u.dependsOn })),
+  );
+  assert.equal(verdict.ok, true);
+});
+
+test("buildUnitDag: a file produced by TWO units makes a consumer depend on BOTH (AC2)", () => {
+  const dag = buildUnitDag([
+    slice("SP-1_SL-1", {
+      workUnits: [
+        { footprint: ["shared.ts"], execution: "fan-out" }, // producer 1 → #eu-0
+        { footprint: ["shared.ts", "x.ts"], execution: "fan-out" }, // producer 2 → #eu-1
+      ],
+    }),
+    slice("SP-1_SL-2", {
+      workUnits: [
+        { footprint: ["c.ts"], execution: "fan-out", consumes: ["shared.ts"] },
+      ],
+    }),
+  ]);
+  const sl2 = dag.find((u) => u.slice === "SP-1_SL-2")!;
+  // shared.ts has two writers → the consumer waits on EVERY writer (reads it fully written)
+  assert.deepEqual(sl2.dependsOn.slice().sort(), [
+    "SP-1_SL-1#eu-0",
+    "SP-1_SL-1#eu-1",
+  ]);
+});
+
+test("buildUnitDag: a cross-slice unit that consumes nothing upstream has NO edge (AC3)", () => {
   const dag = buildUnitDag([
     slice("SP-1_SL-1", {
       workUnits: [
@@ -284,22 +334,12 @@ test("buildUnitDag: a dep on a UNIT-BEARING slice expands to its unit ids — va
       ],
     }),
     slice("SP-1_SL-2", {
-      dependsOn: ["SP-1_SL-1"],
+      // consumes nothing SL-1 produces → independent; no slice-level fan-in survives
       workUnits: [{ footprint: ["c.ts"], execution: "fan-out" }],
     }),
   ]);
   const sl2 = dag.find((u) => u.slice === "SP-1_SL-2")!;
-  // the bare handle expands to SL-1's two unit ids (a dep on a slice = ALL its units),
-  // NOT the unresolvable bare handle the static DAG used to carry
-  assert.deepEqual(sl2.dependsOn.slice().sort(), [
-    "SP-1_SL-1#eu-0",
-    "SP-1_SL-1#eu-1",
-  ]);
-  // and the static DAG now validates — the static/runtime asymmetry is gone
-  const verdict = validateDag(
-    dag.map((u) => ({ id: u.id, dependsOn: u.dependsOn })),
-  );
-  assert.equal(verdict.ok, true);
+  assert.deepEqual(sl2.dependsOn, []);
 });
 
 const emptyState = (over: Partial<SchedulerState> = {}): SchedulerState => ({
@@ -322,22 +362,28 @@ test("readyFrontier: independent disjoint units are all ready (max parallelism)"
   assert.equal(f.length, 3);
 });
 
-test("readyFrontier: a unit waits until its slice-dep is done", () => {
+test("readyFrontier: a unit waits until the unit it consumes from is done", () => {
   const dag = buildUnitDag([
-    slice("SP-1_SL-1", { files: ["a.ts"] }),
-    slice("SP-1_SL-2", { dependsOn: ["SP-1_SL-1"], files: ["b.ts"] }),
+    slice("SP-1_SL-1", {
+      workUnits: [{ footprint: ["a.ts"], execution: "fan-out" }],
+    }),
+    slice("SP-1_SL-2", {
+      workUnits: [
+        { footprint: ["b.ts"], execution: "fan-out", consumes: ["a.ts"] },
+      ],
+    }),
   ]);
-  // SL-1 not done → only SL-1's unit is ready
+  // SL-1's unit not done → only it is ready
   let f = readyFrontier(dag, emptyState());
   assert.deepEqual(
     f.map((u) => u.id),
-    ["SP-1_SL-1"],
+    ["SP-1_SL-1#eu-0"],
   );
-  // mark SL-1 done → SL-2's unit becomes ready
-  f = readyFrontier(dag, emptyState({ done: new Set(["SP-1_SL-1"]) }));
+  // mark the producer done → SL-2's consumer becomes ready
+  f = readyFrontier(dag, emptyState({ done: new Set(["SP-1_SL-1#eu-0"]) }));
   assert.deepEqual(
     f.map((u) => u.id),
-    ["SP-1_SL-2"],
+    ["SP-1_SL-2#eu-0"],
   );
 });
 
@@ -376,16 +422,32 @@ test("readyFrontier: a running footprint excludes an overlapping unit", () => {
 });
 
 test("readyFrontier: critical-path first — the unit with the longest chain leads", () => {
-  // SL-1 (a) → SL-2 (b) → SL-3 (c) chain, plus an independent SL-4 (d).
+  // SL-1 (a) → SL-2 (b) → SL-3 (c) chain via `consumes`, plus an independent SL-4 (d).
   // At the start only SL-1 and SL-4 are ready; SL-1 has the longer chain → first.
   const dag = buildUnitDag([
-    slice("SP-1_SL-1", { files: ["a.ts"] }),
-    slice("SP-1_SL-2", { dependsOn: ["SP-1_SL-1"], files: ["b.ts"] }),
-    slice("SP-1_SL-3", { dependsOn: ["SP-1_SL-2"], files: ["c.ts"] }),
-    slice("SP-1_SL-4", { files: ["d.ts"] }),
+    slice("SP-1_SL-1", {
+      workUnits: [{ footprint: ["a.ts"], execution: "fan-out" }],
+    }),
+    slice("SP-1_SL-2", {
+      workUnits: [
+        { footprint: ["b.ts"], execution: "fan-out", consumes: ["a.ts"] },
+      ],
+    }),
+    slice("SP-1_SL-3", {
+      workUnits: [
+        { footprint: ["c.ts"], execution: "fan-out", consumes: ["b.ts"] },
+      ],
+    }),
+    slice("SP-1_SL-4", {
+      workUnits: [{ footprint: ["d.ts"], execution: "fan-out" }],
+    }),
   ]);
   const f = readyFrontier(dag, emptyState());
-  assert.equal(f[0].id, "SP-1_SL-1", "longest-chain unit dispatched first");
+  assert.equal(
+    f[0].id,
+    "SP-1_SL-1#eu-0",
+    "longest-chain unit dispatched first",
+  );
 });
 
 test("readyFrontier: blocked units (requires-attention slice) are not dispatched", () => {

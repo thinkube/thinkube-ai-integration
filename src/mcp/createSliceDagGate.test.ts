@@ -1,10 +1,16 @@
 /**
- * SP-A / TEP-th3i18 #17–#18: `create_slice` must validate the work-unit DAG **at
- * creation** and refuse a malformed one — a footprint-path `depends_on`, a
- * dangling slice handle, or a cycle — instead of letting it serialize to the
- * board and explode later at orchestrate time as "malformed DAG." These tests
- * drive `dispatchTool` (the layer the live MCP server runs), not the pure
- * helpers, so the gate's WIRING is what's verified.
+ * SP-5/1 (TEP-5) AC4: `create_slice` REFUSES an authored `depends_on` — at the
+ * slice level OR on a work_unit — because the only dependency language is now
+ * `consumes`+footprint (resolved over the GLOBAL set of the Spec's units). The
+ * authored `depends_on` form is ungrounded (not an artifact a unit reads) and
+ * unauthorable at create time (the slice has no number, so its units have no
+ * `#eu-k` node-ids yet — the exact `#27` problem `consumes` solved). To avoid a
+ * silent loss of an author's intent, the gate refuses it with a teaching message
+ * that NAMES `consumes` as the grounded replacement.
+ *
+ * These tests drive `dispatchTool` (the layer the live MCP server runs), not the
+ * pure helpers, so the gate's WIRING is what's verified. The companion
+ * `consumes`-routed acceptances confirm the grounded form is the live path.
  */
 import "./installVscodeStub";
 
@@ -41,35 +47,45 @@ const create = (store: ThinkubeStore, args: Record<string, unknown>) =>
     () => {},
   );
 
-test("create_slice REFUSES a work_unit depends_on that is a footprint path (teaching message)", async () => {
+test("create_slice REFUSES a slice-level depends_on, naming consumes", async () => {
   const store = await seededStore();
   await assert.rejects(
     create(store, {
-      title: "bad: file-path dep",
+      title: "bad: slice-level dep",
+      body: "detail",
+      depends_on: ["TEP-1_SP-1_SL-1"], // ungrounded authored slice handle — removed
+      files: ["src/x.ts"],
+    }),
+    (err: Error) => {
+      // Refused at the door, AND the teaching message names the grounded
+      // replacement so an author isn't left guessing what to write instead.
+      assert.match(err.message, /depends_on/);
+      assert.match(err.message, /consumes/);
+      return true;
+    },
+  );
+});
+
+test("create_slice REFUSES a work_unit depends_on, naming consumes", async () => {
+  const store = await seededStore();
+  await assert.rejects(
+    create(store, {
+      title: "bad: work_unit dep",
       body: "detail",
       work_units: [
         { footprint: ["src/a.ts"], execution: "serial" },
         {
           footprint: ["src/a.test.ts"],
-          depends_on: ["src/a.ts"], // ← a footprint path, not a node-id (the exact bug)
+          depends_on: ["#eu-1"], // ungrounded authored node-id — removed
           execution: "serial",
         },
       ],
     }),
-    /not a node-id|shared footprint/i,
-  );
-});
-
-test("create_slice REFUSES a dangling slice-handle depends_on (DAG unresolved)", async () => {
-  const store = await seededStore();
-  await assert.rejects(
-    create(store, {
-      title: "bad: dangling dep",
-      body: "detail",
-      depends_on: ["TEP-1_SP-1_SL-99"], // no such sibling
-      files: ["src/x.ts"],
-    }),
-    /malformed|unresolved/i,
+    (err: Error) => {
+      assert.match(err.message, /depends_on/);
+      assert.match(err.message, /consumes/);
+      return true;
+    },
   );
 });
 
@@ -86,25 +102,27 @@ test("create_slice ACCEPTS a well-formed slice with disjoint fan-out units", asy
   assert.match(res.slice, /^TEP-1_SP-1_SL-\d+$/);
 });
 
-test("create_slice ACCEPTS an inter-slice dep on a UNIT-BEARING slice (the #18 win)", async () => {
+test("create_slice ACCEPTS a unit dependency expressed via consumes (the grounded replacement)", async () => {
   const store = await seededStore();
-  const first = (await create(store, {
-    title: "first unit-bearing slice",
-    body: "detail",
-    work_units: [
-      { footprint: ["src/core.ts"], execution: "fan-out", note: "core" },
-      { footprint: ["src/core.test.ts"], execution: "fan-out", note: "test" },
-    ],
-  })) as { slice: string };
-
-  // SL-2 depends on the unit-bearing SL-1. Before the #18 fix this would be
-  // rejected as "malformed" (the bare handle resolved to no node); now it passes.
+  // The grounded form depends_on is replaced by: a unit READS a file a SIBLING
+  // unit produces, expressed as `consumes`. `buildUnitDag` resolves it into a
+  // real edge on the producing unit, so the gate accepts it where the ungrounded
+  // `depends_on` handle is refused.
   const res = (await create(store, {
-    title: "second slice depends on the first",
+    title: "good: consumes a sibling's artifact",
     body: "detail",
-    depends_on: [first.slice],
     work_units: [
-      { footprint: ["src/extra.ts"], execution: "fan-out", note: "extra" },
+      {
+        footprint: ["src/contract.ts"],
+        execution: "fan-out",
+        note: "contract",
+      },
+      {
+        footprint: ["src/impl.ts"],
+        consumes: ["src/contract.ts"],
+        execution: "fan-out",
+        note: "impl reads the contract",
+      },
     ],
   })) as { slice: string };
   assert.match(res.slice, /^TEP-1_SP-1_SL-\d+$/);

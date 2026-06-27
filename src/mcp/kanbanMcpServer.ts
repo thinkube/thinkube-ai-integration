@@ -832,12 +832,6 @@ const TOOL_DEFS = [
           description:
             '2–4 lines of detail: what the coherent end-to-end cut includes and what the observable "done" looks like.',
         },
-        depends_on: {
-          type: "array",
-          items: { type: "string" },
-          description:
-            'Full slice handles this depends on, e.g. ["SP-4_SL-1"].',
-        },
         parallel: {
           type: "boolean",
           description:
@@ -866,12 +860,11 @@ const TOOL_DEFS = [
             type: "object",
             properties: {
               footprint: { type: "array", items: { type: "string" } },
-              depends_on: { type: "array", items: { type: "string" } },
               consumes: {
                 type: "array",
                 items: { type: "string" },
                 description:
-                  "Files a SIBLING unit produces that this unit reads — the contract-first reference. Naming a sibling's footprint here satisfies the contract-first gate (the unit is coordinated through that contract, not fanned out blind) and is resolved into a real dependency edge on the producing unit. Unlike `depends_on` it is a file, not a node-id, so it is authorable at create time even though the slice has no number yet.",
+                  "Files a SIBLING unit produces that this unit reads — the contract-first reference and the ONLY authored dependency language (the ungrounded `depends_on` form was removed). Naming a sibling's footprint here satisfies the contract-first gate (the unit is coordinated through that contract, not fanned out blind) and is resolved into a real dependency edge on the producing unit(s). It is a file, not a node-id, so it is authorable at create time even though the slice has no number yet.",
               },
               execution: {
                 type: "string",
@@ -892,7 +885,7 @@ const TOOL_DEFS = [
             additionalProperties: false,
           },
           description:
-            "Execution-aware work units (SP-tgs8gb): each { footprint (files/objects it touches), depends_on?, execution: serial|mechanize|fan-out, note? (the unit's task text — self-describing, required in practice for fan-out) }. Uniform data-parallel work collapses to one `mechanize` unit; heterogeneous → `fan-out` (one per object, each with its `note`); coupled → `serial`. The slice stays the validation envelope; work units are never independently gated. A `*.test.*`/integration `fan-out` unit with no `depends_on` beside sibling implementers is refused by the contract-first gate (route it through a shared contract-definition node, or set the opt-out flag for a genuinely-independent test).",
+            "Execution-aware work units (SP-tgs8gb): each { footprint (files/objects it touches), consumes? (files a sibling unit produces that this unit reads — the only dependency language), execution: serial|mechanize|fan-out, note? (the unit's task text — self-describing, required in practice for fan-out) }. Uniform data-parallel work collapses to one `mechanize` unit; heterogeneous → `fan-out` (one per object, each with its `note`); coupled → `serial`. The slice stays the validation envelope; work units are never independently gated. A `*.test.*`/integration `fan-out` unit with no `consumes` beside sibling implementers is refused by the contract-first gate (route it through a shared contract file via `consumes`, or set the opt-out flag for a genuinely-independent test). The ungrounded `depends_on` form is no longer accepted — express every dependency as `consumes`.",
         },
         docs: {
           type: "string",
@@ -1375,9 +1368,6 @@ async function startSpecWorktree(spec: string, repo: string): Promise<unknown> {
 // tep-qualified `TEP-n_SP-m`, the slice handle `TEP-n_SP-m_SL-k`.
 const SLICE_PATH_RE = /teps\/TEP-(\d+)\/SP-(\d+)\/SL-(\d+)\.md$/;
 const SLICE_HANDLE_RE = /^TEP-(\d+)_SP-(\d+)_SL-(\d+)$/;
-// A work-unit DAG node-id: a slice handle, optionally an execution-unit suffix
-// (`#eu-{i}`). A `depends_on` must be one of these — never a footprint path.
-const NODE_ID_RE = /^TEP-\d+_SP-\d+_SL-\d+(?:#eu-\d+)?$/;
 
 /** The tep-qualified handle for a composite spec id (`${tep}/${spec}`). */
 function specHandle(specId: string): string {
@@ -2222,12 +2212,19 @@ export async function createSlice(
   if (args.priority !== undefined && !/^P[0-3]$/.test(args.priority)) {
     throw new Error(`Invalid priority "${args.priority}" — expected P0…P3.`);
   }
-  for (const dep of args.depends_on ?? []) {
-    if (!SLICE_HANDLE_RE.test(dep.trim())) {
-      throw new Error(
-        `depends_on entry "${dep}" is not a full slice handle (SP-{n}_SL-{m}).`,
-      );
-    }
+  // `depends_on` is removed (SP-5/1): an authored, ungrounded dependency is no longer
+  // accepted — refuse it at the door rather than silently drop an author's intent, and
+  // name `consumes` as the grounded replacement. A slice's cross-slice dependency is
+  // always a genuine artifact read, so express it as a unit `consumes`: the file(s) a
+  // sibling unit produces that this slice's units read, which `buildUnitDag` resolves
+  // into a real edge on the producing unit.
+  if (args.depends_on?.length) {
+    throw new Error(
+      `Slice-level \`depends_on\` is no longer accepted (it was ungrounded — not an ` +
+        `artifact a unit reads). Re-express the dependency as \`consumes\`: on the work_unit ` +
+        `that reads it, list the file(s) a sibling unit produces; \`buildUnitDag\` resolves a ` +
+        `real edge to that producing unit. (offending depends_on: ${args.depends_on.join(", ")})`,
+    );
   }
   for (const n of args.satisfies ?? []) {
     if (!Number.isInteger(n) || n < 1) {
@@ -2247,19 +2244,19 @@ export async function createSlice(
         `work_unit execution "${wu.execution}" must be serial | mechanize | fan-out.`,
       );
     }
-    // A work_unit `depends_on` is a DAG node-id (a slice handle `SP-{n}_SL-{m}`
-    // or a unit id `…#eu-{i}`) — never a footprint path. This is the most common
-    // authoring mistake: sequencing is by SHARED FOOTPRINT, not by listing a file
-    // as a dependency. Catch it at the door with a message that teaches the rule
-    // (TEP-th3i18 #17).
-    for (const dep of wu.depends_on ?? []) {
-      if (!NODE_ID_RE.test(String(dep).trim())) {
-        throw new Error(
-          `work_unit depends_on "${dep}" is not a node-id (a slice handle SP-{n}_SL-{m} or a unit id …#eu-{i}). ` +
-            `A work unit never depends on a file path: units serialize on a SHARED FOOTPRINT, not on logical/build order — ` +
-            `so a file another unit also touches belongs in that unit's \`footprint\`, not here. (See the methodology work-units model.)`,
-        );
-      }
+    // A work_unit `depends_on` is removed (SP-5/1): it was ungrounded (not a produced/
+    // consumed artifact) AND unauthorable at create time (the slice has no number, so its
+    // units have no `#eu-k` node-ids yet — the exact `#27` problem `consumes` solved).
+    // Refuse it, naming `consumes` as the grounded replacement: name the file(s) a sibling
+    // unit produces that this unit reads, and `buildUnitDag` resolves a real dependency edge
+    // to the producing unit (multi-writer → all producers).
+    if (wu.depends_on?.length) {
+      throw new Error(
+        `work_unit \`depends_on\` is no longer accepted (it was ungrounded and unauthorable ` +
+          `before the slice has a number). Replace it with \`consumes\`: name the file(s) a ` +
+          `SIBLING unit produces that this unit reads — a file, not a node-id — and the DAG ` +
+          `resolves a real edge to that producer. (offending depends_on: ${wu.depends_on.join(", ")})`,
+      );
     }
   }
 
@@ -2402,11 +2399,11 @@ export async function createSlice(
 
   // Authoring-time DAG gate (TEP-th3i18 #17): build the Spec's work-unit DAG —
   // this new slice plus its siblings — and reject a malformed graph (a dangling
-  // dependency, a footprint-path dep that resolves to no node, or a cycle) **at
-  // creation**, not when a run is dispatched and burned. `buildUnitDag` resolves
-  // a slice-handle dep to that slice's unit ids (the #18 fix), so a valid
-  // inter-slice dependency on a unit-bearing slice passes. The new slice's handle
-  // is a placeholder (nothing depends on it yet — it can't be a dep target).
+  // dependency or a cycle) **at creation**, not when a run is dispatched and
+  // burned. `buildUnitDag` sources every edge from `consumes`+footprint over the
+  // GLOBAL set of the Spec's units (SP-5/1), so the gate routes via `consumes`
+  // only — no authored `depends_on` is consulted. The new slice's handle is a
+  // placeholder (nothing depends on it yet — it can't be a dep target).
   {
     const dagSlices: SliceForDag[] = [];
     for (const rel of await store.listSlices(args.spec)) {
@@ -2416,9 +2413,6 @@ export async function createSlice(
       dagSlices.push({
         handle: sliceHandleFromMatch(m),
         status: String(sfm.status ?? "ready"),
-        dependsOn: Array.isArray(sfm.depends_on)
-          ? (sfm.depends_on as string[])
-          : [],
         files: Array.isArray(sfm.files) ? (sfm.files as string[]) : [],
         workUnits: Array.isArray(sfm.work_units)
           ? (sfm.work_units as SliceForDag["workUnits"])
@@ -2431,7 +2425,6 @@ export async function createSlice(
     dagSlices.push({
       handle: `${specHandle(args.spec)}_SL-new`,
       status: "ready",
-      dependsOn: args.depends_on ?? [],
       files: args.files ?? [],
       workUnits: (args.work_units ?? []) as SliceForDag["workUnits"],
       satisfies: args.satisfies ?? [],
@@ -2445,7 +2438,7 @@ export async function createSlice(
     if (!dagVerdict.ok) {
       throw new Error(
         `Work-unit DAG is malformed — refusing to create the slice:\n${dagVerdict.reason}\n` +
-          `(A depends_on names a node-id, not a file; units serialize on shared footprint, not logical order — see the methodology work-units model.)`,
+          `(Edges come from \`consumes\`+footprint — a unit depends on whoever produces the files it consumes; see the methodology work-units model.)`,
       );
     }
   }
@@ -2517,7 +2510,6 @@ export async function createSlice(
     parent: `SP-${args.spec.split("/")[1] ?? args.spec}`,
     status: "ready",
   };
-  if (args.depends_on?.length) fm.depends_on = args.depends_on;
   if (args.parallel) fm.parallel = true;
   if (group) fm.parallel_group = group;
   if (args.files?.length) fm.files = args.files;

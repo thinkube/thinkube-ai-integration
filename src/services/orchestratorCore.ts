@@ -94,10 +94,11 @@ export async function runWithConcurrency<T, R>(
 
 export interface WorkUnit {
   footprint: string[];
-  depends_on?: string[];
   /** Files a SIBLING unit produces that this unit reads (the contract-first reference).
-   *  Resolved by `buildUnitDag` into a real dependency edge on the producing unit —
-   *  authorable without a node-id, so it works before the slice has a number. */
+   *  Resolved by `buildUnitDag` into a real dependency edge on the producing unit(s) —
+   *  authorable without a node-id, so it works before the slice has a number. This is the
+   *  ONLY authored dependency language: the ungrounded `depends_on` form was removed
+   *  (SP-5/1) — `consumes`+footprint is the single edge source. */
   consumes?: string[];
   execution: "serial" | "mechanize" | "fan-out";
 }
@@ -139,8 +140,13 @@ export interface SliceForDag {
   handle: string;
   /** ready | doing | done | requires-attention | archived. */
   status: string;
-  /** Slice-level `depends_on` (handles). */
-  dependsOn: string[];
+  /**
+   * @deprecated Authored slice-level `depends_on` is RETIRED (SP-5/1): it is never read —
+   * `buildUnitDag` sources every edge from `consumes`+footprint. Retained as an optional,
+   * ignored field only so the few remaining callers that still pass it keep compiling; do
+   * not author new uses. The grounded replacement is a unit `consumes`.
+   */
+  dependsOn?: string[];
   /** Declared `files:` (the footprint for a unit-less legacy slice). */
   files: string[];
   /** `work_units` (may be empty → the whole slice is one serial unit). */
@@ -172,85 +178,81 @@ export interface SchedUnit {
  * slice's work units are batched by shape (`batchExecutionUnits`), and every resulting
  * execution unit becomes a node — pooled across all slices into one graph. A slice with
  * no `work_units` (legacy) becomes ONE serial node whose footprint is its declared
- * `files`. Each node inherits its slice's `depends_on` (the slice can't start until its
- * dep-slices are done) plus its work units' own `depends_on`.
+ * `files`.
+ *
+ * **`consumes`+footprint is the only edge language (SP-5/1).** A unit's dependency edges
+ * come solely from its `consumes`: each consumed file is resolved, over the **global** set
+ * of every slice's execution units, to the unit(s) whose footprint **produces** that file —
+ * so a `consumes` always lands on the real producer, anywhere in the Spec, across slice
+ * boundaries (the #27 regression was a per-slice `fileToNode` that couldn't see producers in
+ * sibling slices). A file written by **multiple** units resolves to **all** of them, so a
+ * consumer depends on every writer (it always reads the file fully written). The authored
+ * `depends_on` forms (slice-level and work-unit-level) and the old slice-handle `expand()`
+ * path are gone; an independent cross-slice unit that consumes nothing gets no edge.
  */
 export function buildUnitDag(slices: SliceForDag[]): SchedUnit[] {
-  // Pre-pass: the node ids each slice emits. A unit-less slice's node IS its
-  // handle; a unit-bearing slice's nodes are `${handle}#eu-{i}`. This lets a
-  // slice-level `depends_on` (a bare handle) be **expanded** to the dep-slice's
-  // unit ids — a dependency on a slice means "wait for ALL its units." Without
-  // this, a handle dep on a unit-bearing slice is unresolvable in the static DAG
-  // (its nodes are `#eu-{i}`, never the bare handle) even though `readyFrontier`
-  // resolves it at runtime via the done-set — the static/runtime asymmetry that
-  // made `validateDag` false-reject a correctly-authored inter-slice dep
-  // (TEP-th3i18 #18). Expansion is a no-op for a unit-less dep-slice (its id ==
-  // its handle), so legacy slice graphs are unchanged.
+  const normFile = (f: string) => f.replace(/^\.\//, "");
+
+  // Batch each unit-bearing slice's work units into execution units once; a unit-less
+  // (legacy) slice has none (it becomes a single serial node keyed by its bare handle).
   const eusBySlice = new Map<string, ExecutionUnit[]>();
-  const nodeIdsBySlice = new Map<string, string[]>();
   for (const s of slices) {
     const units = s.workUnits ?? [];
-    if (units.length === 0) {
-      nodeIdsBySlice.set(s.handle, [s.handle]);
-    } else {
-      const eus = batchExecutionUnits(units);
-      eusBySlice.set(s.handle, eus);
-      nodeIdsBySlice.set(
-        s.handle,
-        eus.map((_, i) => `${s.handle}#eu-${i}`),
-      );
-    }
+    if (units.length > 0) eusBySlice.set(s.handle, batchExecutionUnits(units));
   }
-  // A dep that names a slice handle becomes that slice's unit ids; a dep already
-  // a unit id (or an unresolvable one — a footprint path / dangling handle) is
-  // passed through so `validateDag` can flag it.
-  const expand = (deps: string[]): string[] => [
-    ...new Set(deps.flatMap((d) => nodeIdsBySlice.get(d) ?? [d])),
-  ];
+
+  // GLOBAL producer map: file → the node-id(s) that produce it, built ONCE over EVERY
+  // slice's execution units (and each unit-less slice's declared `files`). Hoisting this
+  // out of the per-slice loop is the fix — a `consumes` now resolves against the whole
+  // Spec, not just its own slice (the cross-slice edge #27 needed). Multiple producers of
+  // the same file all map to it (multi-writer fan-in).
+  const fileToNodes = new Map<string, string[]>();
+  const addProducer = (file: string, id: string): void => {
+    const key = normFile(file);
+    const arr = fileToNodes.get(key) ?? [];
+    if (!arr.includes(id)) arr.push(id);
+    fileToNodes.set(key, arr);
+  };
+  for (const s of slices) {
+    const eus = eusBySlice.get(s.handle);
+    if (!eus) {
+      for (const f of s.files ?? []) addProducer(f, s.handle);
+      continue;
+    }
+    eus.forEach((eu, i) => {
+      const id = `${s.handle}#eu-${i}`;
+      for (const u of eu.units)
+        for (const f of u.footprint ?? []) addProducer(f, id);
+    });
+  }
 
   const out: SchedUnit[] = [];
   for (const s of slices) {
-    const sliceDeps = s.dependsOn ?? [];
-    const units = s.workUnits ?? [];
-    if (units.length === 0) {
+    const eus = eusBySlice.get(s.handle);
+    if (!eus) {
       out.push({
         id: s.handle,
         slice: s.handle,
         footprint: s.files ?? [],
-        dependsOn: expand(sliceDeps),
+        dependsOn: [],
         shape: "serial",
       });
       continue;
     }
-    const eus = eusBySlice.get(s.handle)!;
-    // file → the eu node-id that produces it (within this slice), so a unit's
-    // `consumes` resolves to a real edge on the producing sibling — the authorable
-    // contract-first reference (no node-id / unborn-slice-number needed).
-    const normFile = (f: string) => f.replace(/^\.\//, "");
-    const fileToNode = new Map<string, string>();
-    eus.forEach((eu, i) => {
-      const id = `${s.handle}#eu-${i}`;
-      for (const u of eu.units)
-        for (const f of u.footprint ?? []) fileToNode.set(normFile(f), id);
-    });
     eus.forEach((eu, i) => {
       const thisId = `${s.handle}#eu-${i}`;
       const footprint = [
         ...new Set(eu.units.flatMap((u) => u.footprint ?? [])),
       ];
+      // The unit's ONLY edges: resolve each consumed file to ALL its producers over the
+      // global map, dropping self-references (a unit consuming a file in its own footprint).
       const consumesDeps = eu.units.flatMap((u) =>
-        ((u as WorkUnit & { consumes?: string[] }).consumes ?? [])
-          .map((c) => fileToNode.get(normFile(c)))
-          .filter((id): id is string => !!id && id !== thisId),
+        ((u as WorkUnit & { consumes?: string[] }).consumes ?? []).flatMap(
+          (c) => fileToNodes.get(normFile(c)) ?? [],
+        ),
       );
       const dependsOn = [
-        ...new Set([
-          ...expand([
-            ...sliceDeps,
-            ...eu.units.flatMap((u) => u.depends_on ?? []),
-          ]),
-          ...consumesDeps,
-        ]),
+        ...new Set(consumesDeps.filter((id) => id !== thisId)),
       ];
       const note =
         eu.units
@@ -258,7 +260,7 @@ export function buildUnitDag(slices: SliceForDag[]): SchedUnit[] {
           .filter(Boolean)
           .join("; ") || undefined;
       out.push({
-        id: `${s.handle}#eu-${i}`,
+        id: thisId,
         slice: s.handle,
         footprint,
         dependsOn,

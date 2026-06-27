@@ -1,12 +1,19 @@
 /**
  * SP-th4wqi — contract-first slicing. `create_slice` must refuse the
  * **unsequenced-integration** shape: a `*.test.*` (or declared-integration)
- * **fan-out** work-unit with **no `depends_on`**, sitting beside ≥1 sibling
+ * **fan-out** work-unit with **no `consumes`**, sitting beside ≥1 sibling
  * implementation unit. That's the structure where disjoint-footprint siblings
  * each invent the shared contract and diverge (the SP-D/SP-th4wqe AC#3 failure).
  * The remedy is **contract-first**: define the seam as one node up front and have
- * every implementer + test `depends_on` that node — so the fan-out is preserved
+ * every implementer + test `consumes` that node's file — so the fan-out is preserved
  * (only the contract precedes it) and nobody re-invents the contract.
+ *
+ * `consumes` is the SINGLE authored dependency language (SP-5/1): the ungrounded
+ * `depends_on` form — both slice-level and work_unit-level — was deleted from the
+ * schema and `create_slice` (and from `WorkUnit`/`buildUnitDag`). A unit names the
+ * file(s) a sibling produces and `buildUnitDag` resolves a real edge to that producer.
+ * Because `consumes` is a filename (not the unborn slice's `#eu-k` node-id), it is
+ * authorable at create time — the property the contract-first remedy needs.
  *
  * These tests CONSUME the `parallelSlices.ts` contract rather than re-deriving it:
  *   • `CONTRACT_FIRST_RULE_MSG`     — the teaching message the gate refuses with;
@@ -19,8 +26,8 @@
  *
  * Verification altitude (spec constraint): drive the **real `create_slice`
  * handler via `dispatchTool`** over a tmp `ThinkubeStore` and assert the
- * refusal / acceptance + message — never a pure predicate in isolation. AC#4
- * alone is pure (`buildUnitDag`), proving the remedy fans out rather than
+ * refusal / acceptance + message — never a pure predicate in isolation. The
+ * buildUnitDag case alone is pure, proving the remedy fans out rather than
  * serializing producer→consumer→test.
  */
 import "./installVscodeStub";
@@ -76,7 +83,7 @@ test("create_slice refuses an unsequenced-integration test unit (names the rule 
         // ≥2 sibling PRODUCERS sharing a contract — the test integrates both
         { footprint: ["src/widget.ts"], execution: "fan-out", note: "impl" },
         { footprint: ["src/gadget.ts"], execution: "fan-out", note: "impl" },
-        // the offending unit: a *.test.* fan-out with NO depends_on
+        // the offending unit: a *.test.* fan-out with NO consumes
         {
           footprint: ["src/widget.test.ts"],
           execution: "fan-out",
@@ -102,45 +109,42 @@ test("create_slice refuses an unsequenced-integration test unit (names the rule 
   );
 });
 
-// ── AC2: accepts the same cluster routed through a shared contract node ──────
-test("create_slice accepts contract-node-routed integration (a common depends_on sequences the test)", async () => {
+// ── AC2: accepts the same cluster routed through a shared contract file ──────
+test("create_slice accepts contract-file-routed integration (a common `consumes` sequences the test)", async () => {
   const store = await seededStore();
 
-  // Define the contract seam first, as its own node (a real, resolvable handle).
-  const contract = (await create(store, {
-    title: "contract: define the widget seam",
+  // The SAME cluster as AC1, but the seam is now defined as its own sibling unit
+  // (it PRODUCES `src/widgetContract.ts`) and every implementer + test `consumes`
+  // that file — so the test is sequenced behind a real, authorable contract, not
+  // an unborn slice's `#eu-k` node-id. `consumes` is the only dependency language
+  // (SP-5/1); a filename is authorable at create time, the deleted `depends_on`
+  // node-id was not.
+  const res = (await create(store, {
+    title: "good: cluster routed through the contract file via consumes",
     body: "detail",
     work_units: [
+      // the contract seam, defined first as its own producing node
       {
         footprint: ["src/widgetContract.ts"],
         execution: "serial",
-        note: "define",
+        note: "define the widget seam",
       },
-    ],
-  })) as { slice: string };
-
-  // The SAME cluster as AC1, but every implementer + test now shares a
-  // `depends_on` on the contract node — so the test is sequenced, not unsequenced.
-  const res = (await create(store, {
-    title: "good: cluster routed through the contract node",
-    body: "detail",
-    work_units: [
       {
         footprint: ["src/widget.ts"],
         execution: "fan-out",
-        depends_on: [contract.slice],
+        consumes: ["src/widgetContract.ts"],
         note: "impl",
       },
       {
         footprint: ["src/gadget.ts"],
         execution: "fan-out",
-        depends_on: [contract.slice],
+        consumes: ["src/widgetContract.ts"],
         note: "impl",
       },
       {
         footprint: ["src/widget.test.ts"],
         execution: "fan-out",
-        depends_on: [contract.slice],
+        consumes: ["src/widgetContract.ts"],
         note: "test",
       },
     ],
@@ -153,7 +157,7 @@ test("create_slice accepts contract-node-routed integration (a common depends_on
 test("create_slice honors the opt-out flag: an unsequenced test is accepted when it opts out", async () => {
   const store = await seededStore();
 
-  // Same shape AC1 refuses (test fan-out, no depends_on, beside an impl), but the
+  // Same shape AC1 refuses (test fan-out, no consumes, beside an impl), but the
   // test unit carries the imported opt-out flag → a genuinely-independent test is
   // not blocked by the heuristic (the escape hatch against false positives).
   const res = (await create(store, {
@@ -175,10 +179,11 @@ test("create_slice honors the opt-out flag: an unsequenced test is accepted when
 });
 
 // ── AC4: the remedy preserves parallelism (pure buildUnitDag) ────────────────
-test("buildUnitDag keeps contract-node implementers parallel — they share the dep, not each other", () => {
+test("buildUnitDag keeps contract-consuming implementers parallel — they share the producer, not each other", () => {
   // Two implementers + the contract node in one slice. The contract unit is
-  // `serial` → eu-0 (`TEP-1_SP-1_SL-1#eu-0`); each fan-out implementer depends_on
-  // THAT node, never on the sibling. Explicit handle ⇒ the eu ids are deterministic.
+  // `serial` → eu-0 (`TEP-1_SP-1_SL-1#eu-0`); each fan-out implementer `consumes`
+  // THAT unit's file (`src/contract.ts`), so `buildUnitDag` resolves an edge onto
+  // the producer — never onto the sibling implementer.
   const dag = buildUnitDag([
     {
       handle: "TEP-1_SP-1_SL-1",
@@ -194,13 +199,13 @@ test("buildUnitDag keeps contract-node implementers parallel — they share the 
         {
           footprint: ["src/implA.ts"],
           execution: "fan-out",
-          depends_on: ["TEP-1_SP-1_SL-1#eu-0"],
+          consumes: ["src/contract.ts"],
           note: "A",
         },
         {
           footprint: ["src/implB.ts"],
           execution: "fan-out",
-          depends_on: ["TEP-1_SP-1_SL-1#eu-0"],
+          consumes: ["src/contract.ts"],
           note: "B",
         },
       ],
@@ -212,14 +217,14 @@ test("buildUnitDag keeps contract-node implementers parallel — they share the 
   const implB = dag.find((u) => u.footprint.includes("src/implB.ts"))!;
   assert.ok(contract && implA && implB, "all three nodes are present");
 
-  // Both implementers depend on the shared contract node...
+  // Both implementers depend on the shared contract producer...
   assert.ok(
     implA.dependsOn.includes(contract.id),
-    "implA waits on the contract node",
+    "implA waits on the contract producer it consumes",
   );
   assert.ok(
     implB.dependsOn.includes(contract.id),
-    "implB waits on the contract node",
+    "implB waits on the contract producer it consumes",
   );
 
   // ...but NOT on each other → mutually independent, parallel-eligible. This is
