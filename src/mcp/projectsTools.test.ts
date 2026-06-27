@@ -15,6 +15,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { ThinkubeStore } from "../store/ThinkubeStore";
+import { projectTeps } from "../store/projects";
 import {
   listProjects,
   getProject,
@@ -315,6 +316,89 @@ test("promote_tep re-ids to avoid a collision with the project's existing TEP", 
         "tep.md",
       ),
     ),
+  );
+});
+
+test("promote_tep places the TEP under the project's existing <org>/teps root", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tk-promote-org-"));
+  fs.mkdirSync(path.join(root, "Platform", "projects", "rebrand"), {
+    recursive: true,
+  });
+  fs.writeFileSync(
+    path.join(root, "Platform", "projects", "rebrand", "project.yaml"),
+    "name: Rebrand\n",
+  );
+  // The project's existing TEPs live under an `<org>/teps` segment (migrated
+  // project) — the promoted TEP must land THERE, not at a sibling bare `teps/`
+  // the org-aware projectTeps would never read.
+  fs.mkdirSync(
+    path.join(
+      root,
+      "Platform",
+      "projects",
+      "rebrand",
+      "cmxela",
+      "teps",
+      "TEP-1",
+    ),
+    { recursive: true },
+  );
+  fs.writeFileSync(
+    path.join(
+      root,
+      "Platform",
+      "projects",
+      "rebrand",
+      "cmxela",
+      "teps",
+      "TEP-1",
+      "tep.md",
+    ),
+    "---\nkind: tep\nid: TEP-1\n---\n# existing\n",
+  );
+
+  const originDir = path.join(root, "Platform", "core", "thinkube");
+  fs.mkdirSync(originDir, { recursive: true });
+  const origin = new ThinkubeStore(originDir, originDir);
+  await origin.writeFile(
+    origin.pathForTep("9"),
+    { kind: "tep", id: "TEP-9" },
+    "# incoming\n",
+  );
+
+  const ctx = {
+    env: { boardRoot: root },
+    boards: {
+      list: () => [{ id: "O", worktree: false }],
+      resolve: () => origin,
+    },
+  };
+  const res = (await promoteTep(ctx as never, "9", "Platform", "rebrand")) as {
+    tep: string;
+  };
+
+  // Re-id'd to TEP-2 (next after the existing TEP-1) AND placed under cmxela/teps,
+  // so projectTeps/get_project can see it.
+  assert.equal(res.tep, "TEP-2");
+  assert.ok(
+    fs.existsSync(
+      path.join(
+        root,
+        "Platform",
+        "projects",
+        "rebrand",
+        "cmxela",
+        "teps",
+        "TEP-2",
+        "tep.md",
+      ),
+    ),
+    "promoted TEP must land under the project's <org>/teps root",
+  );
+  assert.deepEqual(
+    projectTeps(root, "Platform", "rebrand").sort(),
+    ["1", "2"],
+    "projectTeps must enumerate both the existing and the promoted TEP",
   );
 });
 

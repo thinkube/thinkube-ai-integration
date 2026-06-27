@@ -1753,28 +1753,27 @@ export async function promoteTep(
   // TEP's number unique only within a (board, org) scope, so a project keeps its
   // OWN TEP sequence — preserving the origin number would collide with the
   // project's existing TEP-{n} (or leave its numbering non-contiguous). Allocate
-  // the project's next free number (scan-max+1 over its umbrella TEPs).
+  // the project's next free number and resolve the destination through the
+  // project's OWN store, so the TEP lands under whatever `teps` root the project
+  // actually uses (`<org>/teps` for a migrated project, bare `teps` for a fresh
+  // one) — NOT a hardcoded bare `teps`, which would be invisible to a project
+  // whose other TEPs live under `<org>/teps`.
   const projectDir = path.join(boardRoot, product, "projects", projectId);
-  const taken = projectTeps(boardRoot, product, projectId)
-    .map((id) => Number(id))
-    .filter((n) => Number.isFinite(n));
-  const newId = String((taken.length ? Math.max(...taken) : 0) + 1);
+  const projectStore = new ThinkubeStore(projectDir, projectDir);
+  const newId = await projectStore.nextTepId();
+  const movedTepRel = projectStore.pathForTep(newId); // org-aware, BEFORE the move
+  const destTepDirRel = path.dirname(movedTepRel);
 
   // Move the TEP's whole nested dir (`<org>/teps/TEP-old/` — tep.md + its SP-m
-  // specs) into the project under the re-allocated number. A project is its own
-  // scope, so it uses the bare `teps/` root (no per-maintainer `<org>/` segment);
-  // `projectTepPath` and the sidebar's `listTeps` both read that bare tree. Slice
-  // handles derive from the PATH, so the nested spec/slice handles re-id with the
-  // moved dir — only the link layer needs rewiring.
-  const destTepDirRel = path.join("teps", `TEP-${newId}`);
+  // specs) into the project under the re-allocated number. Slice handles derive
+  // from the PATH, so the nested spec/slice handles re-id with the moved dir —
+  // only the link layer needs rewiring.
   const src = path.join(origin.boardDir, origin.tepDirRel);
   const dest = path.join(projectDir, destTepDirRel);
   fsSync.mkdirSync(path.dirname(dest), { recursive: true });
   fsSync.renameSync(src, dest);
 
   // Keep the moved TEP's own frontmatter id in sync with its new dir number.
-  const projectStore = new ThinkubeStore(projectDir, projectDir);
-  const movedTepRel = projectStore.pathForTep(newId);
   const movedDoc = await projectStore.getFile(movedTepRel);
   if (movedDoc) {
     await projectStore.writeFile(
@@ -2825,12 +2824,27 @@ export async function writeTep(
   //   - session  → the store, store-relative (`teps/TEP-{id}.md` on this board);
   //   - project  → the promoted copy, board-root-relative fs (no session dup).
   // Everything between (read existing → merge body/frontmatter → write) is shared.
-  const projectAbs =
-    dest.kind === "project" && boardRoot
-      ? path.join(boardRoot, dest.relativePath)
-      : undefined;
+  // For the project copy resolve the path through the project's OWN store so it
+  // lands under whatever `teps` root the project uses (`<org>/teps` for a
+  // migrated project, bare `teps` for a fresh one) — the pure `projectTepPath`
+  // can't know the org segment, so don't trust `dest.relativePath` for the bytes.
   const sessionRel = store.pathForTep(tepId);
-  const relativePath = dest.kind === "project" ? dest.relativePath : sessionRel;
+  let projectAbs: string | undefined;
+  let relativePath: string;
+  if (dest.kind === "project" && boardRoot) {
+    const projDir = path.join(
+      boardRoot,
+      dest.product,
+      "projects",
+      dest.projectId,
+    );
+    const projRel = new ThinkubeStore(projDir, projDir).pathForTep(tepId);
+    projectAbs = path.join(projDir, projRel);
+    relativePath = path.join(dest.product, "projects", dest.projectId, projRel);
+  } else {
+    projectAbs = undefined;
+    relativePath = sessionRel;
+  }
 
   const existing: ParsedFile | undefined = projectAbs
     ? await readMarkdownFile(projectAbs)
