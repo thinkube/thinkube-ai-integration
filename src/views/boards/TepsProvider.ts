@@ -43,8 +43,12 @@ export type TepNode =
       /** The namespace owning this TEP — repo namespace or project namespace
        *  (SP-tgvud7). Drives the cross-board Specs resolver on selection. */
       ownerNamespace: string;
-      /** Specs delivering this TEP (`implemented_by:` frontmatter). */
+      /** Specs delivering this TEP (its `SP-m` subdirs in the tree). */
       implementedBy: ImplementingSpec[];
+      /** Total specs under the TEP, and how many are delivered (`accepted:` set) —
+       *  the at-a-glance progress roll-up. */
+      specTotal: number;
+      specDelivered: number;
       /** Hidden from the default nav; revealed (marked) under "Show archived" (TEP-tg86v7). */
       archived: boolean;
     }
@@ -153,6 +157,9 @@ export class TepsProvider implements vscode.TreeDataProvider<TepNode> {
       ];
     }
 
+    // In the org-scoped tree a TEP's specs ARE its `SP-m` subdirs (location is the
+    // relationship), so roll them up from the store — not stale `implemented_by`.
+    const allSpecs = await store.listSpecDirs();
     const nodes: TepNode[] = [];
     for (const { id, relativePath: rel } of teps) {
       const doc = await store.getFile(rel);
@@ -164,25 +171,21 @@ export class TepsProvider implements vscode.TreeDataProvider<TepNode> {
         typeof fm?.title === "string"
           ? fm.title
           : (firstHeading(doc?.body) ?? "(untitled)");
-      // `implemented_by: [SP-<id>, …]` → click-through to each delivering Spec.
-      const implementedBy: ImplementingSpec[] = Array.isArray(
-        fm?.implemented_by,
-      )
-        ? fm.implemented_by
-            .filter(
-              (s): s is string => typeof s === "string" && s.trim() !== "",
-            )
-            .map((s) => {
-              const specId = s.trim().replace(/^SP-/i, "");
-              return {
-                specId,
-                file: path.join(
-                  store.thinkubeDir,
-                  store.pathForSpecDoc(specId),
-                ),
-              };
-            })
-        : [];
+      // The TEP's specs = its `SP-m` subdirs in the tree (composite id `${tep}/${m}`).
+      // A spec is "delivered" when it carries an `accepted:` stamp.
+      const specIds = allSpecs
+        .filter((s) => s.split("/")[0] === id)
+        .sort((a, b) => Number(a.split("/")[1]) - Number(b.split("/")[1]));
+      let specDelivered = 0;
+      const implementedBy: ImplementingSpec[] = [];
+      for (const s of specIds) {
+        const sfm = (await store.getFile(store.pathForSpecDoc(s)))?.frontmatter;
+        if (sfm?.accepted != null && sfm.accepted !== "") specDelivered++;
+        implementedBy.push({
+          specId: s.split("/")[1],
+          file: path.join(store.thinkubeDir, store.pathForSpecDoc(s)),
+        });
+      }
       nodes.push({
         kind: "tep",
         tepId: id,
@@ -191,6 +194,8 @@ export class TepsProvider implements vscode.TreeDataProvider<TepNode> {
         file: path.join(store.thinkubeDir, rel),
         ownerNamespace,
         implementedBy,
+        specTotal: specIds.length,
+        specDelivered,
         archived,
       });
     }

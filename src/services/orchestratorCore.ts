@@ -1116,9 +1116,9 @@ export function buildDeliveryReport(i: DeliveryReportInput): string {
     : [];
 
   return [
-    `# Delivery — SP-${i.specNumber}`,
+    `# Delivery — TEP-${i.specNumber.replace("/", "_SP-")}`,
     "",
-    `Orchestrated to branch \`spec/SP-${i.specNumber}\`${i.sha ? ` at \`${i.sha}\`` : ""}. ` +
+    `Orchestrated to branch \`spec/TEP-${i.specNumber.replace("/", "_SP-")}\`${i.sha ? ` at \`${i.sha}\`` : ""}. ` +
       `${i.advanced.length} slice(s) advanced to Done; ${i.units.length} execution unit(s) ran` +
       `${i.committed ? " — committed ✓" : " — not committed"}.`,
     "",
@@ -1138,7 +1138,7 @@ export function buildDeliveryReport(i: DeliveryReportInput): string {
     "## Next",
     "",
     i.committed
-      ? `1. Review the \`spec/SP-${i.specNumber}\` branch (the committed change) — the per-AC table above is the evidence.\n` +
+      ? `1. Review the \`spec/TEP-${i.specNumber.replace("/", "_SP-")}\` branch (the committed change) — the per-AC table above is the evidence.\n` +
         `2. **Accept** to merge the Spec to \`main\` (gated on every AC checked), or **Reject** to open a primed session.`
       : `1. The closing gate did not pass — see the per-AC table / caught problems above.\n` +
         `2. Resolve the requires-attention slice(s), then re-run the orchestrator.`,

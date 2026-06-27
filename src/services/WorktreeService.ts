@@ -20,6 +20,18 @@ import { provisionWorktree } from "./worktreeProvision";
 
 const execFileAsync = promisify(execFile);
 
+/** Branch for a Spec — `spec/TEP-n_SP-m` for an org-scoped composite id
+ *  (`${tep}/${spec}`), legacy `spec/SP-{id}` for a bare id. */
+function specBranchName(specNumber: string): string {
+  const [tep, sp] = specNumber.split("/");
+  return sp ? `spec/TEP-${tep}_SP-${sp}` : specBranchName(specNumber);
+}
+/** Worktree directory leaf for a Spec (the tep-qualified handle, or legacy). */
+function specWtName(specNumber: string): string {
+  const [tep, sp] = specNumber.split("/");
+  return sp ? `TEP-${tep}_SP-${sp}` : `SP-${specNumber}`;
+}
+
 export interface WorktreeEntry {
   /** Absolute path of the worktree's working directory. */
   path: string;
@@ -126,7 +138,7 @@ export function findSpecWorktree(
   entries: WorktreeEntry[],
   specNumber: string,
 ): WorktreeEntry | undefined {
-  return entries.find((e) => e.branch === `spec/SP-${specNumber}`);
+  return entries.find((e) => e.branch === specBranchName(specNumber));
 }
 
 /**
@@ -151,7 +163,7 @@ export function planWorktree(
       path.dirname(canonicalRepo),
       `${path.basename(canonicalRepo)}-worktrees`,
     );
-  return { path: path.join(root, `SP-${specNumber}`), reuse: false };
+  return { path: path.join(root, specWtName(specNumber)), reuse: false };
 }
 
 /** The MCP server key whose env carries the board location for Claude Code. */
@@ -340,7 +352,7 @@ export class WorktreeService {
     baseDir?: string,
     boardRoot?: string,
   ): Promise<string> {
-    const branch = `spec/SP-${specNumber}`;
+    const branch = specBranchName(specNumber);
     // Reuse an existing worktree for this Spec rather than failing on "already
     // exists" — re-starting a Spec must be idempotent (SP-tgpwbm AC7).
     const plan = planWorktree(
@@ -462,7 +474,7 @@ export class WorktreeService {
       // never turn a landed, stamped accept into an error.
       await execFileAsync(
         "git",
-        ["-C", canonicalRepo, "branch", "-D", `spec/SP-${specNumber}`],
+        ["-C", canonicalRepo, "branch", "-D", specBranchName(specNumber)],
         { timeout: 5000 },
       ).catch(() => undefined);
       await execFileAsync(
@@ -473,7 +485,7 @@ export class WorktreeService {
           "push",
           "origin",
           "--delete",
-          `spec/SP-${specNumber}`,
+          specBranchName(specNumber),
         ],
         { timeout: 30000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } },
       ).catch(() => undefined);

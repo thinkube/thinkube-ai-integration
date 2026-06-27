@@ -224,13 +224,13 @@ export function registerOrchestrateCommands(
           const store = new ThinkubeStore(repoPath, boardDir);
           const h = handle ?? (await pickAttentionSlice(store));
           if (!h) return;
-          const m = /^SP-(.+)_SL-(\d+)$/.exec(h);
+          const m = /^TEP-(\d+)_SP-(\d+)_SL-(\d+)$/.exec(h);
           if (!m) {
             vscode.window.showErrorMessage(`Bad slice handle "${h}".`);
             return;
           }
-          const specId = m[1];
-          const rel = store.pathForSlice(specId, Number(m[2]));
+          const specId = `${m[1]}/${m[2]}`;
+          const rel = store.pathForSlice(specId, Number(m[3]));
           const parsed = await store.getFile(rel);
           const fm = (parsed?.frontmatter ?? {}) as Record<string, unknown>;
           const body = parsed?.body ?? "";

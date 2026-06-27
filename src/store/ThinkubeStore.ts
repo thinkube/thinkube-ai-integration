@@ -31,6 +31,7 @@
  * higher layers debounce if they need to.
  */
 import * as fs from "node:fs/promises";
+import * as fsSync from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
@@ -136,6 +137,42 @@ export class ThinkubeStore implements vscode.Disposable {
    * specs/teps/decisions/retros). */
   get thinkubeDir(): string {
     return this.boardDir;
+  }
+
+  // ─── Org-scoped tree layout (TEP-th8lzj) ────────────────────────────────
+  // The board stores artifacts as a tree under a per-maintainer org segment:
+  //   <org>/teps/TEP-n/tep.md · <org>/teps/TEP-n/SP-m/spec.md · …/SL-k.md
+  // The org is discovered (a child dir of the board holding a `teps/`). Cached
+  // once found; sync so the path builders stay synchronous.
+  private _orgSeg: string | undefined;
+  private orgSeg(): string | undefined {
+    if (this._orgSeg) return this._orgSeg;
+    try {
+      for (const e of fsSync.readdirSync(this.boardDir, {
+        withFileTypes: true,
+      })) {
+        if (
+          !e.isDirectory() ||
+          e.name.startsWith(".") ||
+          e.name === "node_modules"
+        )
+          continue;
+        if (fsSync.existsSync(path.join(this.boardDir, e.name, "teps"))) {
+          this._orgSeg = e.name;
+          return e.name;
+        }
+      }
+    } catch {
+      /* board dir missing / unreadable → no org yet */
+    }
+    return undefined;
+  }
+
+  /** Board-relative `teps` root — `<org>/teps` in the new tree, bare `teps`
+   *  for an org-less (empty/uninitialised) board. */
+  private tepsRoot(): string {
+    const org = this.orgSeg();
+    return org ? `${org}/${KIND_TO_DIR.tep}` : KIND_TO_DIR.tep;
   }
 
   /** Start watching `.thinkube/**`. Idempotent. */
@@ -250,19 +287,24 @@ export class ThinkubeStore implements vscode.Disposable {
   //   .thinkube/specs/SP-{n}/spec.md      the Spec document
   //   .thinkube/specs/SP-{n}/SL-{m}.md    its Slices (numbered per-Spec)
 
-  /** Path to a Spec's document under its folder. */
+  /** Path to a Spec's document. The spec id is the composite `${tep}/${spec}`
+   *  (e.g. `1/2`) → `<org>/teps/TEP-1/SP-2/spec.md`. */
   pathForSpecDoc(specNumber: string): string {
-    return `${KIND_TO_DIR.spec}/SP-${specNumber}/spec.md`;
+    const [tep, sp] = specNumber.split("/");
+    return `${this.tepsRoot()}/TEP-${tep}/SP-${sp}/spec.md`;
   }
 
-  /** Path to a Slice file under its parent Spec's folder. */
+  /** Path to a Slice file under its parent Spec in the tree. */
   pathForSlice(specNumber: string, sliceNumber: number): string {
-    return `${KIND_TO_DIR.spec}/SP-${specNumber}/SL-${sliceNumber}.md`;
+    const [tep, sp] = specNumber.split("/");
+    return `${this.tepsRoot()}/TEP-${tep}/SP-${sp}/SL-${sliceNumber}.md`;
   }
 
-  /** The canonical human handle for a slice, e.g. `SP-tw7n0g_SL-3`. */
+  /** The canonical human handle for a slice — the tep-qualified
+   *  `TEP-n_SP-m_SL-k` flattening (the spec id is the composite `${tep}/${spec}`). */
   sliceHandle(specNumber: string, sliceNumber: number): string {
-    return `SP-${specNumber}_SL-${sliceNumber}`;
+    const [tep, sp] = specNumber.split("/");
+    return `TEP-${tep}_SP-${sp}_SL-${sliceNumber}`;
   }
 
   // ─── Tandem: TEPs (flat files, the orthogonal *why* axis — TEP-0009) ──────
@@ -271,7 +313,9 @@ export class ThinkubeStore implements vscode.Disposable {
   /** Canonical path for a NEW TEP document (slugless). Legacy TEPs may carry a
    *  `-{slug}` suffix in the filename — use `findTep` to resolve those. */
   pathForTep(tepId: string): string {
-    return `${KIND_TO_DIR.tep}/TEP-${tepId}.md`;
+    // The org-agnostic TEMPLATE scaffold stays at the fixed board-level path.
+    if (tepId === "TEMPLATE") return `${KIND_TO_DIR.tep}/TEP-TEMPLATE.md`;
+    return `${this.tepsRoot()}/TEP-${tepId}/tep.md`;
   }
 
   /** Match a TEP filename: `TEP-{id}.md` or legacy `TEP-{id}-{slug}.md`. The id
@@ -283,21 +327,25 @@ export class ThinkubeStore implements vscode.Disposable {
    *  legacy `TEP-{id}-{slug}.md` names by returning the real file path (the id
    *  alone can't reconstruct a slugged filename). */
   async listTeps(): Promise<{ id: string; relativePath: string }[]> {
-    const dir = path.join(this.thinkubeDir, KIND_TO_DIR.tep);
-    let names: string[];
+    const root = this.tepsRoot();
+    const dir = path.join(this.thinkubeDir, ...root.split("/"));
+    let entries: fsSync.Dirent[];
     try {
-      names = await fs.readdir(dir);
+      entries = await fs.readdir(dir, { withFileTypes: true });
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw err;
     }
     const out: { id: string; relativePath: string }[] = [];
-    for (const n of names) {
-      const m = ThinkubeStore.TEP_FILE_RE.exec(n);
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      const m = /^TEP-([A-Za-z0-9]+)$/.exec(e.name);
       if (m && m[1] !== "TEMPLATE")
-        out.push({ id: m[1], relativePath: `${KIND_TO_DIR.tep}/${n}` });
+        out.push({ id: m[1], relativePath: `${root}/${e.name}/tep.md` });
     }
-    return out.sort((a, b) => a.id.localeCompare(b.id));
+    return out.sort((a, b) =>
+      a.id.localeCompare(b.id, undefined, { numeric: true }),
+    );
   }
 
   /** Resolve a TEP id to its real file path (slugless or legacy slugged), or
@@ -311,21 +359,33 @@ export class ThinkubeStore implements vscode.Disposable {
   /** Spec ids (the `SP-{id}` folders) under `specs/`, sorted. Ids are opaque
    *  strings — base36-epoch for new Specs, legacy integers for old ones. */
   async listSpecDirs(): Promise<string[]> {
-    const dir = path.join(this.thinkubeDir, KIND_TO_DIR.spec);
-    let names: string[];
+    const root = this.tepsRoot();
+    const tepsDir = path.join(this.thinkubeDir, ...root.split("/"));
+    let teps: fsSync.Dirent[];
     try {
-      names = await fs.readdir(dir);
+      teps = await fs.readdir(tepsDir, { withFileTypes: true });
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw err;
     }
     const ids: string[] = [];
-    for (const n of names) {
-      // Folders only: a legacy `SP-{n}.md` file has the `.md` extension.
-      const m = /^SP-([A-Za-z0-9]+)$/.exec(n);
-      if (m) ids.push(m[1]);
+    for (const t of teps) {
+      const tm = /^TEP-([A-Za-z0-9]+)$/.exec(t.name);
+      if (!t.isDirectory() || !tm || tm[1] === "TEMPLATE") continue;
+      let specs: fsSync.Dirent[];
+      try {
+        specs = await fs.readdir(path.join(tepsDir, t.name), {
+          withFileTypes: true,
+        });
+      } catch {
+        continue;
+      }
+      for (const s of specs) {
+        const sm = /^SP-([A-Za-z0-9]+)$/.exec(s.name);
+        if (s.isDirectory() && sm) ids.push(`${tm[1]}/${sm[1]}`);
+      }
     }
-    return ids.sort((a, b) => a.localeCompare(b));
+    return ids.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   }
 
   /**
@@ -334,9 +394,16 @@ export class ThinkubeStore implements vscode.Disposable {
    */
   async listSlices(specNumber?: string): Promise<string[]> {
     const specs = specNumber != null ? [specNumber] : await this.listSpecDirs();
+    const root = this.tepsRoot();
     const out: string[] = [];
-    for (const n of specs) {
-      const dir = path.join(this.thinkubeDir, KIND_TO_DIR.spec, `SP-${n}`);
+    for (const id of specs) {
+      const [tep, sp] = id.split("/");
+      const dir = path.join(
+        this.thinkubeDir,
+        ...root.split("/"),
+        `TEP-${tep}`,
+        `SP-${sp}`,
+      );
       let names: string[];
       try {
         names = await fs.readdir(dir);
@@ -346,7 +413,7 @@ export class ThinkubeStore implements vscode.Disposable {
       }
       for (const nm of names) {
         if (/^SL-\d+\.md$/.test(nm))
-          out.push(`${KIND_TO_DIR.spec}/SP-${n}/${nm}`);
+          out.push(`${root}/TEP-${tep}/SP-${sp}/${nm}`);
       }
     }
     return out.sort();
@@ -384,10 +451,23 @@ export class ThinkubeStore implements vscode.Disposable {
    *  epoch-seconds (SP-7 / ADR-0008). No allocator, no `listSpecDirs` read, so
    *  independent writers never collide; the in-process monotonic guard keeps a
    *  single writer from reusing its own last second. */
-  async nextSpecNumber(): Promise<string> {
-    const { id, epoch } = mintEpochId(Date.now(), lastMintedEpoch);
-    lastMintedEpoch = epoch;
-    return id;
+  async nextSpecNumber(tepNumber: string): Promise<string> {
+    const root = this.tepsRoot();
+    const dir = path.join(
+      this.thinkubeDir,
+      ...root.split("/"),
+      `TEP-${tepNumber}`,
+    );
+    let max = 0;
+    try {
+      for (const e of await fs.readdir(dir, { withFileTypes: true })) {
+        const m = /^SP-(\d+)$/.exec(e.name);
+        if (e.isDirectory() && m) max = Math.max(max, Number(m[1]));
+      }
+    } catch {
+      /* no specs under this TEP yet */
+    }
+    return String(max + 1);
   }
 
   /** Next TEP id: a zero-padded base36 epoch (TEP-0009), minted exactly like a
@@ -397,9 +477,12 @@ export class ThinkubeStore implements vscode.Disposable {
    *  `TEP-<id>` regex) already accepts both this epoch form and the legacy
    *  sequential `TEP-0009` form, as it does for specs. */
   async nextTepId(): Promise<string> {
-    const { id, epoch } = mintEpochId(Date.now(), lastMintedEpoch);
-    lastMintedEpoch = epoch;
-    return id;
+    let max = 0;
+    for (const t of await this.listTeps()) {
+      const n = Number(t.id);
+      if (Number.isFinite(n)) max = Math.max(max, n);
+    }
+    return String(max + 1);
   }
 
   /** Next per-Spec Slice number = highest existing `SL-{m}` under that Spec + 1.

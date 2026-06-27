@@ -21,10 +21,11 @@ import { LauncherService } from "../services/LauncherService";
 import { SessionLinkService } from "../services/SessionLinkService";
 import { listSessionsForFolder, SessionInfo } from "../services/sessionLinks";
 import { ThinkubeStore } from "../store/ThinkubeStore";
+import { resolveOrg, gitUserName } from "../store/boardNamespace";
 import { gateSpecAcceptance } from "../methodology/qualityGates";
 import { mergeSpecPr } from "../github/specMerge";
 import { WorktreeService } from "../services/WorktreeService";
-import { retireWorktreeNote } from "./acceptLand";
+import { fastForwardBaseNote, retireWorktreeNote } from "./acceptLand";
 import { KanbanPanel } from "../views/kanban/host/Panel";
 import { ThinkubeFilesAdapter } from "../views/kanban/host/storage/ThinkubeFilesAdapter";
 import {
@@ -243,9 +244,9 @@ async function openBoardFor(
     output: deps.output,
     // A card's "detail" is its slice file open in the editor.
     openDetail: async (id: string) => {
-      const m = /^SP-([A-Za-z0-9]+)_SL-(\d+)$/.exec(id);
+      const m = /^TEP-(\d+)_SP-(\d+)_SL-(\d+)$/.exec(id);
       if (!m) return;
-      const rel = store.pathForSlice(m[1], Number(m[2]));
+      const rel = store.pathForSlice(`${m[1]}/${m[2]}`, Number(m[3]));
       await vscode.window.showTextDocument(
         vscode.Uri.file(path.join(store.thinkubeDir, rel)),
       );
@@ -292,9 +293,14 @@ async function openBoardFor(
             spec,
           )
         : "";
+      // Fast-forward local `main` to the just-merged remote (same gap acceptLandSpec
+      // closes) so the accepted work is present locally, not just on origin.
+      const syncNote = merge.merged
+        ? await fastForwardBaseNote(new WorktreeService(), store.workspaceRoot)
+        : "";
       vscode.window.showInformationMessage(
         merge.merged
-          ? `Accepted SP-${spec} — ${merge.opened ? "opened + merged" : "merged"} ${merge.branch}${merge.output ? `: ${merge.output}` : ""}.${retireNote}`
+          ? `Accepted SP-${spec} — ${merge.opened ? "opened + merged" : "merged"} ${merge.branch}${merge.output ? `: ${merge.output}` : ""}.${retireNote}${syncNote}`
           : `Accepted SP-${spec} — no PR to merge (shipped straight to main).`,
       );
     },
@@ -309,12 +315,22 @@ async function enableHere(deps: BoardDeps, r: RepoEntry): Promise<void> {
     return;
   }
   // Scaffold the board at its resolved board dir — central
-  // `<board-root>/<namespace>` when configured, else co-located.
+  // `<board-root>/<namespace>` when configured, else co-located. The org-scoped
+  // tree (TEP-th8lzj) namespaces everything one level deeper under a per-
+  // maintainer `<org>/`; specs nest under teps, so the scaffold is
+  // `<org>/{teps,decisions,retros}` (no top-level `specs/`).
   const base = r.boardDir;
-  for (const sub of ["specs", "decisions", "retros"]) {
-    await fs.mkdir(path.join(base, sub), { recursive: true });
+  let org: string;
+  try {
+    org = resolveOrg(gitUserName(r.path));
+  } catch (e) {
+    vscode.window.showErrorMessage((e as Error).message);
+    return;
+  }
+  for (const sub of ["teps", "decisions", "retros"]) {
+    await fs.mkdir(path.join(base, org, sub), { recursive: true });
     // .gitkeep so the empty dir is committable — the board is the committed tree.
-    await fs.writeFile(path.join(base, sub, ".gitkeep"), "");
+    await fs.writeFile(path.join(base, org, sub, ".gitkeep"), "");
   }
 
   // Per-repo opt-in plugin delivery (TEP-tgvwct, Phase 2): make THIS repo's

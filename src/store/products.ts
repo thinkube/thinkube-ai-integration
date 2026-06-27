@@ -42,9 +42,14 @@ function hasSubdir(dir: string, child: string): boolean {
  * org dir). Accepting both keeps discovery working before and after the
  * one-shot migration moves data into the nested tree.
  */
+// Methodology dirs that mark an enabled board (teps arrives with the first TEP;
+// specs/decisions/retros are scaffolded on enable). Any one — flat or under an
+// `<org>/` segment — counts, so an enabled-but-empty board is still a board.
+const BOARD_MARKERS = ["teps", "specs", "decisions", "retros"];
+
 function isBoardShaped(dir: string): boolean {
-  if (hasSubdir(dir, "specs")) return true;
-  // Org-scoped tree: any immediate `<org>` child that itself holds a `teps/`.
+  if (BOARD_MARKERS.some((m) => hasSubdir(dir, m))) return true;
+  // Org-scoped tree: any immediate `<org>` child that holds a methodology dir.
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -54,7 +59,8 @@ function isBoardShaped(dir: string): boolean {
   for (const e of entries) {
     if (!e.isDirectory() || e.name.startsWith(".") || SKIP.has(e.name))
       continue;
-    if (hasSubdir(path.join(dir, e.name), "teps")) return true;
+    if (BOARD_MARKERS.some((m) => hasSubdir(path.join(dir, e.name), m)))
+      return true;
   }
   return false;
 }

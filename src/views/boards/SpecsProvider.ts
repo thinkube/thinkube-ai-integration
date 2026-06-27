@@ -192,14 +192,16 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
 
     const nodes: SpecNode[] = [];
     for (const n of [...numbers].sort((a, b) => a.localeCompare(b))) {
-      const doc = await store.getFile(store.pathForSpecDoc(n));
-      const impl =
-        typeof doc?.frontmatter?.implements === "string"
-          ? doc.frontmatter.implements.trim()
-          : "";
-      // Single-repo drill-down: match the bare TEP id (legacy repo TEP path).
-      if (impl.replace(/^TEP-/i, "") !== this.tepFilter) continue;
-      const node = await this.buildSpecNode(this.repo, store, n, coords, boardRoot);
+      // Org-scoped tree: the spec's composite id is `${tep}/${m}`, so its TEP is
+      // the prefix — match the drilled-into TEP by location, not `implements:`.
+      if (n.split("/")[0] !== this.tepFilter) continue;
+      const node = await this.buildSpecNode(
+        this.repo,
+        store,
+        n,
+        coords,
+        boardRoot,
+      );
       if (node) nodes.push(node);
     }
     return nodes;
@@ -211,50 +213,34 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
     ownerNamespace: string,
     tepId: string,
   ): Promise<SpecNode[]> {
+    // Post-migration, a project's member specs physically live under the project
+    // board's tree (`<project>/<org>/teps/TEP-n/SP-m/`), not in their code repos.
+    // List them from the project store, filtered by the drilled-into TEP; each
+    // spec's home code-repo (for orchestration/commit paths) rides in its `repo:`
+    // frontmatter, resolved back to a RepoEntry.
+    const boardRoot = boardsRoot();
+    if (!boardRoot) return [];
+    const projDir = path.join(boardRoot, ...ownerNamespace.split("/"));
+    const store = new ThinkubeStore(projDir, projDir);
     const folders = (vscode.workspace.workspaceFolders ?? []).map((f) => ({
       name: f.name,
       path: f.uri.fsPath,
     }));
-    const boardRoot = boardsRoot();
-    const candidates: {
-      repo: RepoEntry;
-      store: ThinkubeStore;
-      specNumber: string;
-      impl: SpecImpl;
-    }[] = [];
-    for (const repo of discoverRepos()) {
-      if (!repo.enabled || repo.worktreeOf) continue;
-      const ns = namespaceForRepo(repo.path, folders);
-      if (!ns) continue;
-      const store = new ThinkubeStore(repo.path, repo.boardDir);
-      for (const n of await store.listSpecDirs()) {
-        const fm = (await store.getFile(store.pathForSpecDoc(n)))?.frontmatter;
-        candidates.push({
-          repo,
-          store,
-          specNumber: n,
-          impl: {
-            board: repo.name,
-            namespace: ns,
-            handle: `SP-${n}`,
-            implements:
-              typeof fm?.implements === "string" ? fm.implements : undefined,
-          },
-        });
-      }
+    const repos = discoverRepos().filter((r) => r.enabled && !r.worktreeOf);
+    const repoByNs = new Map<string, RepoEntry>();
+    for (const r of repos) {
+      const ns = namespaceForRepo(r.path, folders);
+      if (ns) repoByNs.set(ns, r);
     }
-    const hits = new Set(
-      specsImplementing(
-        ownerNamespace,
-        tepId,
-        candidates.map((c) => c.impl),
-      ).map((s) => s.handle),
-    );
     const nodes: SpecNode[] = [];
-    for (const c of candidates) {
-      if (!hits.has(c.impl.handle)) continue;
-      const coords = await detectRepoCoords(c.repo.path);
-      const node = await this.buildSpecNode(c.repo, c.store, c.specNumber, coords, boardRoot);
+    for (const n of await store.listSpecDirs()) {
+      if (n.split("/")[0] !== tepId) continue;
+      const fm = (await store.getFile(store.pathForSpecDoc(n)))?.frontmatter;
+      const homeNs = typeof fm?.repo === "string" ? fm.repo : undefined;
+      const repo = (homeNs && repoByNs.get(homeNs)) ?? repos[0];
+      if (!repo) continue;
+      const coords = await detectRepoCoords(repo.path);
+      const node = await this.buildSpecNode(repo, store, n, coords, boardRoot);
       if (node) nodes.push(node);
     }
     return nodes;
@@ -285,8 +271,16 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
       // a bare ref's TEP is in the spec's own repo (slug-tolerant via findTep).
       const file =
         ref?.namespace && boardRoot
-          ? path.join(boardRoot, ...ref.namespace.split("/"), "teps", `TEP-${tepId}.md`)
-          : path.join(store.thinkubeDir, (await store.findTep(tepId)) ?? store.pathForTep(tepId));
+          ? path.join(
+              boardRoot,
+              ...ref.namespace.split("/"),
+              "teps",
+              `TEP-${tepId}.md`,
+            )
+          : path.join(
+              store.thinkubeDir,
+              (await store.findTep(tepId)) ?? store.pathForTep(tepId),
+            );
       implementsTep = { tepId, file };
     }
     return {

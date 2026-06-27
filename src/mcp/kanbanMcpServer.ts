@@ -1222,11 +1222,22 @@ export async function dispatchTool(
       // #6 minting: `spec` is optional — when omitted, mint a fresh base36-epoch
       // id via the store allocator (parity with `write_tep`). The pure
       // `resolveSpecId` helper owns the decision; we inject the allocator.
+      // Parent TEP (from `implements:` — bare `TEP-n` or qualified `<ns>:TEP-n`)
+      // scopes a NEW spec's `SP-m` allocation; its id is the composite `${tep}/${m}`.
+      const parentTep = implementsRaw
+        ? implementsRaw.trim().split(":").pop()!.trim().replace(/^TEP-/i, "")
+        : undefined;
       const specId = await resolveSpecId(
         typeof args.spec === "number"
           ? String(args.spec)
           : optString(args, "spec"),
-        () => store.nextSpecNumber(),
+        async () => {
+          if (!parentTep)
+            throw new Error(
+              "write_spec needs `implements: TEP-<n>` to place a new spec under its TEP.",
+            );
+          return `${parentTep}/${await store.nextSpecNumber(parentTep)}`;
+        },
       );
       return writeSpec(
         store,
@@ -1342,11 +1353,28 @@ async function startSpecWorktree(spec: string, repo: string): Promise<unknown> {
   return { ok: true, spec, request: file };
 }
 
-const SLICE_PATH_RE = /specs\/SP-([A-Za-z0-9]+)\/SL-(\d+)\.md$/;
-const SLICE_HANDLE_RE = /^SP-([A-Za-z0-9]+)_SL-(\d+)$/;
+// Org-scoped tree (TEP-th8lzj): a slice file is `<org>/teps/TEP-n/SP-m/SL-k.md`;
+// the spec id is the composite `${tep}/${spec}` and its handle is the
+// tep-qualified `TEP-n_SP-m`, the slice handle `TEP-n_SP-m_SL-k`.
+const SLICE_PATH_RE = /teps\/TEP-(\d+)\/SP-(\d+)\/SL-(\d+)\.md$/;
+const SLICE_HANDLE_RE = /^TEP-(\d+)_SP-(\d+)_SL-(\d+)$/;
 // A work-unit DAG node-id: a slice handle, optionally an execution-unit suffix
 // (`#eu-{i}`). A `depends_on` must be one of these — never a footprint path.
-const NODE_ID_RE = /^SP-[A-Za-z0-9]+_SL-\d+(?:#eu-\d+)?$/;
+const NODE_ID_RE = /^TEP-\d+_SP-\d+_SL-\d+(?:#eu-\d+)?$/;
+
+/** The tep-qualified handle for a composite spec id (`${tep}/${spec}`). */
+function specHandle(specId: string): string {
+  const [tep, sp] = specId.split("/");
+  return `TEP-${tep}_SP-${sp}`;
+}
+/** The slice handle from a SLICE_PATH_RE / SLICE_HANDLE_RE match `[_, tep, spec, slice]`. */
+function sliceHandleFromMatch(m: RegExpExecArray): string {
+  return `TEP-${m[1]}_SP-${m[2]}_SL-${m[3]}`;
+}
+/** The composite spec id (`${tep}/${spec}`) from such a match. */
+function specIdFromMatch(m: RegExpExecArray): string {
+  return `${m[1]}/${m[2]}`;
+}
 const VALID_STATUSES = [
   "ready",
   "doing",
@@ -1393,7 +1421,7 @@ async function collectTaggedItems(
       (await store.getFile(store.pathForSpecDoc(spec)))?.frontmatter,
     );
     if (tags.length)
-      out.push({ boardId, handle: `SP-${spec}`, kind: "spec", tags });
+      out.push({ boardId, handle: specHandle(spec), kind: "spec", tags });
   }
   for (const rel of await store.listSlices()) {
     const m = SLICE_PATH_RE.exec(rel);
@@ -1402,7 +1430,7 @@ async function collectTaggedItems(
     if (tags.length)
       out.push({
         boardId,
-        handle: sliceHandle(m[1], Number(m[2])),
+        handle: sliceHandleFromMatch(m),
         kind: "slice",
         tags,
       });
@@ -1505,9 +1533,9 @@ export async function getProject(
       ) {
         continue;
       }
-      members.push({ board: b.id, handle: `SP-${spec}`, kind: "spec" });
+      members.push({ board: b.id, handle: specHandle(spec), kind: "spec" });
       implByTep.get(ref.id)!.push({
-        id: `SP-${spec}`,
+        id: specHandle(spec),
         accepted: typeof fm?.accepted === "string" ? fm.accepted : undefined,
       });
       // Slices inherit membership from their spec.
@@ -1516,7 +1544,7 @@ export async function getProject(
         if (m)
           members.push({
             board: b.id,
-            handle: sliceHandle(m[1], Number(m[2])),
+            handle: sliceHandleFromMatch(m),
             kind: "slice",
           });
       }
@@ -1637,7 +1665,7 @@ async function implementingSpecsOfTep(
       );
       if (ref && resolvesTo(ref, specNs, targetNamespace, tepId)) {
         out.push({
-          id: `SP-${spec}`,
+          id: specHandle(spec),
           accepted: typeof fm?.accepted === "string" ? fm.accepted : undefined,
         });
       }
@@ -1754,7 +1782,7 @@ export async function promoteTep(
           { ...(fm ?? {}), implements: next },
           parsed.body,
         );
-        rewritten.push(`SP-${spec}`);
+        rewritten.push(specHandle(spec));
       }
     }
   }
@@ -1775,10 +1803,10 @@ function parseSliceHandle(handle: string): {
   const m = SLICE_HANDLE_RE.exec(handle.trim());
   if (!m) {
     throw new Error(
-      `Invalid slice handle "${handle}" — expected the form SP-{n}_SL-{m}.`,
+      `Invalid slice handle "${handle}" — expected the form TEP-{n}_SP-{m}_SL-{k}.`,
     );
   }
-  return { specNumber: m[1], sliceNumber: Number(m[2]) };
+  return { specNumber: specIdFromMatch(m), sliceNumber: Number(m[3]) };
 }
 
 /**
@@ -1809,30 +1837,34 @@ export async function listBoard(store: ThinkubeStore): Promise<unknown> {
   // Per-Spec requirement-hash, computed once per Spec (specs are few).
   const reqHashBySpec = new Map<string, string>();
   const specMeta = new Map<string, SpecMeta>();
-  for (const specNumber of await store.listSpecDirs()) {
-    const doc = await store.getFile(store.pathForSpecDoc(specNumber));
-    if (doc?.body) reqHashBySpec.set(specNumber, requirementHash(doc.body));
-    specMeta.set(specNumber, deriveSpecMeta(doc?.frontmatter, doc?.body));
+  for (const specId of await store.listSpecDirs()) {
+    const doc = await store.getFile(store.pathForSpecDoc(specId));
+    const key = specHandle(specId); // TEP-n_SP-m, matches the projection's specKey
+    if (doc?.body) reqHashBySpec.set(key, requirementHash(doc.body));
+    specMeta.set(key, deriveSpecMeta(doc?.frontmatter, doc?.body));
   }
 
   const inputs: SliceInput[] = [];
   for (const rel of await store.listSlices()) {
     const m = SLICE_PATH_RE.exec(rel);
     if (!m) continue;
-    const specNumber = m[1];
-    const sliceNumber = Number(m[2]);
+    const tepNumber = Number(m[1]);
+    const specNumber = m[2];
+    const sliceNumber = Number(m[3]);
+    const specKey = `TEP-${tepNumber}_SP-${specNumber}`;
     const parsed = await store.getFile(rel);
     const fm: Frontmatter = parsed?.frontmatter ?? {};
     inputs.push({
       specNumber,
+      tepNumber,
       sliceNumber,
-      title: sliceTitle(parsed?.body, sliceHandle(specNumber, sliceNumber)),
+      title: sliceTitle(parsed?.body, `${specKey}_SL-${sliceNumber}`),
       body: parsed?.body,
       status: fm.status,
       due: fm.due,
       priority: fm.priority,
       stampedReqHash: fm.verified_req_hash,
-      currentReqHash: reqHashBySpec.get(specNumber),
+      currentReqHash: reqHashBySpec.get(specKey),
       tags: effectiveTags(fm),
     });
   }
@@ -2270,7 +2302,7 @@ export async function createSlice(
       const parsed = await store.getFile(rel);
       const sfm: Frontmatter = parsed?.frontmatter ?? {};
       siblings.push({
-        handle: sliceHandle(m[1], Number(m[2])),
+        handle: sliceHandleFromMatch(m),
         parallelGroup: sfm.parallel_group,
         files: sfm.files,
         workUnits: sfm.work_units,
@@ -2279,7 +2311,7 @@ export async function createSlice(
     const result = validateParallelGroup([
       ...siblings,
       {
-        handle: `SP-${args.spec}_SL-(new)`,
+        handle: `${specHandle(args.spec)}_SL-(new)`,
         parallelGroup: group,
         files: args.files,
         workUnits: args.work_units,
@@ -2302,7 +2334,7 @@ export async function createSlice(
       if (!m) continue;
       const sfm: Frontmatter = (await store.getFile(rel))?.frontmatter ?? {};
       dagSlices.push({
-        handle: sliceHandle(m[1], Number(m[2])),
+        handle: sliceHandleFromMatch(m),
         status: String(sfm.status ?? "ready"),
         dependsOn: Array.isArray(sfm.depends_on)
           ? (sfm.depends_on as string[])
@@ -2317,7 +2349,7 @@ export async function createSlice(
       });
     }
     dagSlices.push({
-      handle: `SP-${args.spec}_SL-new`,
+      handle: `${specHandle(args.spec)}_SL-new`,
       status: "ready",
       dependsOn: args.depends_on ?? [],
       files: args.files ?? [],
@@ -2402,7 +2434,7 @@ export async function createSlice(
   const uid = await uniqueSlug(store, args.spec, title);
   const fm: Frontmatter = {
     uid,
-    parent: `SP-${args.spec}`,
+    parent: `SP-${args.spec.split("/")[1] ?? args.spec}`,
     status: "ready",
   };
   if (args.depends_on?.length) fm.depends_on = args.depends_on;
