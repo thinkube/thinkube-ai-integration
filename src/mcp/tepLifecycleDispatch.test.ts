@@ -124,13 +124,15 @@ test("approval: create_slice succeeds once the implements: TEP is accepted", asy
 async function projectFixture(specAccepted: boolean): Promise<unknown> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tk-teplc-proj-"));
   const projTeps = path.join(root, "Platform", "projects", "rebrand", "teps");
-  fs.mkdirSync(projTeps, { recursive: true });
+  // Umbrella TEP in the nested org-tree form `teps/TEP-reb/tep.md` (a project
+  // uses the bare `teps/` root — see promote_tep / projectTeps).
+  fs.mkdirSync(path.join(projTeps, "TEP-reb"), { recursive: true });
   fs.writeFileSync(
     path.join(root, "Platform", "projects", "rebrand", "project.yaml"),
     "name: The Rebrand\nstate: open\n",
   );
   fs.writeFileSync(
-    path.join(projTeps, "TEP-reb.md"),
+    path.join(projTeps, "TEP-reb", "tep.md"),
     "---\nkind: tep\nid: TEP-reb\n---\n# Rebrand\n",
   );
 

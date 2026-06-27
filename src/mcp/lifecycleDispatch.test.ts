@@ -431,8 +431,10 @@ function ctxPromoted(store: ThinkubeStore, boardRoot: string) {
   };
 }
 
-/** Seed a promoted TEP under `<product>/projects/<id>/teps/TEP-<tepId>.md` (with
- *  a `project.yaml` so the dir reads as a real project) and return its abs path. */
+/** Seed a promoted TEP as the nested org-tree dir
+ *  `<product>/projects/<id>/teps/TEP-<tepId>/tep.md` (with a `project.yaml` so
+ *  the dir reads as a real project) and return its abs path. A project uses the
+ *  bare `teps/` root (no `<org>/` segment) — see `promote_tep`. */
 function seedPromotedTep(
   boardRoot: string,
   product: string,
@@ -441,13 +443,13 @@ function seedPromotedTep(
   body: string,
 ): string {
   const projDir = path.join(boardRoot, product, "projects", projectId);
-  fs.mkdirSync(path.join(projDir, "teps"), { recursive: true });
+  fs.mkdirSync(path.join(projDir, "teps", `TEP-${tepId}`), { recursive: true });
   fs.writeFileSync(
     path.join(projDir, "project.yaml"),
     `name: ${projectId}\nstate: open\ntag: ${projectId}\n`,
     "utf8",
   );
-  const abs = path.join(projDir, "teps", `TEP-${tepId}.md`);
+  const abs = path.join(projDir, "teps", `TEP-${tepId}`, "tep.md");
   fs.writeFileSync(
     abs,
     `---\nkind: tep\nid: TEP-${tepId}\nstatus: proposed\n---\n${body}\n`,
@@ -490,7 +492,7 @@ test("write_tep over a promoted TEP updates the PROJECT copy and writes NO sessi
   // The write was routed to the project copy, board-root-relative.
   assert.equal(
     res.relativePath,
-    `acme/projects/widgets/teps/TEP-${tepId}.md`,
+    `acme/projects/widgets/teps/TEP-${tepId}/tep.md`,
     "write_tep must report the promoted project copy as its write target",
   );
 

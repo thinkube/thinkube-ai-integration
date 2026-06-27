@@ -113,6 +113,20 @@ test("rewriteImplementsForPromote: bare ref in the origin repo → qualified umb
   );
 });
 
+test("rewriteImplementsForPromote: re-ids the dependent ref when the TEP is renumbered on promotion", () => {
+  // Matched by the OLD id ("tgkx1k"), but the project re-allocated it to "5" —
+  // dependents must point at the NEW id (the org-scoped collision fix).
+  assert.equal(
+    rewriteImplementsForPromote(REPO, "TEP-tgkx1k", REPO, "tgkx1k", PROJ, "5"),
+    `${PROJ}:TEP-5`,
+  );
+  // a non-dependent is still untouched even with a newId
+  assert.equal(
+    rewriteImplementsForPromote(REPO, "TEP-other", REPO, "tgkx1k", PROJ, "5"),
+    null,
+  );
+});
+
 test("rewriteImplementsForPromote: ref already qualified to the origin → rewritten", () => {
   assert.equal(
     rewriteImplementsForPromote(

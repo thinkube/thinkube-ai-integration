@@ -1729,13 +1729,17 @@ export async function promoteTep(
   const boards = ctx.boards.list(true).filter((b) => !b.worktree);
 
   // Locate the TEP's origin board (the repo whose teps/ holds TEP-{id}).
-  let origin: { boardDir: string; namespace: string } | undefined;
+  let origin:
+    { boardDir: string; namespace: string; tepDirRel: string } | undefined;
   for (const b of boards) {
     const store = ctx.boards.resolve(b.id);
     if ((await store.listTeps()).some((t) => normalizeTepId(t.id) === tepId)) {
       origin = {
         boardDir: store.thinkubeDir,
         namespace: namespaceOfBoardDir(boardRoot, store.thinkubeDir),
+        // Org-scoped tree (TEP-th8lzj): a TEP is the dir `<org>/teps/TEP-n/`
+        // (its `SP-m` specs nested inside), not a flat `teps/TEP-n.md`.
+        tepDirRel: path.dirname(store.pathForTep(tepId)),
       };
       break;
     }
@@ -1745,22 +1749,43 @@ export async function promoteTep(
     throw new Error(`TEP-${tepId} is already under ${projectNamespace}.`);
   }
 
-  // Move the TEP file: <origin>/teps/TEP-id.md → <project>/teps/TEP-id.md.
-  const fileName = `TEP-${tepId}.md`;
-  const projectTepsDir = path.join(
-    boardRoot,
-    product,
-    "projects",
-    projectId,
-    "teps",
-  );
-  fsSync.mkdirSync(projectTepsDir, { recursive: true });
-  fsSync.renameSync(
-    path.join(origin.boardDir, "teps", fileName),
-    path.join(projectTepsDir, fileName),
-  );
+  // RE-ID into the project's scope. The org-scoped sequential scheme makes a
+  // TEP's number unique only within a (board, org) scope, so a project keeps its
+  // OWN TEP sequence — preserving the origin number would collide with the
+  // project's existing TEP-{n} (or leave its numbering non-contiguous). Allocate
+  // the project's next free number (scan-max+1 over its umbrella TEPs).
+  const projectDir = path.join(boardRoot, product, "projects", projectId);
+  const taken = projectTeps(boardRoot, product, projectId)
+    .map((id) => Number(id))
+    .filter((n) => Number.isFinite(n));
+  const newId = String((taken.length ? Math.max(...taken) : 0) + 1);
 
-  // Sweep every board's specs; rewrite each dependent's implements: completely.
+  // Move the TEP's whole nested dir (`<org>/teps/TEP-old/` — tep.md + its SP-m
+  // specs) into the project under the re-allocated number. A project is its own
+  // scope, so it uses the bare `teps/` root (no per-maintainer `<org>/` segment);
+  // `projectTepPath` and the sidebar's `listTeps` both read that bare tree. Slice
+  // handles derive from the PATH, so the nested spec/slice handles re-id with the
+  // moved dir — only the link layer needs rewiring.
+  const destTepDirRel = path.join("teps", `TEP-${newId}`);
+  const src = path.join(origin.boardDir, origin.tepDirRel);
+  const dest = path.join(projectDir, destTepDirRel);
+  fsSync.mkdirSync(path.dirname(dest), { recursive: true });
+  fsSync.renameSync(src, dest);
+
+  // Keep the moved TEP's own frontmatter id in sync with its new dir number.
+  const projectStore = new ThinkubeStore(projectDir, projectDir);
+  const movedTepRel = projectStore.pathForTep(newId);
+  const movedDoc = await projectStore.getFile(movedTepRel);
+  if (movedDoc) {
+    await projectStore.writeFile(
+      movedTepRel,
+      { ...movedDoc.frontmatter, id: `TEP-${newId}` },
+      movedDoc.body,
+    );
+  }
+
+  // Sweep every board's specs; rewrite each dependent's implements: to the
+  // qualified umbrella ref at the NEW id (matched by the OLD one).
   const rewritten: string[] = [];
   for (const b of boards) {
     const store = ctx.boards.resolve(b.id);
@@ -1775,6 +1800,7 @@ export async function promoteTep(
         origin.namespace,
         tepId,
         projectNamespace,
+        newId,
       );
       if (next && parsed) {
         await store.writeFile(
@@ -1789,8 +1815,9 @@ export async function promoteTep(
 
   return {
     ok: true,
-    tep: `TEP-${tepId}`,
-    movedTo: `${projectNamespace}/teps/${fileName}`,
+    tep: `TEP-${newId}`,
+    fromTep: `TEP-${tepId}`,
+    movedTo: `${projectNamespace}/${destTepDirRel}`,
     rewritten,
   };
 }

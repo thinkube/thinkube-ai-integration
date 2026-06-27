@@ -32,13 +32,18 @@ export function normalizeTepId(raw: string): string {
  * `/`-path and a TEP id has no `:`), so `<ns>:TEP-id` → namespace + id and a
  * bare `TEP-id` → just id. Empty/whitespace → undefined.
  */
-export function parseImplements(raw: string | undefined): ParsedImplements | undefined {
+export function parseImplements(
+  raw: string | undefined,
+): ParsedImplements | undefined {
   if (typeof raw !== "string") return undefined;
   const s = raw.trim();
   if (!s) return undefined;
   const idx = s.lastIndexOf(":");
   if (idx > 0) {
-    return { namespace: s.slice(0, idx).trim(), id: normalizeTepId(s.slice(idx + 1)) };
+    return {
+      namespace: s.slice(0, idx).trim(),
+      id: normalizeTepId(s.slice(idx + 1)),
+    };
   }
   return { id: normalizeTepId(s) };
 }
@@ -77,6 +82,13 @@ export function resolvesTo(
  * the origin repo, or a ref qualified to the origin namespace). The rewrite is
  * always the qualified umbrella ref — so no bare/dangling ref to the moved TEP
  * can remain.
+ *
+ * `newTepId` (default = `tepId`) is the id the TEP is RE-ASSIGNED on promotion:
+ * under the org-scoped sequential scheme a TEP's number is unique only within a
+ * `(board, org)` scope, so moving it into a project re-allocates it to the
+ * project's next free number to avoid colliding with the project's own TEPs.
+ * Dependents must then point at the NEW id, while we still MATCH them by the old
+ * one.
  */
 export function rewriteImplementsForPromote(
   specNamespace: string,
@@ -84,10 +96,11 @@ export function rewriteImplementsForPromote(
   originNamespace: string,
   tepId: string,
   projectNamespace: string,
+  newTepId: string = tepId,
 ): string | null {
   const ref = parseImplements(implementsRaw);
   if (!ref || !resolvesTo(ref, specNamespace, originNamespace, tepId)) {
     return null;
   }
-  return formatImplements(projectNamespace, tepId);
+  return formatImplements(projectNamespace, newTepId);
 }

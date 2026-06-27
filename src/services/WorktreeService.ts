@@ -24,7 +24,7 @@ const execFileAsync = promisify(execFile);
  *  (`${tep}/${spec}`), legacy `spec/SP-{id}` for a bare id. */
 function specBranchName(specNumber: string): string {
   const [tep, sp] = specNumber.split("/");
-  return sp ? `spec/TEP-${tep}_SP-${sp}` : specBranchName(specNumber);
+  return sp ? `spec/TEP-${tep}_SP-${sp}` : `spec/SP-${specNumber}`;
 }
 /** Worktree directory leaf for a Spec (the tep-qualified handle, or legacy). */
 function specWtName(specNumber: string): string {
