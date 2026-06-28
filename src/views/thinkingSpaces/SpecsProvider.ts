@@ -20,8 +20,8 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 
 import { ThinkubeStore } from "../../store/ThinkubeStore";
-import { RepoEntry, discoverRepos } from "./BoardNavigatorProvider";
-import { namespaceForRepo } from "../../store/boardNamespace";
+import { RepoEntry, discoverRepos } from "./ThinkingSpaceNavigatorProvider";
+import { namespaceForRepo } from "../../store/thinkingSpaceNamespace";
 import { specsImplementing, SpecImpl } from "./productTree";
 import { parseImplements } from "../../store/implementsRef";
 import {
@@ -61,7 +61,7 @@ export type SpecNode =
       /** The Thinking Space's code repo path — worktrees are cut from here (SP-9). */
       repoPath: string;
       /** The owning repo entry — the kanban/worktree target (SP-tgvud7: a
-       *  cross-board umbrella member lives in a different repo than the selection). */
+       *  cross-thinking space umbrella member lives in a different repo than the selection). */
       repo: RepoEntry;
       /** Any ready/doing slice — gates the Start-in-Worktree action (SP-9). */
       hasOpenWork: boolean;
@@ -90,12 +90,12 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
   private tepFilter: string | undefined;
 
   /** The namespace owning the drilled-into TEP (SP-tgvud7). When it's a project
-   *  namespace (an umbrella TEP), implementers are resolved CROSS-BOARD; absent
+   *  namespace (an umbrella TEP), implementers are resolved CROSS-THINKING-SPACE; absent
    *  (or a repo namespace) ⇒ the single-repo path. */
   private tepOwnerNamespace: string | undefined;
 
   /** The currently-scoped thinking space — the "+ New Spec" command roots its
-   *  session here and mints the id from its board. */
+   *  session here and mints the id from its thinking space. */
   get repoEntry(): RepoEntry | undefined {
     return this.repo;
   }
@@ -125,7 +125,7 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
   /**
    * Drill into a single TEP's implementing Specs (undefined = none). When
    * `ownerNamespace` is a project namespace (an umbrella TEP), implementers are
-   * resolved cross-board; otherwise the single-repo path is used (SP-tgvud7).
+   * resolved cross-thinking space; otherwise the single-repo path is used (SP-tgvud7).
    */
   setTepFilter(tepId: string | undefined, ownerNamespace?: string): void {
     const next = tepId || undefined;
@@ -154,10 +154,13 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
       }
       return [];
     }
-    // Cross-board drill-down (SP-tgvud7): an umbrella TEP's implementers span
-    // repos, so resolve them across all boards rather than a single repo.
+    // Cross-thinking space drill-down (SP-tgvud7): an umbrella TEP's implementers span
+    // repos, so resolve them across all thinkingSpaces rather than a single repo.
     if (this.tepFilter && this.tepOwnerNamespace) {
-      return this.crossBoardSpecs(this.tepOwnerNamespace, this.tepFilter);
+      return this.crossThinkingSpaceSpecs(
+        this.tepOwnerNamespace,
+        this.tepFilter,
+      );
     }
 
     // No selection → empty, which surfaces the view's welcome text.
@@ -174,13 +177,13 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
     // Specs are TEP-driven (SP-tgs8nz): nothing until a TEP is selected above.
     if (!this.tepFilter) return [];
 
-    const store = new ThinkubeStore(this.repo.path, this.repo.boardDir);
+    const store = new ThinkubeStore(this.repo.path, this.repo.thinkingSpaceDir);
     const numbers = await store.listSpecDirs();
     if (numbers.length === 0) {
       return [
         {
           kind: "placeholder",
-          text: "No specs yet — use ＋ New Spec on the board",
+          text: "No specs yet — use ＋ New Spec on the thinking space",
         },
       ];
     }
@@ -188,7 +191,7 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
     // Resolve the repo coords once so a recorded commit SHA becomes a
     // clickable URL. Undefined for non-GitHub remotes — the SHA still shows.
     const coords = await detectRepoCoords(this.repo.path);
-    const boardRoot = boardsRoot();
+    const thinkingSpaceRoot = thinkingSpacesRoot();
 
     const nodes: SpecNode[] = [];
     for (const n of [...numbers].sort((a, b) => a.localeCompare(b))) {
@@ -200,27 +203,27 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
         store,
         n,
         coords,
-        boardRoot,
+        thinkingSpaceRoot,
       );
       if (node) nodes.push(node);
     }
     return nodes;
   }
 
-  /** Specs implementing an umbrella TEP, resolved across every enabled board
+  /** Specs implementing an umbrella TEP, resolved across every enabled thinking space
    *  (SP-tgvud7) — each result carries its own repo. */
-  private async crossBoardSpecs(
+  private async crossThinkingSpaceSpecs(
     ownerNamespace: string,
     tepId: string,
   ): Promise<SpecNode[]> {
     // Post-migration, a project's member specs physically live under the project
-    // board's tree (`<project>/<org>/teps/TEP-n/SP-m/`), not in their code repos.
+    // thinking space's tree (`<project>/<org>/teps/TEP-n/SP-m/`), not in their code repos.
     // List them from the project store, filtered by the drilled-into TEP; each
     // spec's home code-repo (for orchestration/commit paths) rides in its `repo:`
     // frontmatter, resolved back to a RepoEntry.
-    const boardRoot = boardsRoot();
-    if (!boardRoot) return [];
-    const projDir = path.join(boardRoot, ...ownerNamespace.split("/"));
+    const thinkingSpaceRoot = thinkingSpacesRoot();
+    if (!thinkingSpaceRoot) return [];
+    const projDir = path.join(thinkingSpaceRoot, ...ownerNamespace.split("/"));
     const store = new ThinkubeStore(projDir, projDir);
     const folders = (vscode.workspace.workspaceFolders ?? []).map((f) => ({
       name: f.name,
@@ -232,7 +235,7 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
       const ns = namespaceForRepo(r.path, folders);
       if (ns) repoByNs.set(ns, r);
     }
-    // The kanban/boardCtx target for every member is the PROJECT board itself —
+    // The kanban/thinkingSpaceCtx target for every member is the PROJECT thinking space itself —
     // that's where the spec + its slices live, so the panel must load from here
     // (loading the working repo is what made a member look "not sliced"). The
     // WORKING repo (where the worktree is cut) rides in the spec's `repo:` and is
@@ -243,7 +246,7 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
       name: ownerNamespace.split("/").pop() ?? ownerNamespace,
       rel: ownerNamespace,
       enabled: true,
-      boardDir: projDir,
+      thinkingSpaceDir: projDir,
     };
     const nodes: SpecNode[] = [];
     for (const n of await store.listSpecDirs()) {
@@ -252,7 +255,7 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
       const homeNs = typeof fm?.repo === "string" ? fm.repo : undefined;
       const workingRepo = (homeNs && repoByNs.get(homeNs)) ?? repos[0];
       // Commit-URL coords come from the WORKING repo (where commits land), even
-      // though the node's board is the project.
+      // though the node's thinking space is the project.
       const coords = workingRepo
         ? await detectRepoCoords(workingRepo.path)
         : undefined;
@@ -261,7 +264,7 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
         store,
         n,
         coords,
-        boardRoot,
+        thinkingSpaceRoot,
       );
       if (node) nodes.push(node);
     }
@@ -274,7 +277,7 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
     store: ThinkubeStore,
     n: string,
     coords: RepoCoords | undefined,
-    boardRoot: string | undefined,
+    thinkingSpaceRoot: string | undefined,
   ): Promise<SpecNode | undefined> {
     const rel = store.pathForSpecDoc(n);
     const doc = await store.getFile(rel);
@@ -292,9 +295,9 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
       // A qualified ref's TEP lives in its owner namespace (a project umbrella);
       // a bare ref's TEP is in the spec's own repo (slug-tolerant via findTep).
       const file =
-        ref?.namespace && boardRoot
+        ref?.namespace && thinkingSpaceRoot
           ? path.join(
-              boardRoot,
+              thinkingSpaceRoot,
               ...ref.namespace.split("/"),
               "teps",
               `TEP-${tepId}.md`,
@@ -504,11 +507,11 @@ function prLabel(url: string): string {
   return m ? `PR #${m[1]}` : "PR";
 }
 
-/** The configured central board root (`thinkube.boards.root`), or undefined. */
-function boardsRoot(): string | undefined {
+/** The configured central thinking space root (`thinkube.thinkingSpace.root`), or undefined. */
+function thinkingSpacesRoot(): string | undefined {
   return (
     vscode.workspace
-      .getConfiguration("thinkube.boards")
+      .getConfiguration("thinkube.thinkingSpace")
       .get<string>("root")
       ?.trim() || undefined
   );

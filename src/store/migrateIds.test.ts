@@ -10,7 +10,7 @@
  *      yielding a byte-identical tree);
  *   2. no base36-epoch directory name or frontmatter id survives anywhere;
  *   3. every `implements:` cross-link still resolves to its target TEP — both a
- *      bare ref (local) and a qualified, org-deepened cross-board ref.
+ *      bare ref (local) and a qualified, org-deepened cross-thinking space ref.
  *
  * Plus a focused check that the `spec/SP-<base36>` git branches are renamed to
  * the tep-qualified `spec/TEP-n_SP-m` form.
@@ -116,12 +116,12 @@ const E = {
   s1: 1_700_000_050, // under tepA, later → SP-2
   s3: 1_700_000_200, // under tepB → SP-1
   tepP: 1_700_000_500, // project umbrella TEP → TEP-1 (in the project ns)
-  s4: 1_700_000_600, // cross-board member spec implementing the project TEP
+  s4: 1_700_000_600, // cross-thinking space member spec implementing the project TEP
 };
 
 /**
  * The org-agnostic `TEP-TEMPLATE.md` scaffold (modeled on the live ai-integration
- * board's). Its `TEP-NNNN` placeholder is NOT a number/epoch id and must survive
+ * thinking space's). Its `TEP-NNNN` placeholder is NOT a number/epoch id and must survive
  * the migration byte-for-byte — `write_tep` scaffolds new TEPs from it post-cutover.
  */
 const TEMPLATE_CONTENT =
@@ -129,11 +129,11 @@ const TEMPLATE_CONTENT =
   `status: proposed\nimplemented_by: []\n---\n\n` +
   `# TEP-NNNN — <title>\n\n## Goal\n\n_Fill me in._\n`;
 
-/** Seed a full base36-epoch board fixture under a fresh tmp dir; return its paths. */
-function seedFixture(): { board: string; oldIds: string[] } {
-  const board = fs.mkdtempSync(path.join(os.tmpdir(), "migrate-ids-"));
-  const repoNs = path.join(board, "Apps", "widgets-app");
-  const projNs = path.join(board, "Platform", "projects", "delivery");
+/** Seed a full base36-epoch thinking space fixture under a fresh tmp dir; return its paths. */
+function seedFixture(): { thinkingSpace: string; oldIds: string[] } {
+  const thinkingSpace = fs.mkdtempSync(path.join(os.tmpdir(), "migrate-ids-"));
+  const repoNs = path.join(thinkingSpace, "Apps", "widgets-app");
+  const projNs = path.join(thinkingSpace, "Platform", "projects", "delivery");
 
   const id = {
     tepA: enc(E.tepA),
@@ -145,7 +145,7 @@ function seedFixture(): { board: string; oldIds: string[] } {
     s4: enc(E.s4),
   };
 
-  // ── repo namespace: two TEPs, three local specs + one cross-board member ──
+  // ── repo namespace: two TEPs, three local specs + one cross-thinking space member ──
   write(
     path.join(repoNs, "teps", `TEP-${id.tepA}.md`),
     `---\nkind: tep\nstatus: accepted\nimplemented_by:\n  - SP-${id.s1}\n  - SP-${id.s2}\n---\n\n# First enhancement\n\nThe earliest proposal.\n`,
@@ -155,8 +155,8 @@ function seedFixture(): { board: string; oldIds: string[] } {
     `---\nkind: tep\nstatus: accepted\n---\n\n# Second enhancement\n\nA later proposal.\n`,
   );
   // The org-agnostic TEP template sits beside the numbered TEPs (as on the live
-  // ai-integration board) — the migration must relocate it to the fixed
-  // board-level path, never renumber it, and leave its TEP-NNNN placeholder.
+  // ai-integration thinking space) — the migration must relocate it to the fixed
+  // thinking space-level path, never renumber it, and leave its TEP-NNNN placeholder.
   write(path.join(repoNs, "teps", "TEP-TEMPLATE.md"), TEMPLATE_CONTENT);
 
   const specBody = (title: string) =>
@@ -193,11 +193,11 @@ function seedFixture(): { board: string; oldIds: string[] } {
     path.join(repoNs, "specs", `SP-${id.s3}`, "SL-1.md"),
     `---\nkind: slice\nparent: SP-${id.s3}\nstatus: ready\n---\n\n# Slice one of spec three\n`,
   );
-  // S4 is a cross-board member: it implements the PROJECT umbrella TEP via a
+  // S4 is a cross-thinking space member: it implements the PROJECT umbrella TEP via a
   // qualified ref (no org segment yet — that's what migration inserts).
   write(
     path.join(repoNs, "specs", `SP-${id.s4}`, "spec.md"),
-    `---\nkind: spec\nimplements: Platform/projects/delivery:TEP-${id.tepP}\n---\n\n${specBody("Cross-board member spec")}`,
+    `---\nkind: spec\nimplements: Platform/projects/delivery:TEP-${id.tepP}\n---\n\n${specBody("Cross-thinking space member spec")}`,
   );
   write(
     path.join(repoNs, "specs", `SP-${id.s4}`, "SL-1.md"),
@@ -213,19 +213,19 @@ function seedFixture(): { board: string; oldIds: string[] } {
   // ── project namespace: the umbrella TEP only (code-less) ──
   write(
     path.join(projNs, "teps", `TEP-${id.tepP}.md`),
-    `---\nkind: tep\nstatus: accepted\n---\n\n# Project umbrella\n\nThe cross-board why.\n`,
+    `---\nkind: tep\nstatus: accepted\n---\n\n# Project umbrella\n\nThe cross-thinking space why.\n`,
   );
 
-  return { board, oldIds: Object.values(id) };
+  return { thinkingSpace, oldIds: Object.values(id) };
 }
 
 test("migration assigns frozen sequential numbers in epoch order and is idempotent", () => {
-  const { board } = seedFixture();
+  const { thinkingSpace } = seedFixture();
   try {
-    const r1 = runMigrate(["--board", board, "--org", "Acme"]);
+    const r1 = runMigrate(["--thinking-space", thinkingSpace, "--org", "Acme"]);
     assert.equal(r1.status, 0, `migrate failed: ${r1.stderr || r1.stdout}`);
 
-    const teps = path.join(board, "Apps", "widgets-app", "Acme", "teps");
+    const teps = path.join(thinkingSpace, "Apps", "widgets-app", "Acme", "teps");
 
     // Epoch order: tepA (earliest) → TEP-1, tepB → TEP-2.
     const tep1 = fs.readFileSync(path.join(teps, "TEP-1", "tep.md"), "utf8");
@@ -274,7 +274,7 @@ test("migration assigns frozen sequential numbers in epoch order and is idempote
     assert.ok(
       fs.existsSync(
         path.join(
-          board,
+          thinkingSpace,
           "Apps",
           "widgets-app",
           "Acme",
@@ -285,17 +285,17 @@ test("migration assigns frozen sequential numbers in epoch order and is idempote
       "ADR preserved under <org>/decisions",
     );
 
-    // The org-agnostic template is relocated to the FIXED board-level path
+    // The org-agnostic template is relocated to the FIXED thinking space-level path
     // (`<ns>/teps/TEP-TEMPLATE.md`, NOT under <org>/), byte-for-byte unchanged —
     // its TEP-NNNN placeholder intact and never parsed/renumbered.
     const tmplPath = path.join(
-      board,
+      thinkingSpace,
       "Apps",
       "widgets-app",
       "teps",
       "TEP-TEMPLATE.md",
     );
-    assert.ok(fs.existsSync(tmplPath), "template not relocated to board level");
+    assert.ok(fs.existsSync(tmplPath), "template not relocated to thinking space level");
     assert.equal(
       fs.readFileSync(tmplPath, "utf8"),
       TEMPLATE_CONTENT,
@@ -311,43 +311,43 @@ test("migration assigns frozen sequential numbers in epoch order and is idempote
       !fs.existsSync(path.join(teps, "TEP-TEMPLATE.md")),
       "template wrongly placed under <org>/teps",
     );
-    // … and no numbered TEP-n leaked into the board-level teps/ alongside it.
-    const boardTeps = fs.readdirSync(
-      path.join(board, "Apps", "widgets-app", "teps"),
+    // … and no numbered TEP-n leaked into the thinking space-level teps/ alongside it.
+    const thinkingSpaceTeps = fs.readdirSync(
+      path.join(thinkingSpace, "Apps", "widgets-app", "teps"),
     );
     assert.deepEqual(
-      boardTeps,
+      thinkingSpaceTeps,
       ["TEP-TEMPLATE.md"],
-      `board-level teps/ should hold only the template, got ${boardTeps.join(", ")}`,
+      `thinking space-level teps/ should hold only the template, got ${thinkingSpaceTeps.join(", ")}`,
     );
 
     // Idempotent: a 2nd run is a no-op → byte-identical tree.
-    const before = snapshot(board);
-    const r2 = runMigrate(["--board", board, "--org", "Acme"]);
+    const before = snapshot(thinkingSpace);
+    const r2 = runMigrate(["--thinking-space", thinkingSpace, "--org", "Acme"]);
     assert.equal(
       r2.status,
       0,
       `second migrate failed: ${r2.stderr || r2.stdout}`,
     );
-    const after = snapshot(board);
+    const after = snapshot(thinkingSpace);
     assert.deepEqual(
       [...after.entries()].sort(),
       [...before.entries()].sort(),
       "tree changed on re-run",
     );
   } finally {
-    fs.rmSync(board, { recursive: true, force: true });
+    fs.rmSync(thinkingSpace, { recursive: true, force: true });
   }
 });
 
 test("migration leaves no base36-epoch directory name or frontmatter id behind", () => {
-  const { board, oldIds } = seedFixture();
+  const { thinkingSpace, oldIds } = seedFixture();
   try {
-    const r = runMigrate(["--board", board, "--org", "Acme"]);
+    const r = runMigrate(["--thinking-space", thinkingSpace, "--org", "Acme"]);
     assert.equal(r.status, 0, `migrate failed: ${r.stderr || r.stdout}`);
 
     // No directory/file name anywhere mentions an old base36-epoch id.
-    const names = allNames(board);
+    const names = allNames(thinkingSpace);
     for (const oldId of oldIds) {
       for (const n of names) {
         assert.ok(
@@ -357,7 +357,7 @@ test("migration leaves no base36-epoch directory name or frontmatter id behind",
       }
     }
     // No file CONTENT (frontmatter id / implements / depends_on) mentions one.
-    for (const [rel, content] of snapshot(board)) {
+    for (const [rel, content] of snapshot(thinkingSpace)) {
       for (const oldId of oldIds) {
         assert.ok(
           !content.includes(oldId),
@@ -365,26 +365,26 @@ test("migration leaves no base36-epoch directory name or frontmatter id behind",
         );
       }
     }
-    // The old flat dirs are gone entirely. The board-level `teps/` survives,
+    // The old flat dirs are gone entirely. The thinking space-level `teps/` survives,
     // but ONLY to hold the org-agnostic template — no numbered/epoch TEP files.
     assert.ok(
-      !fs.existsSync(path.join(board, "Apps", "widgets-app", "specs")),
+      !fs.existsSync(path.join(thinkingSpace, "Apps", "widgets-app", "specs")),
       "old specs/ remains",
     );
     assert.deepEqual(
-      fs.readdirSync(path.join(board, "Apps", "widgets-app", "teps")),
+      fs.readdirSync(path.join(thinkingSpace, "Apps", "widgets-app", "teps")),
       ["TEP-TEMPLATE.md"],
       "old flat teps/ should be emptied of everything but the template",
     );
   } finally {
-    fs.rmSync(board, { recursive: true, force: true });
+    fs.rmSync(thinkingSpace, { recursive: true, force: true });
   }
 });
 
 test("every implements: cross-link still resolves after migration", () => {
-  const { board } = seedFixture();
+  const { thinkingSpace } = seedFixture();
   try {
-    const r = runMigrate(["--board", board, "--org", "Acme"]);
+    const r = runMigrate(["--thinking-space", thinkingSpace, "--org", "Acme"]);
     assert.equal(r.status, 0, `migrate failed: ${r.stderr || r.stdout}`);
 
     // Resolve every spec.md's implements: to an existing tep.md (last-colon split).
@@ -396,7 +396,7 @@ test("every implements: cross-link still resolves after migration", () => {
         else if (e.name === "spec.md") specDocs.push(abs);
       }
     };
-    walk(board);
+    walk(thinkingSpace);
     assert.equal(specDocs.length, 4, "expected 4 migrated specs");
 
     let sawBare = 0;
@@ -408,7 +408,7 @@ test("every implements: cross-link still resolves after migration", () => {
       let tepDoc: string;
       let expectId: string;
       if (idx > 0) {
-        // Qualified, org-deepened cross-board ref: <namespace>:TEP-n
+        // Qualified, org-deepened cross-thinking space ref: <namespace>:TEP-n
         sawQualified++;
         const ns = impl!.slice(0, idx).trim();
         const tepId = impl!
@@ -417,7 +417,7 @@ test("every implements: cross-link still resolves after migration", () => {
           .replace(/^TEP-/, "");
         expectId = `TEP-${tepId}`;
         tepDoc = path.join(
-          board,
+          thinkingSpace,
           ...ns.split("/"),
           "teps",
           `TEP-${tepId}`,
@@ -426,7 +426,7 @@ test("every implements: cross-link still resolves after migration", () => {
         // The org segment must be present in the deepened namespace.
         assert.match(ns, /\/Acme$/, `qualified ref not org-deepened: ${impl}`);
       } else {
-        // Bare ref: resolves within the spec's own (board, org) — the TEP folder
+        // Bare ref: resolves within the spec's own (thinking space, org) — the TEP folder
         // that the spec sits inside.
         sawBare++;
         const tepId = impl!.trim().replace(/^TEP-/, "");
@@ -449,14 +449,14 @@ test("every implements: cross-link still resolves after migration", () => {
       );
     }
     assert.ok(sawBare >= 3, "expected the local specs to use bare refs");
-    assert.equal(sawQualified, 1, "expected one cross-board qualified ref");
+    assert.equal(sawQualified, 1, "expected one cross-thinking space qualified ref");
   } finally {
-    fs.rmSync(board, { recursive: true, force: true });
+    fs.rmSync(thinkingSpace, { recursive: true, force: true });
   }
 });
 
 test("migration renames spec/SP-<base36> git branches to the tep-qualified form", () => {
-  const { board } = seedFixture();
+  const { thinkingSpace } = seedFixture();
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "migrate-ids-repo-"));
   try {
     const git = (...a: string[]) =>
@@ -472,7 +472,7 @@ test("migration renames spec/SP-<base36> git branches to the tep-qualified form"
     git("branch", `spec/SP-${enc(E.s1)}`);
     git("branch", `spec/SP-${enc(E.s3)}`);
 
-    const r = runMigrate(["--board", board, "--org", "Acme", "--repo", repo]);
+    const r = runMigrate(["--thinking-space", thinkingSpace, "--org", "Acme", "--repo", repo]);
     assert.equal(r.status, 0, `migrate failed: ${r.stderr || r.stdout}`);
 
     const branches = execFileSync(
@@ -487,18 +487,18 @@ test("migration renames spec/SP-<base36> git branches to the tep-qualified form"
     assert.ok(!branches.includes(enc(E.s1)), "old S1 branch survives");
     assert.ok(!branches.includes(enc(E.s3)), "old S3 branch survives");
   } finally {
-    fs.rmSync(board, { recursive: true, force: true });
+    fs.rmSync(thinkingSpace, { recursive: true, force: true });
     fs.rmSync(repo, { recursive: true, force: true });
   }
 });
 
 test("resolveOrg fails fast when git user.name is unset and no --org is given", () => {
-  // A board dir whose git user.name resolves empty (no repo / unset) → fail-fast,
+  // A thinking space dir whose git user.name resolves empty (no repo / unset) → fail-fast,
   // no default org. We point HOME/GIT envs at an empty dir so no global name leaks.
-  const { board } = seedFixture();
+  const { thinkingSpace } = seedFixture();
   const emptyHome = fs.mkdtempSync(path.join(os.tmpdir(), "migrate-ids-home-"));
   try {
-    const r = spawnSync(process.execPath, [SCRIPT, "--board", board], {
+    const r = spawnSync(process.execPath, [SCRIPT, "--thinking-space", thinkingSpace], {
       encoding: "utf8",
       env: {
         ...process.env,
@@ -521,7 +521,7 @@ test("resolveOrg fails fast when git user.name is unset and no --org is given", 
       /organization|user\.name/i,
     );
   } finally {
-    fs.rmSync(board, { recursive: true, force: true });
+    fs.rmSync(thinkingSpace, { recursive: true, force: true });
     fs.rmSync(emptyHome, { recursive: true, force: true });
   }
 });

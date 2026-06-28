@@ -1,12 +1,12 @@
 /**
- * Unit tests for the pure slice→Board projection. Run via `npm test`. No vscode
+ * Unit tests for the pure slice→Thinking Space projection. Run via `npm test`. No vscode
  * or fs — the projection is a pure function of slice records.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  buildSliceBoard,
+  buildSliceThinkingSpace,
   deriveSpecMeta,
   sliceHandle,
   columnIdToStatus,
@@ -14,15 +14,15 @@ import {
   statusColor,
   buildSliceGraph,
   SliceInput,
-} from "./sliceBoard";
+} from "./sliceThinkingSpace";
 
 test("the card's identity is its string handle (opaque spec id, SP-7)", () => {
   assert.equal(sliceHandle("tw7n0g", 3), "SP-tw7n0g_SL-3");
-  const board = buildSliceBoard(
+  const thinkingSpace = buildSliceThinkingSpace(
     [{ specNumber: "tw7n0g", sliceNumber: 3, title: "a", status: "ready" }],
     "demo",
   );
-  const card = board.tasks["SP-tw7n0g_SL-3"];
+  const card = thinkingSpace.tasks["SP-tw7n0g_SL-3"];
   assert.ok(card);
   assert.equal(card.parentId, "tw7n0g"); // chip + colour by parent Spec id
 });
@@ -77,24 +77,24 @@ test("buildSliceGraph: status-coloured nodes + dep edges, dangling deps dropped"
   ]);
 });
 
-test("buildSliceBoard lays out three columns and places slices by status", () => {
+test("buildSliceThinkingSpace lays out three columns and places slices by status", () => {
   const slices: SliceInput[] = [
     { specNumber: "3", sliceNumber: 1, title: "a", status: "ready" },
     { specNumber: "3", sliceNumber: 2, title: "b", status: "doing" },
     { specNumber: "7", sliceNumber: 1, title: "c", status: "done" },
   ];
-  const board = buildSliceBoard(slices, "demo");
+  const thinkingSpace = buildSliceThinkingSpace(slices, "demo");
   assert.deepEqual(
-    board.columns.map((c) => c.title),
+    thinkingSpace.columns.map((c) => c.title),
     ["Ready", "Doing", "Needs Attention", "Done"],
   );
-  const ready = board.columns.find((c) => c.title === "Ready")!;
+  const ready = thinkingSpace.columns.find((c) => c.title === "Ready")!;
   // Slice cards only — each Spec also gets an auto-derived `_accept` close card.
   assert.deepEqual(
     ready.tasksIds.filter((id) => !id.endsWith("_accept")),
     ["SP-3_SL-1"],
   );
-  const card = board.tasks["SP-3_SL-1"];
+  const card = thinkingSpace.tasks["SP-3_SL-1"];
   assert.equal(card.parentId, "3"); // grouped/coloured by parent Spec id
   assert.equal(card.description, "a");
 });
@@ -105,7 +105,7 @@ test("buildSliceBoard lays out three columns and places slices by status", () =>
 // `TEP-n_SP-m_SL-k` form and groups under the tep-qualified spec key, so bare
 // SP/SL numbers that repeat across TEPs never collide.
 
-test("buildSliceBoard projects the nested tree: tep-qualified handles grouped under their parent spec", () => {
+test("buildSliceThinkingSpace projects the nested tree: tep-qualified handles grouped under their parent spec", () => {
   const slices: SliceInput[] = [
     {
       tepNumber: 1,
@@ -137,45 +137,45 @@ test("buildSliceBoard projects the nested tree: tep-qualified handles grouped un
       status: "ready",
     },
   ];
-  const board = buildSliceBoard(slices, "demo");
+  const thinkingSpace = buildSliceThinkingSpace(slices, "demo");
 
   // Handles are tep-qualified and unique even though SP-1/SL-1 repeats.
-  assert.ok(board.tasks["TEP-1_SP-1_SL-1"]);
-  assert.ok(board.tasks["TEP-2_SP-1_SL-1"]);
+  assert.ok(thinkingSpace.tasks["TEP-1_SP-1_SL-1"]);
+  assert.ok(thinkingSpace.tasks["TEP-2_SP-1_SL-1"]);
   assert.notEqual(
-    board.tasks["TEP-1_SP-1_SL-1"].id,
-    board.tasks["TEP-2_SP-1_SL-1"].id,
+    thinkingSpace.tasks["TEP-1_SP-1_SL-1"].id,
+    thinkingSpace.tasks["TEP-2_SP-1_SL-1"].id,
   );
 
   // Grouped under their parent spec: parentId is the tep-qualified spec key,
   // and a Spec's slices share a colour.
-  assert.equal(board.tasks["TEP-1_SP-1_SL-1"].parentId, "TEP-1_SP-1");
-  assert.equal(board.tasks["TEP-1_SP-1_SL-2"].parentId, "TEP-1_SP-1");
+  assert.equal(thinkingSpace.tasks["TEP-1_SP-1_SL-1"].parentId, "TEP-1_SP-1");
+  assert.equal(thinkingSpace.tasks["TEP-1_SP-1_SL-2"].parentId, "TEP-1_SP-1");
   assert.equal(
-    board.tasks["TEP-1_SP-1_SL-1"].colorSlug,
-    board.tasks["TEP-1_SP-1_SL-2"].colorSlug,
+    thinkingSpace.tasks["TEP-1_SP-1_SL-1"].colorSlug,
+    thinkingSpace.tasks["TEP-1_SP-1_SL-2"].colorSlug,
   );
-  assert.equal(board.tasks["TEP-1_SP-2_SL-1"].parentId, "TEP-1_SP-2");
-  assert.equal(board.tasks["TEP-2_SP-1_SL-1"].parentId, "TEP-2_SP-1");
+  assert.equal(thinkingSpace.tasks["TEP-1_SP-2_SL-1"].parentId, "TEP-1_SP-2");
+  assert.equal(thinkingSpace.tasks["TEP-2_SP-1_SL-1"].parentId, "TEP-2_SP-1");
 
   // Column placement still follows status.
-  const ready = board.columns.find((c) => c.title === "Ready")!;
+  const ready = thinkingSpace.columns.find((c) => c.title === "Ready")!;
   assert.ok(ready.tasksIds.includes("TEP-1_SP-1_SL-1"));
   assert.ok(ready.tasksIds.includes("TEP-2_SP-1_SL-1"));
-  const doing = board.columns.find((c) => c.title === "Doing")!;
+  const doing = thinkingSpace.columns.find((c) => c.title === "Doing")!;
   assert.ok(doing.tasksIds.includes("TEP-1_SP-1_SL-2"));
 
   // One acceptance close-card per parent spec, tep-qualified + unique.
-  assert.ok(board.tasks["TEP-1_SP-1_accept"]?.isAcceptance);
-  assert.ok(board.tasks["TEP-1_SP-2_accept"]?.isAcceptance);
-  assert.ok(board.tasks["TEP-2_SP-1_accept"]?.isAcceptance);
-  assert.equal(board.tasks["TEP-1_SP-1_accept"].slicesTotal, 2);
-  assert.equal(board.tasks["TEP-1_SP-2_accept"].slicesDone, 1);
-  assert.equal(board.tasks["TEP-1_SP-1_accept"].description, "TEP-1_SP-1");
+  assert.ok(thinkingSpace.tasks["TEP-1_SP-1_accept"]?.isAcceptance);
+  assert.ok(thinkingSpace.tasks["TEP-1_SP-2_accept"]?.isAcceptance);
+  assert.ok(thinkingSpace.tasks["TEP-2_SP-1_accept"]?.isAcceptance);
+  assert.equal(thinkingSpace.tasks["TEP-1_SP-1_accept"].slicesTotal, 2);
+  assert.equal(thinkingSpace.tasks["TEP-1_SP-2_accept"].slicesDone, 1);
+  assert.equal(thinkingSpace.tasks["TEP-1_SP-1_accept"].description, "TEP-1_SP-1");
 });
 
 test("nested specMeta is keyed by the tep-qualified spec key", () => {
-  const board = buildSliceBoard(
+  const thinkingSpace = buildSliceThinkingSpace(
     [
       {
         tepNumber: 1,
@@ -199,12 +199,12 @@ test("nested specMeta is keyed by the tep-qualified spec key", () => {
     ]),
   );
   // Accepted → the close card rests in Done, keyed by the tep-qualified spec.
-  assert.equal(board.tasks["TEP-1_SP-1_accept"].columnId, "column-done");
-  assert.equal(board.tasks["TEP-1_SP-1_accept"].accepted, true);
+  assert.equal(thinkingSpace.tasks["TEP-1_SP-1_accept"].columnId, "column-done");
+  assert.equal(thinkingSpace.tasks["TEP-1_SP-1_accept"].accepted, true);
 });
 
-test("an archived nested Spec drops its slices AND acceptance card off the board", () => {
-  const board = buildSliceBoard(
+test("an archived nested Spec drops its slices AND acceptance card off the thinking space", () => {
+  const thinkingSpace = buildSliceThinkingSpace(
     [
       {
         tepNumber: 1,
@@ -234,14 +234,14 @@ test("an archived nested Spec drops its slices AND acceptance card off the board
       ],
     ]),
   );
-  assert.ok(board.tasks["TEP-1_SP-1_SL-1"]);
-  assert.ok(board.tasks["TEP-1_SP-1_accept"]);
-  assert.equal(board.tasks["TEP-1_SP-2_SL-1"], undefined);
-  assert.equal(board.tasks["TEP-1_SP-2_accept"], undefined);
+  assert.ok(thinkingSpace.tasks["TEP-1_SP-1_SL-1"]);
+  assert.ok(thinkingSpace.tasks["TEP-1_SP-1_accept"]);
+  assert.equal(thinkingSpace.tasks["TEP-1_SP-2_SL-1"], undefined);
+  assert.equal(thinkingSpace.tasks["TEP-1_SP-2_accept"], undefined);
 });
 
-test("archived slices are excluded from the board", () => {
-  const board = buildSliceBoard(
+test("archived slices are excluded from the thinking space", () => {
+  const thinkingSpace = buildSliceThinkingSpace(
     [
       { specNumber: "1", sliceNumber: 1, title: "live", status: "ready" },
       { specNumber: "1", sliceNumber: 2, title: "dead", status: "archived" },
@@ -250,16 +250,16 @@ test("archived slices are excluded from the board", () => {
   );
   // One slice card (the archived one excluded); the Spec's `_accept` close card
   // is also present but isn't a slice.
-  const sliceCards = Object.keys(board.tasks).filter(
+  const sliceCards = Object.keys(thinkingSpace.tasks).filter(
     (id) => !id.endsWith("_accept"),
   );
   assert.equal(sliceCards.length, 1);
-  assert.ok(board.tasks["SP-1_SL-1"]);
-  assert.equal(board.tasks["SP-1_SL-2"], undefined);
+  assert.ok(thinkingSpace.tasks["SP-1_SL-1"]);
+  assert.equal(thinkingSpace.tasks["SP-1_SL-2"], undefined);
 });
 
-test("buildSliceBoard carries delivery provenance (commit/commitUrl/pr) onto the card", () => {
-  const board = buildSliceBoard(
+test("buildSliceThinkingSpace carries delivery provenance (commit/commitUrl/pr) onto the card", () => {
+  const thinkingSpace = buildSliceThinkingSpace(
     [
       {
         specNumber: "2",
@@ -276,7 +276,7 @@ test("buildSliceBoard carries delivery provenance (commit/commitUrl/pr) onto the
     ],
     "demo",
   );
-  const done = board.tasks["SP-2_SL-1"];
+  const done = thinkingSpace.tasks["SP-2_SL-1"];
   assert.equal(done.commit, "ea7d4fea08878be3af577857709fac561aefda3d");
   assert.equal(
     done.commitUrl,
@@ -286,14 +286,14 @@ test("buildSliceBoard carries delivery provenance (commit/commitUrl/pr) onto the
     done.pr,
     "https://github.com/cmxela/thinkube-ai-integration/pull/13",
   );
-  const pending = board.tasks["SP-2_SL-2"];
+  const pending = thinkingSpace.tasks["SP-2_SL-2"];
   assert.equal(pending.commit, undefined);
   assert.equal(pending.commitUrl, undefined);
   assert.equal(pending.pr, undefined);
 });
 
 test("a slice whose stamped hash differs from the current Spec hash is stale", () => {
-  const board = buildSliceBoard(
+  const thinkingSpace = buildSliceThinkingSpace(
     [
       {
         specNumber: "1",
@@ -314,9 +314,9 @@ test("a slice whose stamped hash differs from the current Spec hash is stale", (
     ],
     "demo",
   );
-  assert.equal(board.tasks["SP-1_SL-1"].specStale, true);
-  assert.equal(board.tasks["SP-1_SL-1"].specChange, "requirements");
-  assert.equal(board.tasks["SP-1_SL-2"].specStale, false);
+  assert.equal(thinkingSpace.tasks["SP-1_SL-1"].specStale, true);
+  assert.equal(thinkingSpace.tasks["SP-1_SL-1"].specChange, "requirements");
+  assert.equal(thinkingSpace.tasks["SP-1_SL-2"].specStale, false);
 });
 
 test("close card: one per Spec with slices, carrying checklist + progress (TEP-0010)", () => {
@@ -327,7 +327,7 @@ test("close card: one per Spec with slices, carrying checklist + progress (TEP-0
 
   // Mid-progress Spec (not accepted) → a card in Ready, NOT accept-ready,
   // carrying the criteria checklist + slice progress.
-  const mid = buildSliceBoard(
+  const mid = buildSliceThinkingSpace(
     [
       { specNumber: "9", sliceNumber: 1, title: "x", status: "done" },
       { specNumber: "9", sliceNumber: 2, title: "y", status: "doing" },
@@ -354,7 +354,7 @@ test("close card: one per Spec with slices, carrying checklist + progress (TEP-0
   assert.deepEqual(card.acceptanceCriteria, crit);
 
   // All slices Done + all ACs checked → accept-ready, still in Ready.
-  const ready = buildSliceBoard(
+  const ready = buildSliceThinkingSpace(
     [{ specNumber: "9", sliceNumber: 1, title: "x", status: "done" }],
     "demo",
     new Map([
@@ -373,7 +373,7 @@ test("close card: one per Spec with slices, carrying checklist + progress (TEP-0
   assert.equal(ready.tasks["SP-9_accept"].columnId, "column-ready");
 
   // Accepted → card rests in Done (kept as a record, not hidden).
-  const accepted = buildSliceBoard(
+  const accepted = buildSliceThinkingSpace(
     [{ specNumber: "9", sliceNumber: 1, title: "x", status: "done" }],
     "demo",
     new Map([
@@ -427,16 +427,16 @@ test("deriveSpecMeta reads accepted, all-ACs-checked, and the criteria checklist
   assert.deepEqual(deriveSpecMeta(undefined, "no criteria here").criteria, []);
 });
 
-// ── archived Specs leave the board (TEP-tg86v7 / SP-tg8f9b) ──
+// ── archived Specs leave the thinking space (TEP-tg86v7 / SP-tg8f9b) ──
 
-test("an archived Spec drops its slices AND acceptance card off the board", () => {
+test("an archived Spec drops its slices AND acceptance card off the thinking space", () => {
   const meta = (archived: boolean) => ({
     accepted: archived,
     allAcsChecked: true,
     criteria: [{ label: "a", checked: true }],
     archived,
   });
-  const board = buildSliceBoard(
+  const thinkingSpace = buildSliceThinkingSpace(
     [
       { specNumber: "1", sliceNumber: 1, title: "live", status: "done" },
       { specNumber: "2", sliceNumber: 1, title: "archived", status: "done" },
@@ -448,18 +448,18 @@ test("an archived Spec drops its slices AND acceptance card off the board", () =
     ]),
   );
   // The live Spec keeps its slice + acceptance card.
-  assert.ok(board.tasks["SP-1_SL-1"]);
-  assert.ok(board.tasks["SP-1_accept"]);
+  assert.ok(thinkingSpace.tasks["SP-1_SL-1"]);
+  assert.ok(thinkingSpace.tasks["SP-1_accept"]);
   // The archived Spec contributes nothing — no slice, no acceptance card.
-  assert.equal(board.tasks["SP-2_SL-1"], undefined);
-  assert.equal(board.tasks["SP-2_accept"], undefined);
+  assert.equal(thinkingSpace.tasks["SP-2_SL-1"], undefined);
+  assert.equal(thinkingSpace.tasks["SP-2_accept"], undefined);
 });
 
 test("a Spec with no SpecMeta (no archived flag) is unaffected (back-compat)", () => {
-  const board = buildSliceBoard(
+  const thinkingSpace = buildSliceThinkingSpace(
     [{ specNumber: "1", sliceNumber: 1, title: "x", status: "ready" }],
     "demo",
   );
-  assert.ok(board.tasks["SP-1_SL-1"]);
-  assert.ok(board.tasks["SP-1_accept"]);
+  assert.ok(thinkingSpace.tasks["SP-1_SL-1"]);
+  assert.ok(thinkingSpace.tasks["SP-1_accept"]);
 });

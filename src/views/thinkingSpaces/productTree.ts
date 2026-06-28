@@ -41,13 +41,13 @@ export interface ProductTree {
 }
 
 export interface MemberItem {
-  board: string;
+  thinkingSpace: string;
   handle: string;
   kind: string;
   tags: string[];
 }
 export interface MemberDesc {
-  board: string;
+  thinkingSpace: string;
   handle: string;
   kind: string;
 }
@@ -60,12 +60,12 @@ export interface MemberDesc {
 export function projectMembers(tag: string, items: MemberItem[]): MemberDesc[] {
   return items
     .filter((i) => i.tags.includes(tag))
-    .map(({ board, handle, kind }) => ({ board, handle, kind }));
+    .map(({ thinkingSpace, handle, kind }) => ({ thinkingSpace, handle, kind }));
 }
 
 export interface SpecImpl {
-  /** Board id (for display). */
-  board: string;
+  /** Thinking Space id (for display). */
+  thinkingSpace: string;
   /** The spec's sidecar namespace (for resolving bare refs). */
   namespace: string;
   /** Spec handle, e.g. `SP-tgvc8v`. */
@@ -75,7 +75,7 @@ export interface SpecImpl {
 }
 export interface TepGroup {
   tepId: string;
-  specs: { board: string; handle: string }[];
+  specs: { thinkingSpace: string; handle: string }[];
 }
 
 /**
@@ -96,16 +96,16 @@ export function projectTepGroups(
         const ref = parseImplements(s.implements);
         return !!ref && resolvesTo(ref, s.namespace, projectNamespace, tepId);
       })
-      .map((s) => ({ board: s.board, handle: s.handle })),
+      .map((s) => ({ thinkingSpace: s.thinkingSpace, handle: s.handle })),
   }));
 }
 
 /**
  * The specs implementing a single TEP (SP-tgvud7_SL-1) — every spec whose
- * `implements:` resolves to `(ownerNamespace, tepId)`, across boards. A repo
+ * `implements:` resolves to `(ownerNamespace, tepId)`, across thinkingSpaces. A repo
  * TEP (owner = a repo namespace) yields its same-repo implementer(s); an
  * umbrella TEP (owner = a project namespace) yields the cross-repo set. Pure;
- * the navigator feeds it a host-side collection of every board's specs.
+ * the navigator feeds it a host-side collection of every thinking space's specs.
  */
 export function specsImplementing(
   ownerNamespace: string,

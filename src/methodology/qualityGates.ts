@@ -139,7 +139,7 @@ export function gateForTransition(
 
 // ─── Tandem (files-first, 3-column) gates ────────────────────────────────
 //
-// The Tandem board has three columns — Ready → Doing → Done — and two gates,
+// The Tandem thinking space has three columns — Ready → Doing → Done — and two gates,
 // keyed by *destination* column (ADR-0003/0007):
 //
 //   → Ready : the slice's parent Spec has a non-empty `## Acceptance Criteria`.
@@ -187,7 +187,7 @@ export function runTandemGate(
 // a slice may enter Done only once the criteria *it* delivers are checked. This
 // is a sequencing/integrity check, not independent review — the same contract
 // that authorises the AI to check the boxes also requires Done to stay
-// unreachable while the Spec document lags the board.
+// unreachable while the Spec document lags the thinking space.
 
 export interface SatisfiesGateInput {
   /** Parent Spec body — its `## Acceptance Criteria` is read. */

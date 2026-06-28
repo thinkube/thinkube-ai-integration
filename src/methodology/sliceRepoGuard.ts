@@ -1,10 +1,10 @@
 /**
  * Preliminary-control gate — a slice's `files:` must resolve *inside the
- * board's own repo* (SP-th1ddy_SL-2).
+ * thinking space's own repo* (SP-th1ddy_SL-2).
  *
  * A Tandem slice declares its footprint as `files:` — the paths an
  * orchestrated worker is allowed to touch. Those paths are **repo-relative to
- * the board's repo**: the worker runs from that repo's worktree root, and the
+ * the thinking space's repo**: the worker runs from that repo's worktree root, and the
  * ownership guard (`footprintGuard` in `parallelSlices.ts`) compares writes
  * against the same repo-relative set. A slice whose `files:` point *outside*
  * that repo — an absolute path into some other checkout, a `..`-escaping path,
@@ -23,8 +23,8 @@
 import * as path from "path";
 
 /**
- * Result of checking a slice's `files:` against the board repo root.
- * - `{ ok: true }` — every file is repo-relative inside the board repo.
+ * Result of checking a slice's `files:` against the thinking space repo root.
+ * - `{ ok: true }` — every file is repo-relative inside the thinking space repo.
  * - `{ ok: false, offending, reason }` — at least one file escapes the repo;
  *   `offending` lists the exact declared paths (verbatim) and `reason` is a
  *   human-facing message naming them.
@@ -35,27 +35,27 @@ export type SliceRepoCheck =
 
 /**
  * Decide whether every entry in `files` resolves to a path **strictly inside**
- * `boardRepoRoot`.
+ * `thinkingSpaceRepoRoot`.
  *
  * A file is *offending* when it is:
  *  - **absolute** (`/abs/path`, or any `path.isAbsolute` form) — slice files
  *    must be repo-relative, never absolute into a checkout;
  *  - **`..`-escaping** (`../sibling/x.ts`) — it resolves outside the repo root;
- *  - **a different-repo path** — i.e. it resolves outside `boardRepoRoot` by any
+ *  - **a different-repo path** — i.e. it resolves outside `thinkingSpaceRepoRoot` by any
  *    route (absolute or `..`), which is the general containment failure;
  *  - **empty / non-string / the repo root itself** — not a writable repo-relative
  *    file, so rejected defensively.
  *
- * Repo-relative paths inside the board repo (`src/foo.ts`, `a/b/c.md`, and
+ * Repo-relative paths inside the thinking space repo (`src/foo.ts`, `a/b/c.md`, and
  * `./x.ts` which normalizes to `x.ts`) are accepted. The check is purely
- * lexical (no `fs`): paths are resolved against `boardRepoRoot` and required to
+ * lexical (no `fs`): paths are resolved against `thinkingSpaceRepoRoot` and required to
  * stay under it.
  */
 export function sliceFilesResolveInRepo(
-  boardRepoRoot: string,
+  thinkingSpaceRepoRoot: string,
   files: ReadonlyArray<string>,
 ): SliceRepoCheck {
-  const root = path.resolve(boardRepoRoot);
+  const root = path.resolve(thinkingSpaceRepoRoot);
   const offending: string[] = [];
 
   for (const raw of files ?? []) {
@@ -95,9 +95,9 @@ export function sliceFilesResolveInRepo(
       ok: false,
       offending,
       reason:
-        `Slice files must be repo-relative inside the board repo (${root}). ` +
+        `Slice files must be repo-relative inside the thinking space repo (${root}). ` +
         `These do not resolve inside it: ${offending.join(", ")}. ` +
-        `Use paths relative to the board's repo root (e.g. "src/foo.ts") — ` +
+        `Use paths relative to the thinking space's repo root (e.g. "src/foo.ts") — ` +
         `never absolute, never "../"-escaping, never another repo's path.`,
     };
   }

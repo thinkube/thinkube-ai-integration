@@ -17,12 +17,12 @@ export function slugifyId(name: string): string {
     .slice(0, 48);
 }
 
-/** Write `<boardRoot>/<id>/product.yaml`; returns the file path. */
+/** Write `<thinkingSpaceRoot>/<id>/product.yaml`; returns the file path. */
 export async function writeProductManifest(
-  boardRoot: string,
+  thinkingSpaceRoot: string,
   product: { id: string; name: string },
 ): Promise<string> {
-  const dir = path.join(boardRoot, product.id);
+  const dir = path.join(thinkingSpaceRoot, product.id);
   await fs.mkdir(dir, { recursive: true });
   const file = path.join(dir, "product.yaml");
   await fs.writeFile(file, yamlStringify({ name: product.name }), "utf8");
@@ -30,16 +30,16 @@ export async function writeProductManifest(
 }
 
 /**
- * Write `<boardRoot>/<product>/projects/<id>/project.yaml`; returns the file
+ * Write `<thinkingSpaceRoot>/<product>/projects/<id>/project.yaml`; returns the file
  * path. A Project is a code-less umbrella — its manifest is just `name`/`state`
  * (membership is by `implements:`, not a tag — SP-tgvpbm).
  */
 export async function writeProjectManifest(
-  boardRoot: string,
+  thinkingSpaceRoot: string,
   product: string,
   project: { id: string; name: string; state?: "open" | "done" },
 ): Promise<string> {
-  const dir = path.join(boardRoot, product, "projects", project.id);
+  const dir = path.join(thinkingSpaceRoot, product, "projects", project.id);
   await fs.mkdir(dir, { recursive: true });
   const file = path.join(dir, "project.yaml");
   await fs.writeFile(

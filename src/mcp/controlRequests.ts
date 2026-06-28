@@ -4,10 +4,10 @@
  *
  * The MCP server runs in its own process with no `vscode` API, so an action
  * that only the host can do — opening a Claude session in a Spec's worktree —
- * can't be called directly. Rather than invent a socket, we reuse the board's
- * own MCP→host channel: the **filesystem**. The board already works this way —
+ * can't be called directly. Rather than invent a socket, we reuse the thinking space's
+ * own MCP→host channel: the **filesystem**. The thinking space already works this way —
  * `move_slice` writes a slice `.md` and a `vscode.FileSystemWatcher` on the
- * board dir reacts (`ThinkubeStore`). A control request is the same idea for a
+ * thinking space dir reacts (`ThinkubeStore`). A control request is the same idea for a
  * one-shot action: the MCP writes a tiny JSON request into a watched control
  * dir, the host consumes it (and deletes it — fire-once) and runs the command.
  *
@@ -16,7 +16,7 @@
  *
  * This module is the **pure** core: the request shape, its serialize/parse, and
  * a router that dispatches by `kind`. The file I/O (the MCP write, the host
- * watcher) is the untested shell, like the board's watcher.
+ * watcher) is the untested shell, like the thinking space's watcher.
  */
 
 /** Open the Spec's worktree session (the button `thinkube.specs.startWorktree`). */

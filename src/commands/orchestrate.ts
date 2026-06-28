@@ -1,7 +1,7 @@
 /**
  * `/orchestrate` command (SP-tgs8nz_SL-1): dispatch the next Ready slice of a chosen Spec
- * via `OrchestratorService`. Thin vscode glue — resolves the active board repo, the spec,
- * and the worktree/board config, then calls `dispatchNext` and streams the worker's
+ * via `OrchestratorService`. Thin vscode glue — resolves the active thinking space repo, the spec,
+ * and the worktree/thinking space config, then calls `dispatchNext` and streams the worker's
  * JSON-log to an output channel. The dispatch logic + parsing are the unit-tested core;
  * the live worker outcome is the human's verdict.
  */
@@ -38,44 +38,17 @@ import { mergeSpecPr } from "../github/specMerge";
 import { retireWorktreeNote } from "./acceptLand";
 import type { OwnershipArbiter } from "../services/OwnershipArbiter";
 import type { LauncherService } from "../services/LauncherService";
-import type { SpecsProvider } from "../views/boards/SpecsProvider";
-import { discoverRepos } from "../views/boards/BoardNavigatorProvider";
-import { namespaceForRepo } from "../store/boardNamespace";
+import type { SpecsProvider } from "../views/thinkingSpaces/SpecsProvider";
+import { workingRepoPath, specRepoNamespace } from "../store/workingRepo";
 
-/**
- * The WORKING repository for a Spec — the repo the orchestrator branches a
- * worktree in. For a normal Spec that is the board's own repo (`fallback`); for
- * a **project member** Spec (which lives nested under a cross-repo project
- * umbrella, not in any code repo's board) the working repo is named by the
- * spec's `repo:` frontmatter (a board namespace), resolved to a path the same
- * way `SpecsProvider.crossBoardSpecs` does. So the spec's *location* never
- * decides the worktree — its `repo:` does (TEP-5 / the project-layer cutover).
- */
 /** Normalize a spec arg from the ▶ button / a card — the tep-qualified handle
  *  `TEP-n_SP-m` — (or a bare / `SP-`-prefixed id) into the composite spec id
  *  `n/m` that `listSpecDirs` returns. The card carries the full handle, so the
- *  old `replace(/^SP-/, "")` left `TEP-5_SP-1` intact → "not a Spec on this board". */
+ *  old `replace(/^SP-/, "")` left `TEP-5_SP-1` intact → "not a Spec on this thinking space". */
 function normalizeSpecArg(arg: string): string {
   const raw = arg.trim();
   const m = /^TEP-(\d+)_SP-(\d+)$/.exec(raw);
   return m ? `${m[1]}/${m[2]}` : raw.replace(/^SP-/, "");
-}
-
-async function workingRepoPath(
-  store: ThinkubeStore,
-  spec: string,
-  fallback: string,
-): Promise<string> {
-  const fm = (await store.getFile(store.pathForSpecDoc(spec)))?.frontmatter;
-  const repoNs = typeof fm?.repo === "string" ? fm.repo.trim() : "";
-  if (!repoNs) return fallback;
-  const folders = (vscode.workspace.workspaceFolders ?? []).map((f) => ({
-    name: f.name,
-    path: f.uri.fsPath,
-  }));
-  for (const r of discoverRepos())
-    if (namespaceForRepo(r.path, folders) === repoNs) return r.path;
-  return fallback; // unresolvable `repo:` → fall back to the board repo
 }
 
 export interface OrchestrateDeps {
@@ -102,16 +75,16 @@ export function registerOrchestrateCommands(
       "thinkube.orchestrate",
       async (
         specArg?: string,
-        boardCtx?: { root: string; boardDir: string; name: string },
+        thinkingSpaceCtx?: { root: string; thinkingSpaceDir: string; name: string },
       ) => {
-        // Prefer the panel's OWN board (passed by the ▶ button) over the ambient sidebar
-        // selection: the button must orchestrate the board it's shown on, not whatever space
-        // the sidebar happens to be scoped to (the "No Specs on this board" mismatch).
+        // Prefer the panel's OWN thinking space (passed by the ▶ button) over the ambient sidebar
+        // selection: the button must orchestrate the thinking space it's shown on, not whatever space
+        // the sidebar happens to be scoped to (the "No Specs on this thinking space" mismatch).
         let repoPath: string;
-        let boardDir: string;
-        if (boardCtx) {
-          repoPath = boardCtx.root;
-          boardDir = boardCtx.boardDir;
+        let thinkingSpaceDir: string;
+        if (thinkingSpaceCtx) {
+          repoPath = thinkingSpaceCtx.root;
+          thinkingSpaceDir = thinkingSpaceCtx.thinkingSpaceDir;
         } else {
           const repo = deps.specsProvider.repoEntry;
           if (!repo || !repo.enabled) {
@@ -121,7 +94,7 @@ export function registerOrchestrateCommands(
             return;
           }
           repoPath = repo.path;
-          boardDir = repo.boardDir;
+          thinkingSpaceDir = repo.thinkingSpaceDir;
         }
         const arbiter = deps.getArbiter();
         if (!arbiter) {
@@ -131,13 +104,13 @@ export function registerOrchestrateCommands(
           return;
         }
         try {
-          const store = new ThinkubeStore(repoPath, boardDir);
+          const store = new ThinkubeStore(repoPath, thinkingSpaceDir);
           // listSpecDirs returns bare Spec ids (e.g. "tgxunl") — use them directly. The prior
           // `/SP-.../.exec` ran an SP-prefixed regex over an already-unprefixed id → always
-          // undefined → empty, which is why orchestrate reported "No Specs" on every board.
+          // undefined → empty, which is why orchestrate reported "No Specs" on every thinking space.
           const specs = await store.listSpecDirs();
           if (specs.length === 0) {
-            vscode.window.showInformationMessage("No Specs on this board yet.");
+            vscode.window.showInformationMessage("No Specs on this thinking space yet.");
             return;
           }
           // From the ▶ button (control-center graph): a spec id is passed directly — skip the
@@ -147,7 +120,7 @@ export function registerOrchestrateCommands(
             spec = normalizeSpecArg(specArg);
             if (!specs.includes(spec)) {
               vscode.window.showWarningMessage(
-                `SP-${spec} is not a Spec on this board.`,
+                `SP-${spec} is not a Spec on this thinking space.`,
               );
               return;
             }
@@ -172,9 +145,9 @@ export function registerOrchestrateCommands(
               .getConfiguration("thinkube")
               .get<string>("worktree.baseDir")
               ?.trim() || undefined;
-          const boardRoot =
+          const thinkingSpaceRoot =
             vscode.workspace
-              .getConfiguration("thinkube.boards")
+              .getConfiguration("thinkube.thinkingSpace")
               .get<string>("root")
               ?.trim() || undefined;
 
@@ -184,7 +157,7 @@ export function registerOrchestrateCommands(
             store,
             output,
             canonicalRepo: canonical,
-            boardRoot,
+            thinkingSpaceRoot,
             baseDir,
             verifyCommand: vscode.workspace
               .getConfiguration("thinkube.orchestrator")
@@ -222,7 +195,7 @@ export function registerOrchestrateCommands(
           if (r.deliveryDoc) {
             void vscode.commands.executeCommand(
               "markdown.showPreview",
-              vscode.Uri.file(path.join(boardDir, r.deliveryDoc)),
+              vscode.Uri.file(path.join(thinkingSpaceDir, r.deliveryDoc)),
             );
           }
         } catch (err) {
@@ -240,13 +213,13 @@ export function registerOrchestrateCommands(
       "thinkube.attend",
       async (
         handle?: string,
-        boardCtx?: { root: string; boardDir: string; name: string },
+        thinkingSpaceCtx?: { root: string; thinkingSpaceDir: string; name: string },
       ) => {
         let repoPath: string;
-        let boardDir: string;
-        if (boardCtx) {
-          repoPath = boardCtx.root;
-          boardDir = boardCtx.boardDir;
+        let thinkingSpaceDir: string;
+        if (thinkingSpaceCtx) {
+          repoPath = thinkingSpaceCtx.root;
+          thinkingSpaceDir = thinkingSpaceCtx.thinkingSpaceDir;
         } else {
           const repo = deps.specsProvider.repoEntry;
           if (!repo || !repo.enabled) {
@@ -256,10 +229,10 @@ export function registerOrchestrateCommands(
             return;
           }
           repoPath = repo.path;
-          boardDir = repo.boardDir;
+          thinkingSpaceDir = repo.thinkingSpaceDir;
         }
         try {
-          const store = new ThinkubeStore(repoPath, boardDir);
+          const store = new ThinkubeStore(repoPath, thinkingSpaceDir);
           const h = handle ?? (await pickAttentionSlice(store));
           if (!h) return;
           const m = /^TEP-(\d+)_SP-(\d+)_SL-(\d+)$/.exec(h);
@@ -280,16 +253,16 @@ export function registerOrchestrateCommands(
               .getConfiguration("thinkube")
               .get<string>("worktree.baseDir")
               ?.trim() || undefined;
-          const boardRoot =
+          const thinkingSpaceRoot =
             vscode.workspace
-              .getConfiguration("thinkube.boards")
+              .getConfiguration("thinkube.thinkingSpace")
               .get<string>("root")
               ?.trim() || undefined;
           const worktreePath = await worktrees.create(
             canonical,
             specId,
             baseDir,
-            boardRoot,
+            thinkingSpaceRoot,
           );
 
           // needs-input → prompt for the answer, then continue the parked worker (SL-5).
@@ -307,7 +280,7 @@ export function registerOrchestrateCommands(
 
             // If the worker is still RESIDENT (its streaming session alive in a running
             // orchestration), push the answer in — it continues in place and the running loop
-            // verifies + advances it. No board write needed here.
+            // verifies + advances it. No thinking space write needed here.
             if (
               typeof fm.worker_unit === "string" &&
               answerParkedWorker(fm.worker_unit, answer)
@@ -376,13 +349,13 @@ export function registerOrchestrateCommands(
     ),
     // Accept (SP-tgzyfy_SL-2): the human's "land it" on the closing delivery report. The
     // gated merge — refuse unless every AC is checked + every slice Done (gateSpecAcceptance),
-    // then merge spec/SP-{n} → main and stamp `accepted:`. Mirrors boards.ts onAcceptSpec, but
+    // then merge spec/SP-{n} → main and stamp `accepted:`. Mirrors thinkingSpaces.ts onAcceptSpec, but
     // wired through a command so the report surface can post `accept` like orchestrate/attend.
     vscode.commands.registerCommand(
       "thinkube.accept",
       async (
         spec?: string,
-        boardCtx?: { root: string; boardDir: string; name: string },
+        thinkingSpaceCtx?: { root: string; thinkingSpaceDir: string; name: string },
       ) => {
         if (typeof spec !== "string" || !spec.trim()) {
           vscode.window.showErrorMessage("Accept: no Spec id provided.");
@@ -390,10 +363,10 @@ export function registerOrchestrateCommands(
         }
         const specId = normalizeSpecArg(spec);
         let repoPath: string;
-        let boardDir: string;
-        if (boardCtx) {
-          repoPath = boardCtx.root;
-          boardDir = boardCtx.boardDir;
+        let thinkingSpaceDir: string;
+        if (thinkingSpaceCtx) {
+          repoPath = thinkingSpaceCtx.root;
+          thinkingSpaceDir = thinkingSpaceCtx.thinkingSpaceDir;
         } else {
           const repo = deps.specsProvider.repoEntry;
           if (!repo || !repo.enabled) {
@@ -403,10 +376,10 @@ export function registerOrchestrateCommands(
             return;
           }
           repoPath = repo.path;
-          boardDir = repo.boardDir;
+          thinkingSpaceDir = repo.thinkingSpaceDir;
         }
         try {
-          const store = new ThinkubeStore(repoPath, boardDir);
+          const store = new ThinkubeStore(repoPath, thinkingSpaceDir);
           const specRel = store.pathForSpecDoc(specId);
           const specDoc = await store.getFile(specRel);
           if (!specDoc) {
@@ -433,14 +406,17 @@ export function registerOrchestrateCommands(
           // Merge first, stamp second: a failed merge throws, and we must never leave a
           // Spec stamped accepted while its branch is still open (mergeSpecPr returns
           // without merging when there is simply no PR — shipped straight to main).
-          const merge = await mergeSpecPr(specId, store.workspaceRoot);
+          // Git ops run in the spec's WORKING repo (`repo:`), not the thinking space dir — a
+          // project member's branch/worktree live in a different repo than its thinking space.
+          const wrp = await workingRepoPath(store, specId, repoPath);
+          const merge = await mergeSpecPr(specId, wrp);
           await store.writeFile(
             specRel,
             { ...specDoc.frontmatter, accepted: new Date().toISOString() },
             specDoc.body,
           );
           const retireNote = merge.merged
-            ? await retireWorktreeNote(worktrees, repoPath, specId)
+            ? await retireWorktreeNote(worktrees, wrp, specId)
             : "";
           vscode.window.showInformationMessage(
             merge.merged
@@ -461,7 +437,7 @@ export function registerOrchestrateCommands(
       "thinkube.reject",
       async (
         spec?: string,
-        boardCtx?: { root: string; boardDir: string; name: string },
+        thinkingSpaceCtx?: { root: string; thinkingSpaceDir: string; name: string },
       ) => {
         if (typeof spec !== "string" || !spec.trim()) {
           vscode.window.showErrorMessage("Reject: no Spec id provided.");
@@ -469,10 +445,10 @@ export function registerOrchestrateCommands(
         }
         const specId = normalizeSpecArg(spec);
         let repoPath: string;
-        let boardDir: string;
-        if (boardCtx) {
-          repoPath = boardCtx.root;
-          boardDir = boardCtx.boardDir;
+        let thinkingSpaceDir: string;
+        if (thinkingSpaceCtx) {
+          repoPath = thinkingSpaceCtx.root;
+          thinkingSpaceDir = thinkingSpaceCtx.thinkingSpaceDir;
         } else {
           const repo = deps.specsProvider.repoEntry;
           if (!repo || !repo.enabled) {
@@ -482,10 +458,10 @@ export function registerOrchestrateCommands(
             return;
           }
           repoPath = repo.path;
-          boardDir = repo.boardDir;
+          thinkingSpaceDir = repo.thinkingSpaceDir;
         }
         try {
-          const store = new ThinkubeStore(repoPath, boardDir);
+          const store = new ThinkubeStore(repoPath, thinkingSpaceDir);
           // The delivery report is the rejection's context. Best-effort: a Spec that hasn't
           // been orchestrated yet has none — we still open a primed session (the prompt notes
           // the absence) so Reject always launches.
@@ -509,21 +485,34 @@ export function registerOrchestrateCommands(
               .getConfiguration("thinkube")
               .get<string>("worktree.baseDir")
               ?.trim() || undefined;
-          const boardRoot =
+          const thinkingSpaceRoot =
             vscode.workspace
-              .getConfiguration("thinkube.boards")
+              .getConfiguration("thinkube.thinkingSpace")
               .get<string>("root")
               ?.trim() || undefined;
           const worktreePath = await worktrees.create(
             canonical,
             specId,
             baseDir,
-            boardRoot,
+            thinkingSpaceRoot,
           );
 
+          // A project-member Spec lives on the cross-repo PROJECT thinking space, not on
+          // this worktree's repo thinking space — so the rework session must address it by
+          // id (the session's cwd thinking space is the working repo). Name that thinking space in
+          // the prompt for a project member (the spec carries `repo:`); a normal
+          // same-repo Spec is on this worktree's own thinking space → no extra naming.
+          const specRepo = await specRepoNamespace(store, specId);
+          const projectThinkingSpaceId =
+            specRepo && thinkingSpaceRoot
+              ? path
+                  .relative(thinkingSpaceRoot, store.thinkubeDir)
+                  .split(path.sep)
+                  .join("/")
+              : undefined;
           await deps.launcher.openHere(
             vscode.Uri.file(worktreePath),
-            buildRejectPrompt(specId, report),
+            buildRejectPrompt(specId, report, projectThinkingSpaceId),
           );
         } catch (err) {
           vscode.window.showErrorMessage(
@@ -537,17 +526,26 @@ export function registerOrchestrateCommands(
 
 /** The chat prompt priming a Spec-level Reject session: the rejected Spec + its delivery report
  *  (the spec-level analog of `buildAttendPrompt`'s slice diagnosis). */
-function buildRejectPrompt(specId: string, report?: string): string {
+function buildRejectPrompt(
+  specId: string,
+  report?: string,
+  projectThinkingSpaceId?: string,
+): string {
   const ctx = report
     ? `\n\nThe orchestrator's delivery report (DELIVERY.md):\n\n${report}`
     : `\n\n(No delivery report was found — inspect the Spec and its slices to find what needs rework.)`;
+  // For a cross-repo project member the Spec lives on the project thinking space, NOT on
+  // this worktree's repo thinking space — so every kanban call must address it explicitly.
+  const thinkingSpaceNote = projectThinkingSpaceId
+    ? `\n\nIMPORTANT — this Spec lives on the project thinking space \`${projectThinkingSpaceId}\`, not on this worktree's repo. Pass \`thinking_space=${projectThinkingSpaceId}\` to EVERY kanban tool (get_thinkube_file / get_slice / list_thinking_space / move_slice / patch_spec_section / write_spec / create_slice). Your cwd's thinking space is the working repo where the code lives, which is NOT this Spec's thinking space.`
+    : "";
   return (
-    `Rework the rejected Spec SP-${specId} in this worktree.${ctx}` +
+    `Rework the rejected Spec SP-${specId} in this worktree.${thinkingSpaceNote}${ctx}` +
     `\n\nAddress the failing acceptance criteria and any caught problems the report surfaces, re-verify at Spec grain, then re-orchestrate so SP-${specId} can reach Done.`
   );
 }
 
-/** Find requires-attention slices on the board and quick-pick one (or the only one). */
+/** Find requires-attention slices on the thinking space and quick-pick one (or the only one). */
 async function pickAttentionSlice(
   store: ThinkubeStore,
 ): Promise<string | undefined> {

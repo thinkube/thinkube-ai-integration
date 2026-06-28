@@ -107,17 +107,17 @@ function makeDeps(
     defaultVerifs[String(n)] = { run: `verify-AC-${n}` };
   const specVerifs = opts.verifs === undefined ? defaultVerifs : opts.verifs;
 
-  // A real (throwaway) board dir so the closing run's `writeDeliverySummary` can land
+  // A real (throwaway) thinking space dir so the closing run's `writeDeliverySummary` can land
   // `teps/TEP-1/SP-1/DELIVERY.md` — the finalization watchdog (SP-th4wqc_SL-2) treats a missing
   // report as a wedge, so the integration fake must let the report write.
-  const boardDir = fs.mkdtempSync(path.join(os.tmpdir(), "tk-orch-test-"));
-  fs.mkdirSync(path.join(boardDir, path.dirname(SPEC_DOC)), {
+  const thinkingSpaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "tk-orch-test-"));
+  fs.mkdirSync(path.join(thinkingSpaceDir, path.dirname(SPEC_DOC)), {
     recursive: true,
   });
 
   const deps: OrchestratorDeps = {
     store: {
-      thinkubeDir: boardDir,
+      thinkubeDir: thinkingSpaceDir,
       listSlices: async () =>
         Object.keys(files).filter((k) => /\/SL-\d+\.md$/.test(k)),
       getFile: async (rel: string) =>

@@ -2,15 +2,15 @@
  * One column — vendored from the upstream, minus the column-level Draggable
  * (fixed workflow) and the rename/delete/colour affordances. The task stack is
  * a Droppable so cards drag between columns (status) and within (priority).
- * Files-first boards have no add-card affordance — slices are created by the
- * `/slice` skill, not the board.
+ * Files-first thinkingSpaces have no add-card affordance — slices are created by the
+ * `/slice` skill, not the thinking space.
  */
 import { Droppable } from "@hello-pangea/dnd";
 import styles from "./column-list.module.scss";
 import { ColumnHeader } from "./column-header";
 import { Task } from "../task";
 import { useGlobalState } from "../../utils/context";
-import { BoardColumn } from "../../types";
+import { ThinkingSpaceColumn } from "../../types";
 
 /** Per-status left/top accent (matches the methodology column order). */
 const ACCENTS: Record<string, string> = {
@@ -23,7 +23,7 @@ const ACCENTS: Record<string, string> = {
   "column-done": "#7cc440",
 };
 
-export function Column({ column }: { column: BoardColumn }): JSX.Element {
+export function Column({ column }: { column: ThinkingSpaceColumn }): JSX.Element {
   const { state } = useGlobalState();
   const accent = ACCENTS[column.id] ?? "var(--vscode-descriptionForeground)";
 

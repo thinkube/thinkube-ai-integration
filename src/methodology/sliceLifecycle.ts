@@ -5,7 +5,7 @@
  *
  *  1. **Retire** — `move_slice(handle, "Retired", reason)` is a *terminal* status
  *     **distinct from `Done`** that records a required `reason`. A retired slice
- *     is excluded from the active board/frontier but its `SL-{m}` stays claimed
+ *     is excluded from the active thinking space/frontier but its `SL-{m}` stays claimed
  *     on disk, so the next slice number is still `max + 1` (number reserved —
  *     ADR-0007 "archive, don't delete"). The status string the frontmatter
  *     stores is the exported `RETIRED_STATUS`; the wiring and test must both read
@@ -13,7 +13,7 @@
  *
  *  2. **Re-cut** — `update_slice` may *replace* a slice's footprint fields
  *     (`files` / `satisfies` / `work_units`) in place, keeping the same `SL-{m}`.
- *     A re-cut whose declared footprint escapes the board repo is refused with
+ *     A re-cut whose declared footprint escapes the thinking space repo is refused with
  *     the **same** rejection `create_slice` gives, because this helper routes
  *     through the shared `sliceFilesResolveInRepo` guard (SP-th1ddy) rather than
  *     duplicating the check.
@@ -113,7 +113,7 @@ export function hasRecutFields(recut: SliceRecut | undefined): boolean {
  *   `status`, `parent`, tags … and therefore the slice's `SL-{m}` identity are
  *   untouched). The handler writes this back to the *same* slice path.
  * - `{ ok: false, error, offending }` — the re-cut's declared footprint escapes
- *   the board repo; `error` is the shared `sliceFilesResolveInRepo` rejection and
+ *   the thinking space repo; `error` is the shared `sliceFilesResolveInRepo` rejection and
  *   `offending` lists the exact paths, so the handler refuses it identically to
  *   `create_slice`.
  */
@@ -132,13 +132,13 @@ export type RecutResult =
  * number / identity lives in the file path, not these fields, so replacing them
  * preserves `SL-{m}`.
  *
- * @param boardRepoRoot Absolute path to the board's repo root (the worktree the
+ * @param thinkingSpaceRepoRoot Absolute path to the thinking space's repo root (the worktree the
  *   orchestrated worker runs from) — what footprints must stay inside.
  * @param existing The slice's current frontmatter (or undefined for a bare file).
  * @param recut The footprint fields to replace.
  */
 export function recutSliceFrontmatter(
-  boardRepoRoot: string,
+  thinkingSpaceRepoRoot: string,
   existing: Frontmatter | undefined,
   recut: SliceRecut,
 ): RecutResult {
@@ -151,7 +151,7 @@ export function recutSliceFrontmatter(
     ...(recut.work_units ?? []).flatMap((wu) => wu?.footprint ?? []),
   ];
   if (declaredFiles.length) {
-    const check = sliceFilesResolveInRepo(boardRepoRoot, declaredFiles);
+    const check = sliceFilesResolveInRepo(thinkingSpaceRepoRoot, declaredFiles);
     if (!check.ok) {
       return { ok: false, error: check.reason, offending: check.offending };
     }

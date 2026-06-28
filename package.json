@@ -39,7 +39,7 @@
     "views": {
       "thinkube": [
         {
-          "id": "thinkubeBoards",
+          "id": "thinkubeThinkingSpaces",
           "name": "Thinking Spaces",
           "contextualTitle": "Thinkube Thinking Spaces"
         },
@@ -87,81 +87,81 @@
         "category": "Thinkube"
       },
       {
-        "command": "thinkube.boards.refresh",
-        "title": "Refresh Boards",
-        "category": "Thinkube Boards",
+        "command": "thinkube.thinkingSpace.refresh",
+        "title": "Refresh ThinkingSpaces",
+        "category": "Thinkube ThinkingSpaces",
         "icon": "$(refresh)"
       },
       {
-        "command": "thinkube.boards.open",
-        "title": "Open Board",
-        "category": "Thinkube Boards",
+        "command": "thinkube.thinkingSpace.open",
+        "title": "Open Thinking Space",
+        "category": "Thinkube ThinkingSpaces",
         "icon": "$(open-preview)"
       },
       {
         "command": "thinkube.products.new",
         "title": "New Product",
-        "category": "Thinkube Boards",
+        "category": "Thinkube ThinkingSpaces",
         "icon": "$(package)"
       },
       {
         "command": "thinkube.projects.new",
         "title": "New Project",
-        "category": "Thinkube Boards",
+        "category": "Thinkube ThinkingSpaces",
         "icon": "$(add)"
       },
       {
         "command": "thinkube.tep.promote",
         "title": "Promote to Project…",
-        "category": "Thinkube Boards",
+        "category": "Thinkube ThinkingSpaces",
         "icon": "$(arrow-up)"
       },
       {
         "command": "thinkube.teps.openRendered",
         "title": "Preview TEP (rendered)",
-        "category": "Thinkube Boards",
+        "category": "Thinkube ThinkingSpaces",
         "icon": "$(open-preview)"
       },
       {
         "command": "thinkube.specs.openRendered",
         "title": "Preview Spec (rendered)",
-        "category": "Thinkube Boards",
+        "category": "Thinkube ThinkingSpaces",
         "icon": "$(open-preview)"
       },
       {
-        "command": "thinkube.boards.enable",
+        "command": "thinkube.thinkingSpace.enable",
         "title": "Enable Methodology Here",
-        "category": "Thinkube Boards",
+        "category": "Thinkube ThinkingSpaces",
         "icon": "$(add)"
       },
       {
-        "command": "thinkube.boards.showConfiguredOnly",
+        "command": "thinkube.thinkingSpace.showConfiguredOnly",
         "title": "Show Configured Thinking Spaces Only",
-        "category": "Thinkube Boards",
+        "category": "Thinkube ThinkingSpaces",
         "icon": "$(filter)"
       },
       {
-        "command": "thinkube.boards.showAll",
+        "command": "thinkube.thinkingSpace.showAll",
         "title": "Show All Repositories",
-        "category": "Thinkube Boards",
+        "category": "Thinkube ThinkingSpaces",
         "icon": "$(filter-filled)"
       },
       {
-        "command": "thinkube.boards.newClaudeSession",
+        "command": "thinkube.thinkingSpace.newClaudeSession",
         "title": "New Claude Session Here",
-        "category": "Thinkube Boards",
+        "category": "Thinkube ThinkingSpaces",
         "icon": "$(comment-discussion)"
       },
       {
         "command": "thinkube.projects.newClaudeSession",
         "title": "New Claude Session in Project",
-        "category": "Thinkube Boards",
+        "category": "Thinkube ThinkingSpaces",
         "icon": "$(comment-discussion)"
       },
       {
-        "command": "thinkube.boards.resumeClaudeSession",
+        "command": "thinkube.thinkingSpace.resumeClaudeSession",
         "title": "Resume Claude Session…",
-        "category": "Thinkube Boards",
+        "category": "Thinkube ThinkingSpaces",
         "icon": "$(history)"
       },
       {
@@ -382,23 +382,23 @@
     "menus": {
       "view/title": [
         {
-          "command": "thinkube.boards.refresh",
-          "when": "view == thinkubeBoards",
+          "command": "thinkube.thinkingSpace.refresh",
+          "when": "view == thinkubeThinkingSpaces",
           "group": "navigation@0"
         },
         {
           "command": "thinkube.products.new",
-          "when": "view == thinkubeBoards",
+          "when": "view == thinkubeThinkingSpaces",
           "group": "navigation@2"
         },
         {
-          "command": "thinkube.boards.showConfiguredOnly",
-          "when": "view == thinkubeBoards && !thinkube.boards.configuredOnly",
+          "command": "thinkube.thinkingSpace.showConfiguredOnly",
+          "when": "view == thinkubeThinkingSpaces && !thinkube.thinkingSpace.configuredOnly",
           "group": "navigation@1"
         },
         {
-          "command": "thinkube.boards.showAll",
-          "when": "view == thinkubeBoards && thinkube.boards.configuredOnly",
+          "command": "thinkube.thinkingSpace.showAll",
+          "when": "view == thinkubeThinkingSpaces && thinkube.thinkingSpace.configuredOnly",
           "group": "navigation@1"
         },
         {
@@ -465,12 +465,12 @@
       "view/item/context": [
         {
           "command": "thinkube.projects.new",
-          "when": "view == thinkubeBoards && viewItem == thinkubeProduct",
+          "when": "view == thinkubeThinkingSpaces && viewItem == thinkubeProduct",
           "group": "inline"
         },
         {
           "command": "thinkube.projects.newClaudeSession",
-          "when": "view == thinkubeBoards && viewItem == thinkubeProject",
+          "when": "view == thinkubeThinkingSpaces && viewItem == thinkubeProject",
           "group": "inline"
         },
         {
@@ -519,23 +519,23 @@
           "group": "9_archive"
         },
         {
-          "command": "thinkube.boards.enable",
-          "when": "view == thinkubeBoards && viewItem == tandemBoardDisabled",
+          "command": "thinkube.thinkingSpace.enable",
+          "when": "view == thinkubeThinkingSpaces && viewItem == tandemThinkingSpaceDisabled",
           "group": "inline"
         },
         {
-          "command": "thinkube.boards.open",
-          "when": "view == thinkubeBoards && viewItem == tandemBoardEnabled",
+          "command": "thinkube.thinkingSpace.open",
+          "when": "view == thinkubeThinkingSpaces && viewItem == tandemThinkingSpaceEnabled",
           "group": "inline"
         },
         {
-          "command": "thinkube.boards.newClaudeSession",
-          "when": "view == thinkubeBoards && viewItem =~ /tandemBoard/",
+          "command": "thinkube.thinkingSpace.newClaudeSession",
+          "when": "view == thinkubeThinkingSpaces && viewItem =~ /tandemThinkingSpace/",
           "group": "inline@8"
         },
         {
-          "command": "thinkube.boards.resumeClaudeSession",
-          "when": "view == thinkubeBoards && viewItem =~ /tandemBoard/",
+          "command": "thinkube.thinkingSpace.resumeClaudeSession",
+          "when": "view == thinkubeThinkingSpaces && viewItem =~ /tandemThinkingSpace/",
           "group": "inline@9"
         },
         {
@@ -662,17 +662,17 @@
         "thinkube.worktree.baseDir": {
           "type": "string",
           "default": "",
-          "description": "Base directory for per-Spec git worktrees created by \"Start Spec in Worktree\". Empty = a sibling `<repo>-worktrees/` directory next to the repo. Keep it outside the repo tree so board discovery doesn't list worktrees as nested boards."
+          "description": "Base directory for per-Spec git worktrees created by \"Start Spec in Worktree\". Empty = a sibling `<repo>-worktrees/` directory next to the repo. Keep it outside the repo tree so thinking space discovery doesn't list worktrees as nested thinkingSpaces."
         },
-        "thinkube.boards.root": {
+        "thinkube.thinkingSpace.root": {
           "type": "string",
           "default": "",
-          "description": "Central board root (ADR-0008 / SP-8): the directory holding every Thinking Space's board, namespaced by `<container>/<rel>` (e.g. `Platform/extensions/thinkube-ai-integration`). Empty = legacy co-located `.thinkube/` in each repo. In thinkube this is the cloned sidecar board repo at `/home/thinkube/<board-repo>`."
+          "description": "Central thinking space root (ADR-0008 / SP-8): the directory holding every Thinking Space's thinking space, namespaced by `<container>/<rel>` (e.g. `Platform/extensions/thinkube-ai-integration`). Empty = legacy co-located `.thinkube/` in each repo. In thinkube this is the cloned sidecar thinking space repo at `/home/thinkube/<thinking space-repo>`."
         },
-        "thinkube.boards.showWorktrees": {
+        "thinkube.thinkingSpace.showWorktrees": {
           "type": "boolean",
           "default": false,
-          "description": "Show linked git worktrees (created by \"Start Spec in Worktree\") as their own entries in the Thinking Spaces navigator. A worktree shares its canonical repo's board — it is not a separate board — so it is hidden by default to keep the navigator a list of logical Thinking Spaces. Turn on to use the entry as a re-entry point into the isolated worktree checkout."
+          "description": "Show linked git worktrees (created by \"Start Spec in Worktree\") as their own entries in the Thinking Spaces navigator. A worktree shares its canonical repo's thinking space — it is not a separate thinking space — so it is hidden by default to keep the navigator a list of logical Thinking Spaces. Turn on to use the entry as a re-entry point into the isolated worktree checkout."
         },
         "thinkube.orchestrator.maxConcurrent": {
           "type": "number",

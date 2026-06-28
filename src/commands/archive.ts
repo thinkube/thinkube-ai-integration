@@ -7,16 +7,16 @@
  *
  * This module owns two things:
  *   - the Archive / Unarchive write actions, which read-modify-write the flag
- *     through the board-aware ThinkubeStore (mirroring accept_spec's stamp); and
+ *     through the thinking space-aware ThinkubeStore (mirroring accept_spec's stamp); and
  *   - the per-view "Show archived" toggle — provider state + persisted
  *     `workspaceState` + a `when`-clause context key, seeded at activation. This
- *     is the same shape as the configured-only filter (see `seedBoardsFilter`).
+ *     is the same shape as the configured-only filter (see `seedThinkingSpacesFilter`).
  */
 import * as vscode from "vscode";
 
 import { ThinkubeStore } from "../store/ThinkubeStore";
-import { SpecsProvider, SpecNode } from "../views/boards/SpecsProvider";
-import { TepsProvider, TepNode } from "../views/boards/TepsProvider";
+import { SpecsProvider, SpecNode } from "../views/thinkingSpaces/SpecsProvider";
+import { TepsProvider, TepNode } from "../views/thinkingSpaces/TepsProvider";
 
 interface ArchiveDeps {
   specsProvider: SpecsProvider;
@@ -65,7 +65,7 @@ export function seedArchivedFilters(
   );
 }
 
-/** Flip a board file's `archived` frontmatter flag in place (TEP-tg86v7). The
+/** Flip a thinking space file's `archived` frontmatter flag in place (TEP-tg86v7). The
  *  file never moves; absence of the flag means not-archived, so unarchive drops
  *  the key entirely rather than writing `archived: false`. */
 async function setArchived(
@@ -81,7 +81,7 @@ async function setArchived(
   await store.writeFile(rel, fm, doc.body);
 }
 
-/** Board-relative paths of completed-but-unarchived specs (SP-tgn2pd). A spec
+/** Thinking Space-relative paths of completed-but-unarchived specs (SP-tgn2pd). A spec
  *  is "completed" when it carries the `accepted:` stamp (the human acceptance
  *  gate, TEP-0010) — not merely "all slices done". */
 async function completedSpecPaths(store: ThinkubeStore): Promise<string[]> {
@@ -108,7 +108,7 @@ async function completedTepPaths(store: ThinkubeStore): Promise<string[]> {
   return out;
 }
 
-/** Confirm-then-archive a whole set of completed board items at once
+/** Confirm-then-archive a whole set of completed thinking space items at once
  *  (SP-tgn2pd). Reuses the per-item reversible `archived: true` flag; reports a
  *  count, or a no-op note when nothing qualifies. */
 async function bulkArchive(
@@ -148,7 +148,7 @@ export function registerArchiveCommands(
     const repo = deps.specsProvider.repoEntry;
     if (!repo || !node || node.kind !== "spec") return;
     try {
-      const store = new ThinkubeStore(repo.path, repo.boardDir);
+      const store = new ThinkubeStore(repo.path, repo.thinkingSpaceDir);
       await setArchived(store, store.pathForSpecDoc(node.specNumber), archived);
       deps.specsProvider.refresh();
     } catch (err) {
@@ -165,7 +165,7 @@ export function registerArchiveCommands(
     const repo = deps.tepsProvider.repoEntry;
     if (!repo || !node || node.kind !== "tep") return;
     try {
-      const store = new ThinkubeStore(repo.path, repo.boardDir);
+      const store = new ThinkubeStore(repo.path, repo.thinkingSpaceDir);
       // A TEP file may be slugged; resolve the real path, else the canonical one.
       const rel =
         (await store.findTep(node.tepId)) ?? store.pathForTep(node.tepId);
@@ -231,7 +231,7 @@ export function registerArchiveCommands(
         const repo = deps.specsProvider.repoEntry;
         if (!repo) return;
         try {
-          const store = new ThinkubeStore(repo.path, repo.boardDir);
+          const store = new ThinkubeStore(repo.path, repo.thinkingSpaceDir);
           await bulkArchive(
             store,
             await completedSpecPaths(store),
@@ -251,7 +251,7 @@ export function registerArchiveCommands(
         const repo = deps.tepsProvider.repoEntry;
         if (!repo) return;
         try {
-          const store = new ThinkubeStore(repo.path, repo.boardDir);
+          const store = new ThinkubeStore(repo.path, repo.thinkingSpaceDir);
           await bulkArchive(store, await completedTepPaths(store), "TEP", () =>
             deps.tepsProvider.refresh(),
           );

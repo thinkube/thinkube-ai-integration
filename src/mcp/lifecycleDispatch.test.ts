@@ -3,19 +3,19 @@
  *
  * These exercise the REAL exported handlers through `dispatchTool` — the layer
  * the live MCP server runs — over a tmp `ThinkubeStore`, asserting the resulting
- * on-disk board state (mirrors workUnitsDispatch.test.ts / projectsTools.test.ts,
+ * on-disk thinking space state (mirrors workUnitsDispatch.test.ts / projectsTools.test.ts,
  * NOT a pure helper in isolation).
  *
  * It holds two groups of tests:
  *
  *  - `retired` / `re-cut` (SP-th4wqd_SL-1): driving `move_slice(handle,
  *    "Retired", reason)` retires the slice (a terminal status DISTINCT from
- *    `Done` that records the reason), drops it off the active board/frontier
- *    (`list_board`), yet keeps its `SL-{m}` claimed so the next `create_slice`
+ *    `Done` that records the reason), drops it off the active thinking space/frontier
+ *    (`list_thinking_space`), yet keeps its `SL-{m}` claimed so the next `create_slice`
  *    is `max + 1` *counting the retired one* — and a `Retired` move with no
  *    reason throws. Driving `update_slice` with `files`/`satisfies`/`work_units`
  *    replaces exactly those frontmatter fields in place (the `SL-{m}` survives),
- *    and a re-cut whose footprint escapes the board repo is refused with the
+ *    and a re-cut whose footprint escapes the thinking space repo is refused with the
  *    SAME `sliceFilesResolveInRepo` rejection `create_slice` gives — proving the
  *    re-cut routes through the shared guard, not a copy.
  *
@@ -26,11 +26,11 @@
  *    stub fails), and the document lands at `teps/TEP-<n>/SP-<m>/spec.md`.
  *
  *  - `promotion` (SP-th4wqd_SL-3 / TEP-th3i18 #14): driving `write_tep` over a
- *    `{env:{boardRoot}, boards}` fixture whose board root holds a PROMOTED TEP
+ *    `{env:{thinkingSpaceRoot}, thinkingSpaces}` fixture whose thinking space root holds a PROMOTED TEP
  *    (seeded at `<product>/projects/<id>/teps/TEP-<id>.md`) updates that PROJECT
  *    COPY in place and creates NO `teps/TEP-{id}.md` duplicate on the session
- *    board — the promotion-aware seam routes the bytes to the canonical home, so
- *    the board can't split-brain a stale duplicate. An UNRESOLVABLE promotion
+ *    thinking space — the promotion-aware seam routes the bytes to the canonical home, so
+ *    the thinking space can't split-brain a stale duplicate. An UNRESOLVABLE promotion
  *    (the same TEP owned by two projects, an ambiguous home) is refused with an
  *    error naming `promote_tep`, the tool that owns the single-home invariant —
  *    rather than guessing a copy.
@@ -50,19 +50,19 @@ import { dispatchTool } from "./kanbanMcpServer";
 // what a retired slice's `status:` actually says (sliceLifecycle's invariant).
 import { RETIRED_STATUS } from "../methodology/sliceLifecycle";
 
-/** A fresh tmp board store (its own dir, so `specs/` starts empty). */
+/** A fresh tmp thinking space store (its own dir, so `specs/` starts empty). */
 function freshStore(): ThinkubeStore {
-  const board = fs.mkdtempSync(path.join(os.tmpdir(), "tk-lifecycle-mint-"));
-  return new ThinkubeStore(board, board);
+  const thinkingSpace = fs.mkdtempSync(path.join(os.tmpdir(), "tk-lifecycle-mint-"));
+  return new ThinkubeStore(thinkingSpace, thinkingSpace);
 }
 
 /** Minimal HandlerContext for a `write_spec` dispatch. `promoteLocator` is
- *  injected so the (omitted) `implements:` mint path never touches a board
+ *  injected so the (omitted) `implements:` mint path never touches a thinking space
  *  scan; with no `implements` it is never consulted. */
 function ctxFor(store: ThinkubeStore) {
   return {
     env: {} as never,
-    boards: { resolve: () => store } as never,
+    thinkingSpaces: { resolve: () => store } as never,
     promoteLocator: () => false,
   };
 }
@@ -176,13 +176,13 @@ test("write_spec allocations are sequential + monotonic across two omitted-spec 
 const SPEC = "1/1";
 
 /**
- * A fresh tmp board store seeded with a `## Acceptance Criteria`-bearing spec so
+ * A fresh tmp thinking space store seeded with a `## Acceptance Criteria`-bearing spec so
  * `create_slice`'s → Ready gate (every AC certified by an `ac_verifications`
  * entry) is satisfied — mirrors `workUnitsDispatch.test.ts`'s `seededStore`.
  */
 async function seededStore(): Promise<ThinkubeStore> {
-  const board = fs.mkdtempSync(path.join(os.tmpdir(), "tk-lifecycle-slice-"));
-  const store = new ThinkubeStore(board, board);
+  const thinkingSpace = fs.mkdtempSync(path.join(os.tmpdir(), "tk-lifecycle-slice-"));
+  const store = new ThinkubeStore(thinkingSpace, thinkingSpace);
   await store.writeFile(
     store.pathForSpecDoc(SPEC),
     { implements: "TEP-1", ac_verifications: { "1": { run: "npm test" } } },
@@ -228,18 +228,18 @@ async function readSlice(
   };
 }
 
-/** Every card id currently on the board (across all columns). */
-async function boardCardIds(store: ThinkubeStore): Promise<string[]> {
-  const board = (await dispatchTool(
-    "list_board",
+/** Every card id currently on the thinking space (across all columns). */
+async function thinkingSpaceCardIds(store: ThinkubeStore): Promise<string[]> {
+  const thinkingSpace = (await dispatchTool(
+    "list_thinking_space",
     {},
     ctxFor(store),
     ALLOW,
   )) as { columns: { cards: { id: string }[] }[] };
-  return board.columns.flatMap((c) => c.cards.map((card) => card.id));
+  return thinkingSpace.columns.flatMap((c) => c.cards.map((card) => card.id));
 }
 
-test("move_slice → Retired retires the slice (terminal, reason recorded), drops it off list_board, and reserves SL-{m} for max+1", async () => {
+test("move_slice → Retired retires the slice (terminal, reason recorded), drops it off list_thinking_space, and reserves SL-{m} for max+1", async () => {
   const store = await seededStore();
 
   const first = await createSliceVia(store); // TEP-1_SP-1_SL-1
@@ -272,11 +272,11 @@ test("move_slice → Retired retires the slice (terminal, reason recorded), drop
     "the retire reason must be recorded in the slice file",
   );
 
-  // The retired slice has left the active board/frontier.
-  const idsAfterRetire = await boardCardIds(store);
+  // The retired slice has left the active thinking space/frontier.
+  const idsAfterRetire = await thinkingSpaceCardIds(store);
   assert.ok(
     !idsAfterRetire.includes(first),
-    `a retired slice must be excluded from list_board, but ${first} was present`,
+    `a retired slice must be excluded from list_thinking_space, but ${first} was present`,
   );
 
   // Its SL-{m} stays claimed: the next slice is max+1 COUNTING the retired one,
@@ -406,27 +406,27 @@ test("update_slice re-cut whose files escape the repo is refused with the SAME g
 // ─── promotion (SP-th4wqd_SL-3 / TEP-th3i18 #14) ─────────────────────────────
 
 /**
- * A `{env:{boardRoot}, boards}` fixture for the promotion-aware `write_tep`.
+ * A `{env:{thinkingSpaceRoot}, thinkingSpaces}` fixture for the promotion-aware `write_tep`.
  *
- *  - `boardRoot` is a real tmp board root that `discoverProjects` / `projectTeps`
+ *  - `thinkingSpaceRoot` is a real tmp thinking space root that `discoverProjects` / `projectTeps`
  *    scan for promoted TEPs (`<product>/projects/<id>/teps/TEP-<id>.md`).
- *  - the SESSION board store lives in its OWN tmp dir (not under `boardRoot`), so
- *    "no session-board duplicate" is checked against a board the project copies
+ *  - the SESSION thinking space store lives in its OWN tmp dir (not under `thinkingSpaceRoot`), so
+ *    "no session-thinking space duplicate" is checked against a thinking space the project copies
  *    can never leak into — `store.pathForTep(id)` resolving on it would be the
  *    split-brain the feature exists to prevent.
  *  - `promoteLocator` is the `write_spec` `implements:` seam, never consulted by
  *    `write_tep`; pinned to a no-op for type parity with the other contexts.
  */
-function promotedFixture(): { store: ThinkubeStore; boardRoot: string } {
-  const boardRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tk-promote-root-"));
+function promotedFixture(): { store: ThinkubeStore; thinkingSpaceRoot: string } {
+  const thinkingSpaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "tk-promote-root-"));
   const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "tk-promote-sess-"));
-  return { store: new ThinkubeStore(sessionDir, sessionDir), boardRoot };
+  return { store: new ThinkubeStore(sessionDir, sessionDir), thinkingSpaceRoot };
 }
 
-function ctxPromoted(store: ThinkubeStore, boardRoot: string) {
+function ctxPromoted(store: ThinkubeStore, thinkingSpaceRoot: string) {
   return {
-    env: { boardRoot } as never,
-    boards: { resolve: () => store } as never,
+    env: { thinkingSpaceRoot } as never,
+    thinkingSpaces: { resolve: () => store } as never,
     promoteLocator: () => false,
   };
 }
@@ -436,13 +436,13 @@ function ctxPromoted(store: ThinkubeStore, boardRoot: string) {
  *  the dir reads as a real project) and return its abs path. A project uses the
  *  bare `teps/` root (no `<org>/` segment) — see `promote_tep`. */
 function seedPromotedTep(
-  boardRoot: string,
+  thinkingSpaceRoot: string,
   product: string,
   projectId: string,
   tepId: string,
   body: string,
 ): string {
-  const projDir = path.join(boardRoot, product, "projects", projectId);
+  const projDir = path.join(thinkingSpaceRoot, product, "projects", projectId);
   fs.mkdirSync(path.join(projDir, "teps", `TEP-${tepId}`), { recursive: true });
   fs.writeFileSync(
     path.join(projDir, "project.yaml"),
@@ -458,13 +458,13 @@ function seedPromotedTep(
   return abs;
 }
 
-test("write_tep over a promoted TEP updates the PROJECT copy and writes NO session-board duplicate", async () => {
-  const { store, boardRoot } = promotedFixture();
+test("write_tep over a promoted TEP updates the PROJECT copy and writes NO session-thinking space duplicate", async () => {
+  const { store, thinkingSpaceRoot } = promotedFixture();
   const tepId = "prom01";
   const OLD = "the stale promoted body";
   const NEW = "the fresh promoted body";
   const projectCopy = seedPromotedTep(
-    boardRoot,
+    thinkingSpaceRoot,
     "acme",
     "widgets",
     tepId,
@@ -474,7 +474,7 @@ test("write_tep over a promoted TEP updates the PROJECT copy and writes NO sessi
   const res = (await dispatchTool(
     "write_tep",
     { tep: tepId, body: `# TEP-${tepId} — promoted\n\n${NEW}` },
-    ctxPromoted(store, boardRoot),
+    ctxPromoted(store, thinkingSpaceRoot),
     ALLOW,
   )) as { tep?: string; relativePath?: string; promoted?: boolean };
 
@@ -489,48 +489,48 @@ test("write_tep over a promoted TEP updates the PROJECT copy and writes NO sessi
     "the project copy's stale body must be replaced, not appended",
   );
 
-  // The write was routed to the project copy, board-root-relative.
+  // The write was routed to the project copy, thinking space-root-relative.
   assert.equal(
     res.relativePath,
     `acme/projects/widgets/teps/TEP-${tepId}/tep.md`,
     "write_tep must report the promoted project copy as its write target",
   );
 
-  // The whole point: NO `teps/TEP-{id}.md` duplicate on the session board.
+  // The whole point: NO `teps/TEP-{id}.md` duplicate on the session thinking space.
   const sessionRel = store.pathForTep(tepId);
   assert.ok(
     !fs.existsSync(path.join(store.thinkubeDir, sessionRel)),
-    `a promoted write must not create a session-board duplicate at ${sessionRel}`,
+    `a promoted write must not create a session-thinking space duplicate at ${sessionRel}`,
   );
   assert.equal(
     await store.getFile(sessionRel),
     undefined,
-    "the session board must not see the promoted TEP through its store either",
+    "the session thinking space must not see the promoted TEP through its store either",
   );
 });
 
 test("write_tep over an unresolvable promotion (two project homes) throws naming promote_tep", async () => {
-  const { store, boardRoot } = promotedFixture();
+  const { store, thinkingSpaceRoot } = promotedFixture();
   const tepId = "prom02";
   // Same TEP promoted into TWO project homes — an ambiguous canonical home.
-  seedPromotedTep(boardRoot, "acme", "widgets", tepId, `# dup A`);
-  seedPromotedTep(boardRoot, "acme", "gadgets", tepId, `# dup B`);
+  seedPromotedTep(thinkingSpaceRoot, "acme", "widgets", tepId, `# dup A`);
+  seedPromotedTep(thinkingSpaceRoot, "acme", "gadgets", tepId, `# dup B`);
 
   await assert.rejects(
     () =>
       dispatchTool(
         "write_tep",
         { tep: tepId, body: "# updated\n\nbody" },
-        ctxPromoted(store, boardRoot),
+        ctxPromoted(store, thinkingSpaceRoot),
         ALLOW,
       ) as Promise<unknown>,
     /promote_tep/,
     "an unresolvable promotion must be refused with an error naming promote_tep",
   );
 
-  // The refusal must not split-brain a third copy onto the session board.
+  // The refusal must not split-brain a third copy onto the session thinking space.
   assert.ok(
     !fs.existsSync(path.join(store.thinkubeDir, store.pathForTep(tepId))),
-    "a refused promotion must not write a session-board copy",
+    "a refused promotion must not write a session-thinking space copy",
   );
 });

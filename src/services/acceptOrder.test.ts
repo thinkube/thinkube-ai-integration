@@ -3,7 +3,7 @@
  * node:test + node:assert; run via `npm test`.
  *
  * Background. Accept currently inlines the same `merge → stamp → retire` sequence in two
- * places — `commands/boards.ts` (`onAcceptSpec`, the kanban-panel accept button) and
+ * places — `commands/thinkingSpaces.ts` (`onAcceptSpec`, the kanban-panel accept button) and
  * `commands/orchestrate.ts` (`thinkube.accept`, the delivery-report surface). Both:
  *   1. `mergeSpecPr(...)`            — merge the Spec's PR (no-op for a straight-to-main Spec),
  *   2. stamp `accepted:` on the Spec — only after the merge call returns (never stamp a Spec

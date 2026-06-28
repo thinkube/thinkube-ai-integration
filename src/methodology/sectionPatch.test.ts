@@ -12,7 +12,7 @@
  *
  * `sectionPatch` itself is pure (no I/O, no scanning) — the write goes through
  * `ThinkubeStore.writeFile`, whose boundary is `scanForSecrets` (the only
- * board-write applying the scan). So we verify (2) by feeding the patched body
+ * thinking space-write applying the scan). So we verify (2) by feeding the patched body
  * to that exact production scanner and asserting it refuses — i.e. the body the
  * safe-write path would reject.
  */

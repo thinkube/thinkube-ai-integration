@@ -1,13 +1,13 @@
 /**
- * Per-repo board commands (thinkube.boards.*) — the navigator's actions.
+ * Per-repo thinking space commands (thinkube.thinkingSpace.*) — the navigator's actions.
  *
  * `open` builds a ThinkubeStore + ThinkubeFilesAdapter scoped to the selected
- * repo and opens its board (KanbanPanel is singleton-by-scope, so each repo's
- * board is its own panel). `enable` scaffolds a committable `.thinkube/`
+ * repo and opens its thinking space (KanbanPanel is singleton-by-scope, so each repo's
+ * thinking space is its own panel). `enable` scaffolds a committable `.thinkube/`
  * skeleton so a repo becomes methodology-enabled (ADR-0006). No single-binding
  * settings — the repo path comes from the navigator selection.
  *
- * `newClaudeSession` / `resumeClaudeSession` make the board the entry point
+ * `newClaudeSession` / `resumeClaudeSession` make the thinking space the entry point
  * for Claude sessions rooted in that repo: new sessions go through the
  * cwd-patching launcher, and resume lists the repo's past sessions (matched
  * by the cwd recorded in each transcript) and reopens one via claude-code's
@@ -21,7 +21,8 @@ import { LauncherService } from "../services/LauncherService";
 import { SessionLinkService } from "../services/SessionLinkService";
 import { listSessionsForFolder, SessionInfo } from "../services/sessionLinks";
 import { ThinkubeStore } from "../store/ThinkubeStore";
-import { resolveOrg, gitUserName } from "../store/boardNamespace";
+import { resolveOrg, gitUserName } from "../store/thinkingSpaceNamespace";
+import { workingRepoPath } from "../store/workingRepo";
 import { gateSpecAcceptance } from "../methodology/qualityGates";
 import { mergeSpecPr } from "../github/specMerge";
 import { WorktreeService } from "../services/WorktreeService";
@@ -29,11 +30,11 @@ import { fastForwardBaseNote, retireWorktreeNote } from "./acceptLand";
 import { KanbanPanel } from "../views/kanban/host/Panel";
 import { ThinkubeFilesAdapter } from "../views/kanban/host/storage/ThinkubeFilesAdapter";
 import {
-  BoardNavigatorProvider,
+  ThinkingSpaceNavigatorProvider,
   RepoEntry,
   ProjectNode,
   discoverRepos,
-} from "../views/boards/BoardNavigatorProvider";
+} from "../views/thinkingSpaces/ThinkingSpaceNavigatorProvider";
 import {
   registerMarketplace,
   enableMethodologyPluginForRepo,
@@ -41,10 +42,10 @@ import {
   readMarketplaceName,
 } from "../methodology/pluginEnablement";
 
-interface BoardDeps {
+interface ThinkingSpaceDeps {
   extensionUri: vscode.Uri;
   output: vscode.OutputChannel;
-  provider: BoardNavigatorProvider;
+  provider: ThinkingSpaceNavigatorProvider;
   launcher: LauncherService;
   sessionLinks: SessionLinkService;
 }
@@ -53,7 +54,7 @@ interface BoardDeps {
  * Single key reused for both the persisted `workspaceState` flag and the
  * `when`-clause context key that swaps the title-bar filter icon.
  */
-const CONFIGURED_ONLY_KEY = "thinkube.boards.configuredOnly";
+const CONFIGURED_ONLY_KEY = "thinkube.thinkingSpace.configuredOnly";
 
 /**
  * Apply the configured-only filter everywhere it's observed: the provider
@@ -62,7 +63,7 @@ const CONFIGURED_ONLY_KEY = "thinkube.boards.configuredOnly";
  */
 function applyConfiguredOnly(
   context: vscode.ExtensionContext,
-  provider: BoardNavigatorProvider,
+  provider: ThinkingSpaceNavigatorProvider,
   value: boolean,
 ): void {
   provider.setConfiguredOnly(value);
@@ -74,36 +75,36 @@ function applyConfiguredOnly(
  * Seed the filter from persisted state at activation so the icon and the list
  * match the choice saved before the last reload. Call after the view exists.
  */
-export function seedBoardsFilter(
+export function seedThinkingSpacesFilter(
   context: vscode.ExtensionContext,
-  provider: BoardNavigatorProvider,
+  provider: ThinkingSpaceNavigatorProvider,
 ): void {
   const saved = context.workspaceState.get<boolean>(CONFIGURED_ONLY_KEY, false);
   applyConfiguredOnly(context, provider, saved);
 }
 
-export function registerBoardCommands(
+export function registerThinkingSpaceCommands(
   context: vscode.ExtensionContext,
-  deps: BoardDeps,
+  deps: ThinkingSpaceDeps,
 ): void {
   context.subscriptions.push(
-    vscode.commands.registerCommand("thinkube.boards.refresh", () =>
+    vscode.commands.registerCommand("thinkube.thinkingSpace.refresh", () =>
       deps.provider.refresh(),
     ),
-    vscode.commands.registerCommand("thinkube.boards.open", (r: RepoEntry) =>
-      openBoardFor(context, deps, r),
+    vscode.commands.registerCommand("thinkube.thinkingSpace.open", (r: RepoEntry) =>
+      openThinkingSpaceFor(context, deps, r),
     ),
-    // Spec-scoped board: a single Spec's slices + DAG graph (SP-tgs8nz). Invoked
+    // Spec-scoped thinking space: a single Spec's slices + DAG graph (SP-tgs8nz). Invoked
     // by clicking a Spec in the Specs view.
     vscode.commands.registerCommand(
       "thinkube.specs.openKanban",
-      (r: RepoEntry, specId: string) => openBoardFor(context, deps, r, specId),
+      (r: RepoEntry, specId: string) => openThinkingSpaceFor(context, deps, r, specId),
     ),
-    vscode.commands.registerCommand("thinkube.boards.enable", (r: RepoEntry) =>
+    vscode.commands.registerCommand("thinkube.thinkingSpace.enable", (r: RepoEntry) =>
       enableHere(deps, r),
     ),
     vscode.commands.registerCommand(
-      "thinkube.boards.newClaudeSession",
+      "thinkube.thinkingSpace.newClaudeSession",
       (r: RepoEntry) => deps.launcher.openHere(vscode.Uri.file(r.path)),
     ),
     vscode.commands.registerCommand(
@@ -111,49 +112,49 @@ export function registerBoardCommands(
       (node: ProjectNode) => openProjectSession(deps, node),
     ),
     vscode.commands.registerCommand(
-      "thinkube.boards.resumeClaudeSession",
+      "thinkube.thinkingSpace.resumeClaudeSession",
       (r: RepoEntry) => resumeClaudeSession(deps, r),
     ),
-    vscode.commands.registerCommand("thinkube.boards.showConfiguredOnly", () =>
+    vscode.commands.registerCommand("thinkube.thinkingSpace.showConfiguredOnly", () =>
       applyConfiguredOnly(context, deps.provider, true),
     ),
-    vscode.commands.registerCommand("thinkube.boards.showAll", () =>
+    vscode.commands.registerCommand("thinkube.thinkingSpace.showAll", () =>
       applyConfiguredOnly(context, deps.provider, false),
     ),
   );
 }
 
-/** The sidecar dir of a Project (TEP-tgvwct Phase 6): `<boardRoot>/<product>/projects/<id>`. */
+/** The sidecar dir of a Project (TEP-tgvwct Phase 6): `<thinkingSpaceRoot>/<product>/projects/<id>`. */
 export function projectDirPath(
-  boardRoot: string,
+  thinkingSpaceRoot: string,
   product: string,
   id: string,
 ): string {
-  return path.join(boardRoot, product, "projects", id);
+  return path.join(thinkingSpaceRoot, product, "projects", id);
 }
 
 /**
  * "New Claude Session in Project" (Phase 6) — the cockpit affordance projects
  * lacked. Resolve the project's sidecar dir, ensure it's plugin-enabled (register
  * the discovered metadata marketplaces + write its portable `enabledPlugins`), and
- * open a Claude session rooted there. The plugin supplies the methodology + board
+ * open a Claude session rooted there. The plugin supplies the methodology + thinking space
  * MCP; per-spec code work still happens in member-repo worktrees.
  */
 async function openProjectSession(
-  deps: BoardDeps,
+  deps: ThinkingSpaceDeps,
   node: ProjectNode,
 ): Promise<void> {
-  const boardRoot = vscode.workspace
-    .getConfiguration("thinkube.boards")
+  const thinkingSpaceRoot = vscode.workspace
+    .getConfiguration("thinkube.thinkingSpace")
     .get<string>("root")
     ?.trim();
-  if (!boardRoot) {
+  if (!thinkingSpaceRoot) {
     vscode.window.showErrorMessage(
-      "Set `thinkube.boards.root` to open a project session.",
+      "Set `thinkube.thinkingSpace.root` to open a project session.",
     );
     return;
   }
-  const dir = projectDirPath(boardRoot, node.product, node.id);
+  const dir = projectDirPath(thinkingSpaceRoot, node.product, node.id);
   try {
     await fs.mkdir(dir, { recursive: true });
     for (const m of discoverMetadataMarketplaces(
@@ -177,7 +178,7 @@ async function openProjectSession(
  * transcript isn't in its picker project dir (claude-code-internals.md, F6).
  */
 async function resumeClaudeSession(
-  deps: BoardDeps,
+  deps: ThinkingSpaceDeps,
   r: RepoEntry,
 ): Promise<void> {
   const sessions = await listSessionsForFolder(r.path);
@@ -222,13 +223,13 @@ function agoLabel(mtimeMs: number): string {
   return `${Math.round(hours / 24)} d ago`;
 }
 
-async function openBoardFor(
+async function openThinkingSpaceFor(
   context: vscode.ExtensionContext,
-  deps: BoardDeps,
+  deps: ThinkingSpaceDeps,
   r: RepoEntry,
   specFilter?: string,
 ): Promise<void> {
-  const store = new ThinkubeStore(r.path, r.boardDir);
+  const store = new ThinkubeStore(r.path, r.thinkingSpaceDir);
   store.activate();
   context.subscriptions.push(store);
   const adapter = new ThinkubeFilesAdapter(
@@ -280,23 +281,25 @@ async function openBoardFor(
       // NOT leave the Spec stamped accepted while its PR is still open — so stamp
       // only after the merge call returns (it returns without merging when there
       // is simply no PR).
-      const merge = await mergeSpecPr(spec, store.workspaceRoot);
+      // A project-member spec lives on the (code-less) project thinking space but its
+      // code/branch/worktree are in the repo named by `repo:`. Run all git ops in
+      // that WORKING repo, not `store.workspaceRoot` (the project dir, no `.git`).
+      // For a normal same-repo spec this resolves back to the thinking space repo — unchanged.
+      const wrp = await workingRepoPath(store, spec, store.workspaceRoot);
+      const worktrees = new WorktreeService();
+      const merge = await mergeSpecPr(spec, wrp);
       await store.writeFile(
         specRel,
         { ...specDoc.frontmatter, accepted: new Date().toISOString() },
         specDoc.body,
       );
       const retireNote = merge.merged
-        ? await retireWorktreeNote(
-            new WorktreeService(),
-            store.workspaceRoot,
-            spec,
-          )
+        ? await retireWorktreeNote(worktrees, wrp, spec)
         : "";
       // Fast-forward local `main` to the just-merged remote (same gap acceptLandSpec
       // closes) so the accepted work is present locally, not just on origin.
       const syncNote = merge.merged
-        ? await fastForwardBaseNote(new WorktreeService(), store.workspaceRoot)
+        ? await fastForwardBaseNote(worktrees, wrp)
         : "";
       vscode.window.showInformationMessage(
         merge.merged
@@ -307,19 +310,19 @@ async function openBoardFor(
   });
 }
 
-async function enableHere(deps: BoardDeps, r: RepoEntry): Promise<void> {
+async function enableHere(deps: ThinkingSpaceDeps, r: RepoEntry): Promise<void> {
   if (r.enabled) {
     vscode.window.showInformationMessage(
-      `${r.name} already has a Tandem board.`,
+      `${r.name} already has a Tandem thinking space.`,
     );
     return;
   }
-  // Scaffold the board at its resolved board dir — central
-  // `<board-root>/<namespace>` when configured, else co-located. The org-scoped
+  // Scaffold the thinking space at its resolved thinking space dir — central
+  // `<thinking space-root>/<namespace>` when configured, else co-located. The org-scoped
   // tree (TEP-th8lzj) namespaces everything one level deeper under a per-
   // maintainer `<org>/`; specs nest under teps, so the scaffold is
   // `<org>/{teps,decisions,retros}` (no top-level `specs/`).
-  const base = r.boardDir;
+  const base = r.thinkingSpaceDir;
   let org: string;
   try {
     org = resolveOrg(gitUserName(r.path));
@@ -329,7 +332,7 @@ async function enableHere(deps: BoardDeps, r: RepoEntry): Promise<void> {
   }
   for (const sub of ["teps", "decisions", "retros"]) {
     await fs.mkdir(path.join(base, org, sub), { recursive: true });
-    // .gitkeep so the empty dir is committable — the board is the committed tree.
+    // .gitkeep so the empty dir is committable — the thinking space is the committed tree.
     await fs.writeFile(path.join(base, org, sub, ".gitkeep"), "");
   }
 
@@ -356,10 +359,10 @@ async function enableHere(deps: BoardDeps, r: RepoEntry): Promise<void> {
   deps.provider.refresh();
   const action = await vscode.window.showInformationMessage(
     `Enabled the Tandem methodology in ${r.name}. Commit .thinkube/ and start adding specs.`,
-    "Open board",
+    "Open thinking space",
   );
-  if (action === "Open board") {
-    await vscode.commands.executeCommand("thinkube.boards.open", {
+  if (action === "Open thinking space") {
+    await vscode.commands.executeCommand("thinkube.thinkingSpace.open", {
       ...r,
       enabled: true,
     });

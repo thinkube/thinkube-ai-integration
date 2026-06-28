@@ -33,11 +33,14 @@ import { LauncherService } from "./services/LauncherService";
 import { SessionLinkService } from "./services/SessionLinkService";
 import { initSessions } from "./services/orchestratorSessions";
 import { ConfigTreeProvider } from "./views/sidebar/ConfigTreeProvider";
-import { BoardNavigatorProvider } from "./views/boards/BoardNavigatorProvider";
-import { SpecsProvider } from "./views/boards/SpecsProvider";
-import { TepsProvider } from "./views/boards/TepsProvider";
+import { ThinkingSpaceNavigatorProvider } from "./views/thinkingSpaces/ThinkingSpaceNavigatorProvider";
+import { SpecsProvider } from "./views/thinkingSpaces/SpecsProvider";
+import { TepsProvider } from "./views/thinkingSpaces/TepsProvider";
 import { ThinkubeStore } from "./store/ThinkubeStore";
-import { registerBoardCommands, seedBoardsFilter } from "./commands/boards";
+import {
+  registerThinkingSpaceCommands,
+  seedThinkingSpacesFilter,
+} from "./commands/thinkingSpaces";
 import { registerProductCommands } from "./commands/products";
 import {
   registerArchiveCommands,
@@ -169,9 +172,9 @@ export function activate(context: vscode.ExtensionContext) {
     );
   });
 
-  // Machine-level MCP config (TEP-tgvwct, Phase 3): write board root / folders
+  // Machine-level MCP config (TEP-tgvwct, Phase 3): write thinking space root / folders
   // so the plugin-shipped kanban server self-configures without per-repo
-  // `.mcp.json` env injection. Best-effort; refreshed when the boards root changes.
+  // `.mcp.json` env injection. Best-effort; refreshed when the thinkingSpaces root changes.
   writeMachineMcpConfig().catch((err) => {
     kanbanOutput.appendLine(
       `[thinkube] machine MCP config write failed: ${(err as Error).message}`,
@@ -180,7 +183,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // No activation-time ThinkubeStore: there is no single configured
   // methodology root anymore (ADR-0006). Stores are built per-repo where
-  // they're used — boards.open, the kanban panel, the MCP server.
+  // they're used — thinkingSpaces.open, the kanban panel, the MCP server.
 
   // Register command groups
   registerConfigCommands(context, {
@@ -198,33 +201,38 @@ export function activate(context: vscode.ExtensionContext) {
     extensionUri: context.extensionUri,
   });
 
-  // MCP provider — exposes the board-independent kanban server to VS Code-
+  // MCP provider — exposes the thinking space-independent kanban server to VS Code-
   // native LLM clients. (Claude Code sessions discover the same server via
-  // each repo's .mcp.json.) Returns no definitions until a board exists.
+  // each repo's .mcp.json.) Returns no definitions until a thinking space exists.
   KanbanMcpProvider.install(context, {
     context,
     output: kanbanOutput,
   });
 
-  // Per-repo board navigator (ADR-0006): discover every repo's board across the
+  // Per-repo thinking space navigator (ADR-0006): discover every repo's thinking space across the
   // open workspace folders; open enabled ones, enable disabled ones. The
   // methodology is delivered as a versioned plugin (not a per-repo bundle), so a
   // Thinking Space is a leaf — selecting it scopes the TEPs → Specs side-views.
-  const boardNavigator = new BoardNavigatorProvider(kanbanOutput);
-  const boardsView = vscode.window.createTreeView("thinkubeBoards", {
-    treeDataProvider: boardNavigator,
-  });
-  registerBoardCommands(context, {
+  const thinkingSpaceNavigator = new ThinkingSpaceNavigatorProvider(
+    kanbanOutput,
+  );
+  const thinkingSpacesView = vscode.window.createTreeView(
+    "thinkubeThinkingSpaces",
+    {
+      treeDataProvider: thinkingSpaceNavigator,
+    },
+  );
+  registerThinkingSpaceCommands(context, {
     extensionUri: context.extensionUri,
     output: kanbanOutput,
-    provider: boardNavigator,
+    provider: thinkingSpaceNavigator,
     launcher,
     sessionLinks,
   });
   // Restore the configured-only filter (icon + list) from the last session.
-  seedBoardsFilter(context, boardNavigator);
+  seedThinkingSpacesFilter(context, thinkingSpaceNavigator);
   // New Product / New Project commands (SP-tgvl81_SL-3).
-  registerProductCommands(context, boardNavigator);
+  registerProductCommands(context, thinkingSpaceNavigator);
 
   // Specs section (master-detail): lists the selected thinking space's
   // .thinkube/specs/SP-{n}/spec.md files; clicking opens the document.
@@ -241,10 +249,10 @@ export function activate(context: vscode.ExtensionContext) {
     treeDataProvider: tepsProvider,
   });
   context.subscriptions.push(
-    boardsView,
+    thinkingSpacesView,
     specsView,
     tepsView,
-    boardsView.onDidChangeSelection((e) => {
+    thinkingSpacesView.onDidChangeSelection((e) => {
       const node = e.selection[0];
       const repo = node?.kind === "repo" ? node : undefined;
       if (repo) {
@@ -260,17 +268,17 @@ export function activate(context: vscode.ExtensionContext) {
         // A Project navigates exactly like a Thinking Space (SP-tgvud7): scope
         // the TEPs view to its umbrella TEPs; the Specs/Config views clear until
         // a TEP is picked (a project has no specs of its own — they're cross-repo).
-        const boardRoot =
+        const thinkingSpaceRoot =
           vscode.workspace
-            .getConfiguration("thinkube.boards")
+            .getConfiguration("thinkube.thinkingSpace")
             .get<string>("root")
             ?.trim() || undefined;
-        if (boardRoot) {
+        if (thinkingSpaceRoot) {
           tepsProvider.setProject({
             product: node.product,
             id: node.id,
             name: node.name,
-            boardRoot,
+            thinkingSpaceRoot,
           });
           tepsView.description = node.name;
         }
@@ -281,7 +289,7 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
     // Drill-down: selecting a TEP fills the Specs view with its implementing
-    // specs — resolved CROSS-BOARD via the TEP's owner namespace (SP-tgvud7), so
+    // specs — resolved CROSS-THINKING-SPACE via the TEP's owner namespace (SP-tgvud7), so
     // an umbrella TEP shows its specs across repos and a repo TEP shows its own.
     tepsView.onDidChangeSelection((e) => {
       const node = e.selection[0];
@@ -289,17 +297,17 @@ export function activate(context: vscode.ExtensionContext) {
         specsProvider.setTepFilter(node.tepId, node.ownerNamespace);
     }),
     // Auto-refresh the navigator when its discovery inputs change. Discovery
-    // (discoverRepos) depends on `thinkube.boards.root` and the workspace-folder
+    // (discoverRepos) depends on `thinkube.thinkingSpace.root` and the workspace-folder
     // layout (each folder name is a namespace's container segment). Without
     // these listeners the view only re-discovered on a full window reload —
-    // setting boards.root or adding a folder mid-session left it stale (SP-8).
+    // setting thinkingSpaces.root or adding a folder mid-session left it stale (SP-8).
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("thinkube.boards.root")) {
-        boardNavigator.refresh();
+      if (e.affectsConfiguration("thinkube.thinkingSpace.root")) {
+        thinkingSpaceNavigator.refresh();
       }
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() =>
-      boardNavigator.refresh(),
+      thinkingSpaceNavigator.refresh(),
     ),
     vscode.commands.registerCommand("thinkube.specs.refresh", () =>
       specsProvider.refresh(),
@@ -327,7 +335,7 @@ export function activate(context: vscode.ExtensionContext) {
       },
     ),
     // "+ New Spec" on the Specs section header — mint the next Spec id from the
-    // selected space's board and open `/spec-prepare <n>` (sidebar-consistent
+    // selected space's thinking space and open `/spec-prepare <n>` (sidebar-consistent
     // with "+ New TEP"; the kanban webview no longer owns this).
     vscode.commands.registerCommand("thinkube.specs.new", async () => {
       const repo = specsProvider.repoEntry;
@@ -338,7 +346,7 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
       try {
-        const store = new ThinkubeStore(repo.path, repo.boardDir);
+        const store = new ThinkubeStore(repo.path, repo.thinkingSpaceDir);
         // A Spec lives under a TEP in the org-scoped tree, so a parent TEP is
         // required to allocate its per-TEP `SP-m` number.
         const tep = specsProvider.selectedTep;
@@ -361,7 +369,7 @@ export function activate(context: vscode.ExtensionContext) {
       tepsProvider.refresh(),
     ),
     // "+ New TEP" (TEP-0009): mint a conflict-free id from the selected space's
-    // board and open a Claude session with `/tep <id>` prefilled — mirrors
+    // thinking space and open a Claude session with `/tep <id>` prefilled — mirrors
     // "+ New Spec" → `/spec-prepare <n>`.
     vscode.commands.registerCommand("thinkube.teps.new", async () => {
       const repo = tepsProvider.repoEntry;
@@ -372,7 +380,7 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
       try {
-        const store = new ThinkubeStore(repo.path, repo.boardDir);
+        const store = new ThinkubeStore(repo.path, repo.thinkingSpaceDir);
         const id = await store.nextTepId();
         await launcher.openHere(vscode.Uri.file(repo.path), `/tep ${id} `);
       } catch (err) {
@@ -384,7 +392,7 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   // Archive / unarchive Specs + TEPs and the per-view "Show archived" toggle
-  // (TEP-tg86v7); seed both toggles from persisted state, like the boards filter.
+  // (TEP-tg86v7); seed both toggles from persisted state, like the thinkingSpaces filter.
   registerArchiveCommands(context, { specsProvider, tepsProvider });
   seedArchivedFilters(context, { specsProvider, tepsProvider });
 
@@ -392,7 +400,7 @@ export function activate(context: vscode.ExtensionContext) {
   // rooted there, so parallel Specs never share a working tree (SP-5).
   registerWorktreeCommands(context, { launcher });
 
-  // Board orchestrator (SP-tgs8nz_SL-1): dispatch a Spec's next Ready slice to an
+  // Thinking Space orchestrator (SP-tgs8nz_SL-1): dispatch a Spec's next Ready slice to an
   // Agent SDK worker in its worktree. Consumes the (async-built) ownership arbiter
   // via a getter so it's read at invoke time.
   // Persist orchestrator session logs (the .jsonl the control-center float-out renders).
@@ -409,7 +417,7 @@ export function activate(context: vscode.ExtensionContext) {
   // open a VS Code session itself, so its `start_spec_worktree` tool drops a
   // one-shot request file into the shared control dir; this watcher runs the
   // matching command (`thinkube.specs.startWorktree`) — the same filesystem
-  // MCP→host channel the board uses, decoupled from the agent-teams tmux bridge.
+  // MCP→host channel the thinking space uses, decoupled from the agent-teams tmux bridge.
   const controlWatcher = new ControlRequestWatcher(controlDir(context), (m) =>
     kanbanOutput.appendLine(`[thinkube] control: ${m}`),
   );

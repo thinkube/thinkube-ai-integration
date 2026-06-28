@@ -1,10 +1,10 @@
 /**
- * BoardNavigatorProvider — the per-repo board navigator (ADR-0006).
+ * ThinkingSpaceNavigatorProvider — the per-repo thinking space navigator (ADR-0006).
  *
- * Under files-first there is no single configured board: each repository owns
+ * Under files-first there is no single configured thinking space: each repository owns
  * its own committed `.thinkube/` kanban, and a repo is "enabled" iff that
  * directory exists. This tree discovers the git repos across the open workspace
- * folders, marks which are enabled, and lets the user open an enabled board or
+ * folders, marks which are enabled, and lets the user open an enabled thinking space or
  * "Enable here" a disabled one. No settings registry — presence of `.thinkube/`
  * is the single source of truth (ADR-0001).
  *
@@ -19,9 +19,9 @@ import * as vscode from "vscode";
 
 import { linkedWorktreeInfo } from "../../services/WorktreeService";
 import {
-  boardDirForNamespace,
+  thinkingSpaceDirForNamespace,
   namespaceForRepo,
-} from "../../store/boardNamespace";
+} from "../../store/thinkingSpaceNamespace";
 import { discoverProducts } from "../../store/products";
 import { discoverProjects } from "../../store/projects";
 import { buildProductTree } from "./productTree";
@@ -34,25 +34,25 @@ export interface RepoEntry {
   name: string;
   /** Path relative to its workspace folder, for the secondary label. */
   rel: string;
-  /** True when the repo has a board (= methodology-enabled). */
+  /** True when the repo has a thinking space (= methodology-enabled). */
   enabled: boolean;
   /**
-   * The resolved board dir (the `.thinkube`-equivalent holding
-   * specs/decisions/retros): the central `<board-root>/<namespace>` when
-   * `thinkube.boards.root` is set and the repo maps to a namespace, else the
+   * The resolved thinking space dir (the `.thinkube`-equivalent holding
+   * specs/decisions/retros): the central `<thinking space-root>/<namespace>` when
+   * `thinkube.thinkingSpace.root` is set and the repo maps to a namespace, else the
    * co-located `<repo>/.thinkube`. Construct `ThinkubeStore` with this (SP-8).
    */
-  boardDir: string;
+  thinkingSpaceDir: string;
   /**
    * Set when this entry is a linked git worktree (SP-5), not a standalone repo:
    * the canonical repo's name and the worktree's own name, for a "worktree of
-   * its repo" label rather than a rogue top-level board.
+   * its repo" label rather than a rogue top-level thinking space.
    */
   worktreeOf?: { repo: string; name: string };
 }
 
-/** A standalone message row — e.g. the board root is configured but missing. */
-export interface BoardMessageNode {
+/** A standalone message row — e.g. the thinking space root is configured but missing. */
+export interface ThinkingSpaceMessageNode {
   kind: "message";
   text: string;
   detail?: string;
@@ -79,20 +79,20 @@ export interface ProjectNode {
   tag: string;
 }
 
-export type BoardNode =
+export type ThinkingSpaceNode =
   | RepoEntry
-  | BoardMessageNode
+  | ThinkingSpaceMessageNode
   | ProductNode
   | ProjectNode;
 
 /**
  * Find git repos across the open workspace folders (depth-limited), marking
- * which have a board. A repo is a directory containing `.git`; we don't descend
- * into one (no nested repos as boards). Dedups by path.
+ * which have a thinking space. A repo is a directory containing `.git`; we don't descend
+ * into one (no nested repos as thinkingSpaces). Dedups by path.
  *
- * The board may live at a central root (ADR-0008 / SP-8): when
- * `thinkube.boards.root` is set, a repo's board dir is its namespace under that
- * root (`<board-root>/<container>/<rel>`) and `enabled` reflects that central
+ * The thinking space may live at a central root (ADR-0008 / SP-8): when
+ * `thinkube.thinkingSpace.root` is set, a repo's thinking space dir is its namespace under that
+ * root (`<thinking space-root>/<container>/<rel>`) and `enabled` reflects that central
  * dir; otherwise it's the co-located `<repo>/.thinkube`.
  */
 export function discoverRepos(maxDepth = 3): RepoEntry[] {
@@ -100,12 +100,12 @@ export function discoverRepos(maxDepth = 3): RepoEntry[] {
     name: f.name,
     path: f.uri.fsPath,
   }));
-  const boardRoot =
+  const thinkingSpaceRoot =
     vscode.workspace
-      .getConfiguration("thinkube.boards")
+      .getConfiguration("thinkube.thinkingSpace")
       .get<string>("root")
       ?.trim() || undefined;
-  const ctx: DiscoverCtx = { folders, boardRoot };
+  const ctx: DiscoverCtx = { folders, thinkingSpaceRoot };
   const out = new Map<string, RepoEntry>();
   for (const folder of folders) {
     walk(folder.path, folder.path, 0, maxDepth, out, ctx);
@@ -115,56 +115,56 @@ export function discoverRepos(maxDepth = 3): RepoEntry[] {
 
 interface DiscoverCtx {
   folders: { name: string; path: string }[];
-  boardRoot: string | undefined;
+  thinkingSpaceRoot: string | undefined;
 }
 
 /**
- * The board dir for a repo: the central `<board-root>/<namespace>` when a board
+ * The thinking space dir for a repo: the central `<thinking space-root>/<namespace>` when a thinking space
  * root is configured and the repo maps to a namespace, else the co-located
  * `<repo>/.thinkube` (the legacy default and the fallback for paths outside any
  * workspace folder, e.g. worktrees — SP-9 revisits those).
  */
-function resolveBoardDir(repoPath: string, ctx: DiscoverCtx): string {
-  if (ctx.boardRoot) {
-    // A linked worktree shares its canonical Spec's board (SP-9).
+function resolveThinkingSpaceDir(repoPath: string, ctx: DiscoverCtx): string {
+  if (ctx.thinkingSpaceRoot) {
+    // A linked worktree shares its canonical Spec's thinking space (SP-9).
     const wt = linkedWorktreeInfo(repoPath);
     const ns = namespaceForRepo(wt ? wt.canonicalRepo : repoPath, ctx.folders);
-    if (ns) return boardDirForNamespace(ctx.boardRoot, ns);
+    if (ns) return thinkingSpaceDirForNamespace(ctx.thinkingSpaceRoot, ns);
   }
   return path.join(repoPath, ".thinkube");
 }
 
 /**
- * Board dir for a single repo path, reading the current `thinkube.boards.root`
+ * Thinking Space dir for a single repo path, reading the current `thinkube.thinkingSpace.root`
  * + workspace folders. Convenience over the discovery-internal resolver for
  * callers outside the walk (e.g. constructing a `ThinkubeStore` for a repo not
  * already enumerated, like the canonical repo behind a worktree).
  */
-export function boardDirForRepo(repoPath: string): string {
+export function thinkingSpaceDirForRepo(repoPath: string): string {
   const folders = (vscode.workspace.workspaceFolders ?? []).map((f) => ({
     name: f.name,
     path: f.uri.fsPath,
   }));
-  const boardRoot =
+  const thinkingSpaceRoot =
     vscode.workspace
-      .getConfiguration("thinkube.boards")
+      .getConfiguration("thinkube.thinkingSpace")
       .get<string>("root")
       ?.trim() || undefined;
-  return resolveBoardDir(repoPath, { folders, boardRoot });
+  return resolveThinkingSpaceDir(repoPath, { folders, thinkingSpaceRoot });
 }
 
-export interface BoardRootStatus {
+export interface ThinkingSpaceRootStatus {
   configured: boolean;
   root?: string;
   /** true unless a configured root is missing on disk. */
   available: boolean;
 }
 
-/** Whether the central board root (if configured) is present on disk (SP-8). */
-export function boardRootStatus(): BoardRootStatus {
+/** Whether the central thinking space root (if configured) is present on disk (SP-8). */
+export function thinkingSpaceRootStatus(): ThinkingSpaceRootStatus {
   const root =
     vscode.workspace
-      .getConfiguration("thinkube.boards")
+      .getConfiguration("thinkube.thinkingSpace")
       .get<string>("root")
       ?.trim() || undefined;
   if (!root) return { configured: false, available: true };
@@ -187,30 +187,30 @@ function walk(
   }
   const dotGit = entries.find((e) => e.name === ".git");
   if (dotGit?.isDirectory()) {
-    const boardDir = resolveBoardDir(dir, ctx);
+    const thinkingSpaceDir = resolveThinkingSpaceDir(dir, ctx);
     out.set(dir, {
       kind: "repo",
       path: dir,
       name: path.basename(dir),
       rel: path.relative(base, dir) || path.basename(dir),
-      boardDir,
-      enabled: fs.existsSync(boardDir),
+      thinkingSpaceDir,
+      enabled: fs.existsSync(thinkingSpaceDir),
     });
     return; // a repo is a leaf in this tree
   }
   if (dotGit?.isFile()) {
     // A `.git` *file* marks a linked worktree (SP-5/SP-9) — also a leaf (never
-    // descend into a checkout). It carries NO board of its own: its board is the
+    // descend into a checkout). It carries NO thinking space of its own: its thinking space is the
     // canonical Spec's central namespace. Label it as a worktree of its repo.
     const wt = linkedWorktreeInfo(dir);
-    const boardDir = resolveBoardDir(dir, ctx); // resolveBoardDir maps a worktree → canonical
-    if (wt && fs.existsSync(boardDir)) {
+    const thinkingSpaceDir = resolveThinkingSpaceDir(dir, ctx); // resolveThinkingSpaceDir maps a worktree → canonical
+    if (wt && fs.existsSync(thinkingSpaceDir)) {
       out.set(dir, {
         kind: "repo",
         path: dir,
         name: path.basename(dir),
         rel: path.relative(base, dir) || path.basename(dir),
-        boardDir,
+        thinkingSpaceDir,
         enabled: true,
         worktreeOf: { repo: path.basename(wt.canonicalRepo), name: wt.name },
       });
@@ -225,16 +225,16 @@ function walk(
   }
 }
 
-export class BoardNavigatorProvider implements vscode.TreeDataProvider<BoardNode> {
+export class ThinkingSpaceNavigatorProvider implements vscode.TreeDataProvider<ThinkingSpaceNode> {
   private readonly _onDidChangeTreeData = new vscode.EventEmitter<
-    BoardNode | undefined
+    ThinkingSpaceNode | undefined
   >();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
   /**
-   * When true, only methodology-enabled repos (those with a `.thinkube/` board)
+   * When true, only methodology-enabled repos (those with a `.thinkube/` thinking space)
    * are listed; unconfigured repos are hidden. Persisted across reloads by the
-   * caller (see `seedBoardsFilter` in `commands/boards.ts`).
+   * caller (see `seedThinkingSpacesFilter` in `commands/thinkingSpaces.ts`).
    */
   private _configuredOnly = false;
 
@@ -255,40 +255,40 @@ export class BoardNavigatorProvider implements vscode.TreeDataProvider<BoardNode
     this._onDidChangeTreeData.fire(undefined);
   }
 
-  async getChildren(element?: BoardNode): Promise<BoardNode[]> {
+  async getChildren(element?: ThinkingSpaceNode): Promise<ThinkingSpaceNode[]> {
     if (!element) {
-      const status = boardRootStatus();
+      const status = thinkingSpaceRootStatus();
       if (status.configured && !status.available) {
         // Don't silently show every space as disabled — say why (AC #6, SP-8).
         return [
           {
             kind: "message",
-            text: "Board repo not available",
-            detail: `${status.root} not found — clone or mount the board repo, or clear thinkube.boards.root.`,
+            text: "Thinking Space repo not available",
+            detail: `${status.root} not found — clone or mount the thinking space repo, or clear thinkube.thinkingSpace.root.`,
             icon: "cloud-offline",
           },
         ];
       }
       const showWorktrees = vscode.workspace
-        .getConfiguration("thinkube.boards")
+        .getConfiguration("thinkube.thinkingSpace")
         .get<boolean>("showWorktrees", false);
       let repos = discoverRepos();
-      // A linked worktree shares its canonical repo's board (it is not a
+      // A linked worktree shares its canonical repo's thinking space (it is not a
       // separate Thinking Space), so hide worktree entries unless opted in —
-      // they otherwise read as duplicate top-level boards.
+      // they otherwise read as duplicate top-level thinkingSpaces.
       if (!showWorktrees) repos = repos.filter((r) => !r.worktreeOf);
       if (this._configuredOnly) repos = repos.filter((r) => r.enabled);
 
-      // Group the visible repos under their Product when the board root has any
-      // (SP-tgvl81). With no board root / no products, fall back to the flat
+      // Group the visible repos under their Product when the thinking space root has any
+      // (SP-tgvl81). With no thinking space root / no products, fall back to the flat
       // repo list — Products are an additive layer, nothing disappears.
-      const boardRoot =
+      const thinkingSpaceRoot =
         vscode.workspace
-          .getConfiguration("thinkube.boards")
+          .getConfiguration("thinkube.thinkingSpace")
           .get<string>("root")
           ?.trim() || undefined;
-      const products = boardRoot ? discoverProducts(boardRoot) : [];
-      if (boardRoot && products.length) {
+      const products = thinkingSpaceRoot ? discoverProducts(thinkingSpaceRoot) : [];
+      if (thinkingSpaceRoot && products.length) {
         const folders = (vscode.workspace.workspaceFolders ?? []).map((f) => ({
           name: f.name,
           path: f.uri.fsPath,
@@ -297,10 +297,10 @@ export class BoardNavigatorProvider implements vscode.TreeDataProvider<BoardNode
           path: r.path,
           namespace: namespaceForRepo(r.path, folders),
         }));
-        const tree = buildProductTree(products, discoverProjects(boardRoot), refs);
+        const tree = buildProductTree(products, discoverProjects(thinkingSpaceRoot), refs);
         const byPath = new Map(repos.map((r) => [r.path, r]));
         const lookup = (p: string): RepoEntry | undefined => byPath.get(p);
-        const productNodes: BoardNode[] = tree.products.map((g) => ({
+        const productNodes: ThinkingSpaceNode[] = tree.products.map((g) => ({
           kind: "product",
           id: g.id,
           name: g.name,
@@ -333,7 +333,7 @@ export class BoardNavigatorProvider implements vscode.TreeDataProvider<BoardNode
     return [];
   }
 
-  getTreeItem(node: BoardNode): vscode.TreeItem {
+  getTreeItem(node: ThinkingSpaceNode): vscode.TreeItem {
     if (node.kind === "product") {
       const item = new vscode.TreeItem(
         node.name,
@@ -369,11 +369,11 @@ export class BoardNavigatorProvider implements vscode.TreeDataProvider<BoardNode
       item.description = node.detail;
       item.tooltip = node.detail;
       item.iconPath = new vscode.ThemeIcon(node.icon);
-      item.contextValue = "tandemBoardUnavailable";
+      item.contextValue = "tandemThinkingSpaceUnavailable";
       return item;
     }
     // A linked worktree reads as "<repo> · <name>" labeled a worktree, not a
-    // standalone repo (SP-5). It is still an enabled, openable board.
+    // standalone repo (SP-5). It is still an enabled, openable thinking space.
     const label = node.worktreeOf
       ? `${node.worktreeOf.repo} · ${node.worktreeOf.name}`
       : node.name;
@@ -390,8 +390,8 @@ export class BoardNavigatorProvider implements vscode.TreeDataProvider<BoardNode
       ? `${node.path}\nLinked worktree of ${node.worktreeOf.repo}`
       : node.path;
     item.contextValue = node.enabled
-      ? "tandemBoardEnabled"
-      : "tandemBoardDisabled";
+      ? "tandemThinkingSpaceEnabled"
+      : "tandemThinkingSpaceDisabled";
     item.iconPath = new vscode.ThemeIcon(
       node.worktreeOf
         ? "repo-clone"
@@ -401,7 +401,7 @@ export class BoardNavigatorProvider implements vscode.TreeDataProvider<BoardNode
     );
     // Clicking a Thinking Space only *selects* it (driving the TEPs → Specs
     // drill-down); the kanban opens per-Spec, not for the whole space (SP-tgs8nz).
-    // The whole-space board stays available via the palette / context menu.
+    // The whole-space thinking space stays available via the palette / context menu.
     return item;
   }
 }

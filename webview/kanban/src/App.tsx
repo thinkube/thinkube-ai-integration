@@ -1,24 +1,29 @@
 /**
- * Webview root. Sources the board from the host on mount, provides it through
+ * Webview root. Sources the thinking space from the host on mount, provides it through
  * the (vendored-shape) GlobalContext, and persists local mutations back to the
  * host.
  */
 import { useEffect, useState } from "react";
-import { Board as BoardComponent } from "./components/board";
+import { KanbanView } from "./components/kanban";
 import { GlobalContext } from "./utils/context";
 import { onHostMessage, postToHost } from "./utils/vscode";
-import { Board, ModeFlag } from "./types";
+import { ThinkingSpace, ModeFlag } from "./types";
 
-const EMPTY_BOARD: Board = { columns: [], tasks: {}, scope: "" };
+const EMPTY_THINKING_SPACE: ThinkingSpace = {
+  columns: [],
+  tasks: {},
+  scope: "",
+};
 
 export function App(): JSX.Element {
-  const [board, setBoard] = useState<Board>(EMPTY_BOARD);
+  const [thinkingSpace, setThinkingSpace] =
+    useState<ThinkingSpace>(EMPTY_THINKING_SPACE);
   const [mode, setMode] = useState<ModeFlag>("both");
 
   useEffect(() => {
     const unsubscribe = onHostMessage((msg) => {
       if (msg.kind === "state" || msg.kind === "external-change") {
-        setBoard(msg.board);
+        setThinkingSpace(msg.thinkingSpace);
         setMode(msg.mode);
       }
     });
@@ -26,14 +31,14 @@ export function App(): JSX.Element {
     return unsubscribe;
   }, []);
 
-  const setState = (next: Board) => {
-    setBoard(next);
-    postToHost({ kind: "save", board: next });
+  const setState = (next: ThinkingSpace) => {
+    setThinkingSpace(next);
+    postToHost({ kind: "save", thinkingSpace: next });
   };
 
   return (
-    <GlobalContext.Provider value={{ state: board, setState }}>
-      <BoardComponent mode={mode} />
+    <GlobalContext.Provider value={{ state: thinkingSpace, setState }}>
+      <KanbanView mode={mode} />
     </GlobalContext.Provider>
   );
 }

@@ -1,12 +1,12 @@
 /**
  * GitHubService — the residual GitHub client, demoted to the REST "inbox"
- * subset after the kanban board moved to files-first (Tandem). The board, the
+ * subset after the kanban thinking space moved to files-first (Tandem). The thinking space, the
  * MCP server, and the panels now read and write `.thinkube/` slice files via
- * `ThinkubeStore`; GitHub is no longer the source of truth for the board.
+ * `ThinkubeStore`; GitHub is no longer the source of truth for the thinking space.
  *
  * What remains here is the dormant inbox plumbing: list / read / create /
  * update / comment / close issues over `@octokit/rest`. There is no GraphQL
- * client anymore — the Projects v2 board, native sub-issues, Issue Types, and
+ * client anymore — the Projects v2 thinking space, native sub-issues, Issue Types, and
  * schema-enforcement surface (all GraphQL) were removed with the files-first
  * cutover.
  *

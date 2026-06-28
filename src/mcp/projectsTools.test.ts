@@ -23,8 +23,8 @@ import {
   promoteTep,
 } from "./kanbanMcpServer";
 
-/** A tmp board root with two products; the `rebrand` project owns an umbrella TEP. */
-function boardRootWithProjects(): string {
+/** A tmp thinking space root with two products; the `rebrand` project owns an umbrella TEP. */
+function thinkingSpaceRootWithProjects(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tk-projbr-"));
   const proj = (rel: string, yaml: string) => {
     fs.mkdirSync(path.join(root, rel), { recursive: true });
@@ -53,7 +53,7 @@ function boardRootWithProjects(): string {
 }
 
 /**
- * A tmp board store with one Spec (given `implements`) that has acceptance
+ * A tmp thinking space store with one Spec (given `implements`) that has acceptance
  * criteria. `spec` is the org-scoped composite `<tep>/<spec>` (numeric, so the
  * slice handle/path regexes resolve).
  */
@@ -61,8 +61,8 @@ async function seededStore(
   spec: string,
   implementsRef: string,
 ): Promise<ThinkubeStore> {
-  const board = fs.mkdtempSync(path.join(os.tmpdir(), "tk-projstore-"));
-  const store = new ThinkubeStore(board, board);
+  const thinkingSpace = fs.mkdtempSync(path.join(os.tmpdir(), "tk-projstore-"));
+  const store = new ThinkubeStore(thinkingSpace, thinkingSpace);
   await store.writeFile(
     store.pathForSpecDoc(spec),
     {
@@ -76,7 +76,7 @@ async function seededStore(
 
 test("list_projects returns every product's projects, sorted", () => {
   const res = listProjects({
-    env: { boardRoot: boardRootWithProjects() },
+    env: { thinkingSpaceRoot: thinkingSpaceRootWithProjects() },
   } as never) as { projects: { product: string; id: string }[] };
   assert.deepEqual(
     res.projects.map((p) => `${p.product}/${p.id}`),
@@ -85,7 +85,7 @@ test("list_projects returns every product's projects, sorted", () => {
 });
 
 test("get_project members = specs implementing the umbrella TEP + their slices (not tags)", async () => {
-  const root = boardRootWithProjects();
+  const root = thinkingSpaceRootWithProjects();
   // member: implements the project's umbrella TEP via the qualified ref. Its
   // own org-tree home is TEP-1/SP-1 (where the file sits), independent of the
   // logical `implements:` link to the umbrella TEP-reb.
@@ -99,8 +99,8 @@ test("get_project members = specs implementing the umbrella TEP + their slices (
   })) as { slice: string };
 
   const ctx = {
-    env: { boardRoot: root },
-    boards: {
+    env: { thinkingSpaceRoot: root },
+    thinkingSpaces: {
       list: () => [
         { id: "A", worktree: false },
         { id: "B", worktree: false },
@@ -140,17 +140,20 @@ test("get_project surfaces a NESTED member spec with its repo: as the working re
   );
 
   const ctx = {
-    env: { boardRoot: root },
-    boards: { list: () => [], resolve: () => undefined },
+    env: { thinkingSpaceRoot: root },
+    thinkingSpaces: { list: () => [], resolve: () => undefined },
   };
   const res = (await getProject(ctx as never, "Platform", "rebrand")) as {
-    members: { board: string; handle: string; kind: string }[];
+    members: { thinking_space: string; handle: string; kind: string }[];
   };
-  // The nested member is found location-based, and its `board` is its WORKING
+  // The nested member is found location-based, and its `thinking space` is its WORKING
   // repo (from repo:) — not the project — so the orchestrator knows where to branch.
   const member = res.members.find((m) => m.handle === "TEP-1_SP-1");
   assert.ok(member, "the nested member spec must be surfaced");
-  assert.equal(member?.board, "Platform/extensions/thinkube-ai-integration");
+  assert.equal(
+    member?.thinking_space,
+    "Platform/extensions/thinkube-ai-integration",
+  );
 });
 
 test("promote_tep moves the TEP and rewrites EVERY dependent (SP-tgvpbm_SL-3)", async () => {
@@ -172,7 +175,7 @@ test("promote_tep moves the TEP and rewrites EVERY dependent (SP-tgvpbm_SL-3)", 
   const control = mk("Platform/core/control");
   const ac = "## Acceptance Criteria\n\n- [ ] x\n";
 
-  // TEP-reb lives in the origin repo board as the nested org-tree dir
+  // TEP-reb lives in the origin repo thinking space as the nested org-tree dir
   // `teps/TEP-reb/tep.md` (via the store) — a TEP IS its directory (tep.md + its
   // SP-m specs), and promote_tep moves that whole dir into the project.
   await origin.writeFile(
@@ -182,7 +185,7 @@ test("promote_tep moves the TEP and rewrites EVERY dependent (SP-tgvpbm_SL-3)", 
   );
   // SP-a (origin) implements TEP-reb bare; SP-b (other repo) implements it
   // qualified to origin; SP-c implements something else (non-dependent). The spec
-  // ids are org-scoped composites `<tep>/<spec>` (numeric) — distinct per board so
+  // ids are org-scoped composites `<tep>/<spec>` (numeric) — distinct per thinking space so
   // their tep-qualified handles don't collide.
   await origin.writeFile(
     origin.pathForSpecDoc("1/1"),
@@ -201,8 +204,8 @@ test("promote_tep moves the TEP and rewrites EVERY dependent (SP-tgvpbm_SL-3)", 
   );
 
   const ctx = {
-    env: { boardRoot: root },
-    boards: {
+    env: { thinkingSpaceRoot: root },
+    thinkingSpaces: {
       list: () => [
         { id: "O", worktree: false },
         { id: "C", worktree: false },
@@ -222,7 +225,7 @@ test("promote_tep moves the TEP and rewrites EVERY dependent (SP-tgvpbm_SL-3)", 
   };
 
   // RE-ID'd into the project's scope: the empty project's next number is 1, so
-  // TEP-reb becomes TEP-1 there. (The number is unique only within a board+org
+  // TEP-reb becomes TEP-1 there. (The number is unique only within a thinking space+org
   // scope — preserving "reb"/a colliding number would clash with the project.)
   assert.equal(res.tep, "TEP-1");
   assert.equal(res.fromTep, "TEP-reb");
@@ -283,7 +286,7 @@ test("promote_tep re-ids to avoid a collision with the project's existing TEP", 
     "name: Rebrand\n",
   );
   // The project ALREADY owns a TEP-1 (nested). The incoming TEP also numbered 1
-  // on its origin board — the classic collision the sequential scheme creates.
+  // on its origin thinking space — the classic collision the sequential scheme creates.
   fs.mkdirSync(
     path.join(root, "Platform", "projects", "rebrand", "teps", "TEP-1"),
     { recursive: true },
@@ -316,8 +319,8 @@ test("promote_tep re-ids to avoid a collision with the project's existing TEP", 
   );
 
   const ctx = {
-    env: { boardRoot: root },
-    boards: {
+    env: { thinkingSpaceRoot: root },
+    thinkingSpaces: {
       list: () => [{ id: "O", worktree: false }],
       resolve: () => origin,
     },
@@ -400,8 +403,8 @@ test("promote_tep places the TEP under the project's existing <org>/teps root", 
   );
 
   const ctx = {
-    env: { boardRoot: root },
-    boards: {
+    env: { thinkingSpaceRoot: root },
+    thinkingSpaces: {
       list: () => [{ id: "O", worktree: false }],
       resolve: () => origin,
     },
@@ -440,8 +443,8 @@ test("promote_tep refuses when the target project does not exist", async () => {
   await assert.rejects(
     promoteTep(
       {
-        env: { boardRoot: root },
-        boards: { list: () => [], resolve: () => undefined },
+        env: { thinkingSpaceRoot: root },
+        thinkingSpaces: { list: () => [], resolve: () => undefined },
       } as never,
       "reb",
       "Platform",
@@ -454,8 +457,8 @@ test("get_project throws for an unknown project", async () => {
   await assert.rejects(
     getProject(
       {
-        env: { boardRoot: boardRootWithProjects() },
-        boards: { list: () => [], resolve: () => undefined },
+        env: { thinkingSpaceRoot: thinkingSpaceRootWithProjects() },
+        thinkingSpaces: { list: () => [], resolve: () => undefined },
       } as never,
       "Platform",
       "nope",

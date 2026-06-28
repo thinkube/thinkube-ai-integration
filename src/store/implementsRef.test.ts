@@ -34,14 +34,14 @@ test("parseImplements: empty/undefined → undefined", () => {
 // The org-scoped layout adds one more namespace segment (`…/<org>`). The
 // last-colon parser contract is preserved verbatim — the org is just another
 // path segment, never special-cased — so a qualified `…/<org>:TEP-1` parses for
-// free and a bare `TEP-1` still resolves within the spec's own (board, org).
+// free and a bare `TEP-1` still resolves within the spec's own (thinking space, org).
 
 test("parseImplements: org-deepened qualified ref → {namespace (with org), id}", () => {
   assert.deepEqual(
     parseImplements("Platform/projects/plugin-delivery/cmxela:TEP-1"),
     { namespace: "Platform/projects/plugin-delivery/cmxela", id: "1" },
   );
-  // A repo board deepened with the org segment parses the same way.
+  // A repo thinking space deepened with the org segment parses the same way.
   assert.deepEqual(parseImplements("Platform/core/thinkube/cmxela:TEP-2"), {
     namespace: "Platform/core/thinkube/cmxela",
     id: "2",
@@ -49,7 +49,7 @@ test("parseImplements: org-deepened qualified ref → {namespace (with org), id}
 });
 
 test("resolvesTo: org-deepened qualified ref resolves to its target TEP", () => {
-  const SPEC_NS = "Platform/core/thinkube/cmxela"; // the spec's own board+org
+  const SPEC_NS = "Platform/core/thinkube/cmxela"; // the spec's own thinking space+org
   const TARGET_NS = "Platform/projects/plugin-delivery/cmxela";
   const qualified = parseImplements(`${TARGET_NS}:TEP-1`)!;
   assert.equal(resolvesTo(qualified, SPEC_NS, TARGET_NS, "1"), true);
@@ -62,11 +62,11 @@ test("resolvesTo: org-deepened qualified ref resolves to its target TEP", () => 
   assert.equal(resolvesTo(qualified, SPEC_NS, TARGET_NS, "2"), false);
 });
 
-test("resolvesTo: a bare TEP-1 resolves within the spec's OWN (board, org)", () => {
+test("resolvesTo: a bare TEP-1 resolves within the spec's OWN (thinking space, org)", () => {
   const SPEC_NS = "Platform/core/thinkube/cmxela";
   const TARGET_NS = "Platform/projects/plugin-delivery/cmxela";
   const bare = parseImplements("TEP-1")!;
-  // bare → resolves to the spec's own board+org.
+  // bare → resolves to the spec's own thinking space+org.
   assert.equal(resolvesTo(bare, SPEC_NS, SPEC_NS, "1"), true);
   // bare never reaches a project umbrella (owner ≠ project ns).
   assert.equal(resolvesTo(bare, SPEC_NS, TARGET_NS, "1"), false);
@@ -98,7 +98,7 @@ test("resolvesTo: qualified ref matches its explicit owner namespace + id", () =
   assert.equal(resolvesTo(ref, REPO, "Platform/projects/x", "tgkx1k"), false); // wrong ns
 });
 
-test("resolvesTo: bare ref resolves to the spec's OWN board, never a project", () => {
+test("resolvesTo: bare ref resolves to the spec's OWN thinking space, never a project", () => {
   const ref = parseImplements("TEP-tgkx1k")!;
   // bare → repo-local: matches the spec's own namespace
   assert.equal(resolvesTo(ref, REPO, REPO, "tgkx1k"), true);

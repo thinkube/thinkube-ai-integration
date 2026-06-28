@@ -1,7 +1,7 @@
 /**
  * Preliminary-control gate tests (SP-th1ddy_SL-2 AC). The guard
  * `sliceFilesResolveInRepo` decides whether a slice's `files:` are repo-relative
- * *inside the board's own repo*. This proves the gate refuses the three bad
+ * *inside the thinking space's own repo*. This proves the gate refuses the three bad
  * shapes — absolute paths, `..`-escaping paths, different-repo paths — and
  * accepts a repo-relative footprint, naming the offending path when it refuses.
  * Pure (no fs); run via `npm test`.
@@ -11,10 +11,10 @@ import assert from "node:assert/strict";
 import * as path from "node:path";
 import { sliceFilesResolveInRepo } from "./sliceRepoGuard";
 
-// A board repo root that exists nowhere — the guard is purely lexical.
-const REPO = path.resolve("/board/repo");
+// A thinking space repo root that exists nowhere — the guard is purely lexical.
+const REPO = path.resolve("/thinking space/repo");
 
-test("accepts repo-relative files inside the board repo → ok", () => {
+test("accepts repo-relative files inside the thinking space repo → ok", () => {
   const r = sliceFilesResolveInRepo(REPO, [
     "src/foo.ts",
     "a/b/c.md",

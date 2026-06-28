@@ -1,5 +1,5 @@
 /**
- * AC#3 (SP-th4wqe_SL-3 / issue #3): the cross-board promote guard must fire on
+ * AC#3 (SP-th4wqe_SL-3 / issue #3): the cross-thinking space promote guard must fire on
  * the REAL seam — a `write_spec` TOOL CALL through `dispatchTool`, the layer the
  * live MCP server actually runs — not on the pure `implementsPromoteCheck`
  * classifier in isolation. This test drives `dispatchTool("write_spec", …)` with
@@ -7,16 +7,16 @@
  *
  *   - a qualified `<namespace>:TEP-<id>` ref the locator reports **unpromoted**
  *     (`false`) → the call is **refused** with a message naming `promote_tep`,
- *     and the dangling cross-board `implements:` is NOT persisted;
+ *     and the dangling cross-thinking space `implements:` is NOT persisted;
  *   - the same qualified ref the locator reports **promoted** (`true`) → accepted
  *     and the `implements:` is written;
  *   - a **bare** repo-local `TEP-<id>` ref → accepted WITHOUT consulting the
- *     locator (nothing cross-board to promote).
+ *     locator (nothing cross-thinking space to promote).
  *
  * ── Injection seam (the contract the wiring in `kanbanMcpServer.ts` honours) ──
  * The fake locator is injected via `ctx.promoteLocator` — the same optional-on-
  * `HandlerContext` idiom as `ctx.lock` (#20). `dispatchTool`'s `write_spec` case
- * runs `implementsPromoteCheck(args.implements, ctx.promoteLocator ?? <board-
+ * runs `implementsPromoteCheck(args.implements, ctx.promoteLocator ?? <thinking space-
  * backed default>)` before `writeSpec`; on `{ ok: false }` it throws the
  * result's `message` (which names `promote_tep`). Refusals surface as a thrown
  * `Error` — the server's refusal convention (cf. `promote_tep` / `get_project`),
@@ -34,11 +34,11 @@ import { ThinkubeStore } from "../store/ThinkubeStore";
 import { dispatchTool } from "./kanbanMcpServer";
 import type { PromoteLocator } from "../methodology/implementsPromoteCheck";
 
-/** A board with one existing spec doc (so `write_spec` is an update, and we can
+/** A thinking space with one existing spec doc (so `write_spec` is an update, and we can
  *  read back the persisted — or refused — frontmatter). */
 async function seededStore(spec = "demo"): Promise<ThinkubeStore> {
-  const board = fs.mkdtempSync(path.join(os.tmpdir(), "tk-promote-dispatch-"));
-  const store = new ThinkubeStore(board, board);
+  const thinkingSpace = fs.mkdtempSync(path.join(os.tmpdir(), "tk-promote-dispatch-"));
+  const store = new ThinkubeStore(thinkingSpace, thinkingSpace);
   await store.writeFile(
     store.pathForSpecDoc(spec),
     {},
@@ -53,14 +53,14 @@ async function seededStore(spec = "demo"): Promise<ThinkubeStore> {
 function ctxWith(store: ThinkubeStore, promoteLocator: PromoteLocator) {
   return {
     env: {} as never,
-    boards: { resolve: () => store } as never,
+    thinkingSpaces: { resolve: () => store } as never,
     promoteLocator,
   };
 }
 
 const ALLOW = () => {}; // writeGate: AI writes permitted.
 
-test("write_spec refuses an unpromoted cross-board implements, naming promote_tep", async () => {
+test("write_spec refuses an unpromoted cross-thinking space implements, naming promote_tep", async () => {
   const store = await seededStore();
   const calls: { namespace?: string; id: string }[] = [];
   const locator: PromoteLocator = (ref) => {
@@ -89,16 +89,16 @@ test("write_spec refuses an unpromoted cross-board implements, naming promote_te
   assert.equal(calls[0].namespace, "acme/widgets");
   assert.equal(calls[0].id, "abc");
 
-  // A refusal must not persist the dangling cross-board link.
+  // A refusal must not persist the dangling cross-thinking space link.
   const parsed = await store.getFile(store.pathForSpecDoc("demo"));
   assert.notEqual(
     parsed?.frontmatter?.implements,
     "acme/widgets:TEP-abc",
-    "the refused cross-board implements must not be written",
+    "the refused cross-thinking space implements must not be written",
   );
 });
 
-test("write_spec accepts a promoted cross-board implements", async () => {
+test("write_spec accepts a promoted cross-thinking space implements", async () => {
   const store = await seededStore();
   const locator: PromoteLocator = () => true; // promoted / reachable
 
@@ -143,7 +143,7 @@ test("write_spec accepts a bare repo-local implements without consulting the loc
   assert.equal(
     consulted,
     false,
-    "a bare ref is repo-local — the cross-board locator must not be consulted",
+    "a bare ref is repo-local — the cross-thinking space locator must not be consulted",
   );
   const parsed = await store.getFile(store.pathForSpecDoc("demo"));
   assert.equal(

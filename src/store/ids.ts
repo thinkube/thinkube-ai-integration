@@ -9,9 +9,9 @@
  * keeps every number claimed by a file/dir, so a retired entry's number stays
  * reserved (reading the directory still counts it) and a number is never reused.
  *
- * Allocation assumes a SINGLE writer per (board, org): the `<org>` directory is
+ * Allocation assumes a SINGLE writer per (thinking space, org): the `<org>` directory is
  * what makes concurrent maintainers safe, not locking. A bare integer id is
- * unique only within its scope; cross-board references must be fully qualified.
+ * unique only within its scope; cross-thinking space references must be fully qualified.
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -81,15 +81,15 @@ async function nextNumberIn(dir: string, prefix: string): Promise<number> {
 }
 
 /**
- * Next sequential TEP number for a (board, org): scan-max+1 over
- * `<boardDir>/<org>/teps`. The first TEP in a scope is `1` and the next is `2`;
- * a different (board, org) has its own `teps` directory and so restarts at `1`.
+ * Next sequential TEP number for a (thinking space, org): scan-max+1 over
+ * `<thinkingSpaceDir>/<org>/teps`. The first TEP in a scope is `1` and the next is `2`;
+ * a different (thinking space, org) has its own `teps` directory and so restarts at `1`.
  */
 export async function nextTepNumber(
-  boardDir: string,
+  thinkingSpaceDir: string,
   org: string,
 ): Promise<number> {
-  return nextNumberIn(path.join(boardDir, org, "teps"), "TEP");
+  return nextNumberIn(path.join(thinkingSpaceDir, org, "teps"), "TEP");
 }
 
 /**

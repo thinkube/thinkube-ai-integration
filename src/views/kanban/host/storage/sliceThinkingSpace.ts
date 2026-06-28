@@ -1,5 +1,5 @@
 /**
- * Pure projection: Tandem slice records → kanban Board. No vscode, no fs — the
+ * Pure projection: Tandem slice records → kanban Thinking Space. No vscode, no fs — the
  * ThinkubeFilesAdapter does the I/O and calls these. Unit-tested directly.
  *
  * Each slice file (`.thinkube/specs/SP-{id}/SL-{m}.md`) becomes one card whose
@@ -8,7 +8,7 @@
  * (base36-epoch for new Specs, legacy integers for old ones), so there is no
  * numeric card encoding; colour and the parent chip group by the parent Spec id.
  */
-import { Board, BoardColumn, TaskCard } from "../types";
+import { ThinkingSpace, ThinkingSpaceColumn, TaskCard } from "../types";
 import { buildUnitDag } from "../../../../services/orchestratorCore";
 import { sliceHandle as treeSliceHandle } from "../../../../store/treePaths";
 import {
@@ -219,9 +219,9 @@ export interface SliceInput {
 }
 
 /**
- * Project slice records into a Board. Archived slices are excluded — they keep
+ * Project slice records into a Thinking Space. Archived slices are excluded — they keep
  * their files (to hold their numbers; archive-don't-delete) but don't appear on
- * the active board.
+ * the active thinking space.
  */
 export interface SpecMeta {
   /** Spec frontmatter `accepted:` present — the human-accept was recorded. */
@@ -230,7 +230,7 @@ export interface SpecMeta {
   allAcsChecked: boolean;
   /** The Spec's `## Acceptance Criteria` as a checklist — shown on the card. */
   criteria: AcceptanceItem[];
-  /** Spec frontmatter `archived: true` — its cards drop off the board (TEP-tg86v7). */
+  /** Spec frontmatter `archived: true` — its cards drop off the thinking space (TEP-tg86v7). */
   archived: boolean;
 }
 
@@ -240,7 +240,7 @@ export interface SpecMeta {
  * at least one AC and every box checked (mirrors `gateSpecAcceptance`, which
  * refuses a Spec with no `## Acceptance Criteria`); `criteria` is the checklist
  * the card renders so the human sees what they're signing off. The I/O wrappers
- * (the adapter, the MCP `list_board`) read the doc; this keeps the rule in one
+ * (the adapter, the MCP `list_thinking_space`) read the doc; this keeps the rule in one
  * place.
  */
 export function deriveSpecMeta(
@@ -257,11 +257,11 @@ export function deriveSpecMeta(
   };
 }
 
-export function buildSliceBoard(
+export function buildSliceThinkingSpace(
   slices: SliceInput[],
   scope: string,
   specMeta?: ReadonlyMap<string, SpecMeta>,
-): Board {
+): ThinkingSpace {
   const tasks: Record<string, TaskCard> = {};
   const byColumn = new Map<string, string[]>();
   for (const c of TANDEM_COLUMNS) byColumn.set(c.id, []);
@@ -281,12 +281,12 @@ export function buildSliceBoard(
   for (const s of ordered) {
     if ((s.status ?? "").toLowerCase() === "archived") continue;
     // A retired slice (SP-th4wqd) is terminal-and-DISTINCT-from-Done: it drops off the
-    // active board and (via the skipped tally below) out of its Spec's slice count, so a
+    // active thinking space and (via the skipped tally below) out of its Spec's slice count, so a
     // re-cut Spec can still close. Its SL-{m} stays reserved on disk (numbering reads files,
-    // not the board projection), so a retired number is never reused.
+    // not the thinking space projection), so a retired number is never reused.
     if (isRetiredStatus(s.status ?? "")) continue;
     const specKey = specKeyOf(s);
-    // An archived parent Spec drops off the board entirely (TEP-tg86v7): skip its
+    // An archived parent Spec drops off the thinking space entirely (TEP-tg86v7): skip its
     // slices, which (via the tally below) also suppresses its acceptance card.
     if (specMeta?.get(specKey)?.archived) continue;
     const id = handleOf(s);
@@ -379,7 +379,7 @@ export function buildSliceBoard(
     byColumn.get(columnId)?.push(id);
   }
 
-  const columns: BoardColumn[] = TANDEM_COLUMNS.map((c) => ({
+  const columns: ThinkingSpaceColumn[] = TANDEM_COLUMNS.map((c) => ({
     id: c.id,
     title: c.title,
     tasksIds: byColumn.get(c.id) ?? [],

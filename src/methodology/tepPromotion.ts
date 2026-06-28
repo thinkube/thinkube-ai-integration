@@ -3,16 +3,16 @@
  * write-target decision for `write_tep`.
  *
  * Split-brain gap: once a TEP is **promoted** into a Project, its canonical home
- * moves out of the session board's `teps/` and into
+ * moves out of the session thinking space's `teps/` and into
  * `<product>/projects/<id>/teps/TEP-<id>.md` (see `store/projects.ts#projectTeps`
  * and the `promote_tep` tool). A naive `write_tep` keeps writing the session
- * board copy, so an update lands on a stale duplicate while the promoted copy —
+ * thinking space copy, so an update lands on a stale duplicate while the promoted copy —
  * the one everyone reads — drifts. This helper decides where the bytes should go
  * BEFORE the handler writes:
  *
  *   - the TEP is owned by exactly one project  → update that **project copy**
- *     (no session-board duplicate is created);
- *   - no project owns it                       → write the **session board** as
+ *     (no session-thinking space duplicate is created);
+ *   - no project owns it                       → write the **session thinking space** as
  *     before (a fresh or repo-local TEP);
  *   - more than one project claims it          → the promotion is **unresolvable**
  *     (an ambiguous home `promote_tep` is meant to keep singular). We *signal* a
@@ -20,10 +20,10 @@
  *     handler turns the signal into a thrown error naming the tool.
  *
  * Pure (no fs / vscode): the "which projects own this TEP" lookup is resolved by
- * the caller (`discoverProjects` + `projectTeps` over `ctx.env.boardRoot`) and
+ * the caller (`discoverProjects` + `projectTeps` over `ctx.env.thinkingSpaceRoot`) and
  * passed in as {@link PromotedProject}[]. That keeps this unit-testable
  * vscode-free while `write_tep` drives the real seam via `dispatchTool` over a
- * `{env:{boardRoot}, boards}` fixture. Mirrors `implementsPromoteCheck`'s
+ * `{env:{thinkingSpaceRoot}, thinkingSpaces}` fixture. Mirrors `implementsPromoteCheck`'s
  * accept/refuse-with-`promote_tep` shape so both promotion guards read alike.
  */
 
@@ -34,8 +34,8 @@ export { PROMOTE_TOOL };
 
 /**
  * A Project that may own the TEP, paired with the TEP ids its `teps/` holds.
- * The caller builds these from `discoverProjects(boardRoot)` joined with
- * `projectTeps(boardRoot, product, id)`. `teps` entries are prefix-tolerant
+ * The caller builds these from `discoverProjects(thinkingSpaceRoot)` joined with
+ * `projectTeps(thinkingSpaceRoot, product, id)`. `teps` entries are prefix-tolerant
  * (`TEP-x` or `x`) — comparison is normalized.
  */
 export interface PromotedProject {
@@ -59,9 +59,9 @@ export interface TepPromoteRefusal {
 
 /**
  * Where a `write_tep` should land:
- *   - `session`  — the TEP is not promoted; write the session board normally.
+ *   - `session`  — the TEP is not promoted; write the session thinking space normally.
  *   - `project`  — exactly one project owns it; write/update that project copy at
- *                  `relativePath` (board-root-relative) and create no session dup.
+ *                  `relativePath` (thinking space-root-relative) and create no session dup.
  *   - `refuse`   — the promotion is unresolvable (ambiguous home); the handler
  *                  throws `message`, which names `promote_tep`.
  */
@@ -71,12 +71,12 @@ export type TepWritePath =
       kind: "project";
       product: string;
       projectId: string;
-      /** Board-root-relative path of the project copy. */
+      /** Thinking Space-root-relative path of the project copy. */
       relativePath: string;
     }
   | { kind: "refuse"; refuse: TepPromoteRefusal; message: string };
 
-/** The project copy's board-root-relative path — matches `promote_tep`'s
+/** The project copy's thinking space-root-relative path — matches `promote_tep`'s
  *  `movedTo`. A promoted TEP is the nested org-tree dir `teps/TEP-{id}/tep.md`
  *  (a project uses the bare `teps/` root — no per-maintainer `<org>/` segment). */
 export function projectTepPath(
@@ -92,8 +92,8 @@ export function projectTepPath(
  * own it (each carrying the TEP ids in its `teps/`).
  *
  * - Owned by exactly one project → `{ kind: "project", … }` (update the promoted
- *   copy; the handler must NOT also touch the session board).
- * - Owned by no project → `{ kind: "session" }` (write the session board copy).
+ *   copy; the handler must NOT also touch the session thinking space).
+ * - Owned by no project → `{ kind: "session" }` (write the session thinking space copy).
  * - Owned by more than one project → `{ kind: "refuse", … }`: the promotion is
  *   unresolvable, so the handler refuses with a message naming `promote_tep`
  *   rather than split-braining yet another copy.

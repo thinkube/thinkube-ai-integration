@@ -1,6 +1,6 @@
 /**
- * ThinkubeStore — the file layer for the board's markdown files
- * (the sidecar board namespace; co-located `.thinkube/` is deprecated, TEP-0008).
+ * ThinkubeStore — the file layer for the thinking space's markdown files
+ * (the sidecar thinking space namespace; co-located `.thinkube/` is deprecated, TEP-0008).
  *
  * Owns reading, writing, listing, and change notifications for the
  * methodology files described in §Appendix B:
@@ -107,48 +107,48 @@ export class ThinkubeStore implements vscode.Disposable {
   private readonly issueIndex = new Map<number, string>();
   private indexBuilt = false;
 
-  private readonly boardDir: string;
+  private readonly thinkingSpaceDir: string;
 
   /**
    * @param workspaceRoot the Thinking Space's git repo root — still used for
    *   provenance / git-coords, which resolve against the code repo.
-   * @param boardDir the board directory: the sidecar namespace
-   *   (`<board-root>/<namespace>`) that holds specs/teps/decisions/retros.
-   *   **Required** — there is no co-located default. Decoupling board-location
+   * @param thinkingSpaceDir the thinking space directory: the sidecar namespace
+   *   (`<thinking space-root>/<namespace>`) that holds specs/teps/decisions/retros.
+   *   **Required** — there is no co-located default. Decoupling thinking space-location
    *   from repo-location is the spine of SP-8 / TEP-0008, and a missing
-   *   `boardDir` must fail loudly rather than silently re-create the deprecated
+   *   `thinkingSpaceDir` must fail loudly rather than silently re-create the deprecated
    *   co-located `<workspaceRoot>/.thinkube` form.
    */
   constructor(
     public readonly workspaceRoot: string,
-    boardDir?: string,
+    thinkingSpaceDir?: string,
   ) {
-    if (!boardDir) {
+    if (!thinkingSpaceDir) {
       throw new Error(
-        "ThinkubeStore requires an explicit boardDir (the sidecar board " +
+        "ThinkubeStore requires an explicit thinkingSpaceDir (the sidecar thinking space " +
           "namespace). Refusing to fall back to a co-located " +
           "<workspaceRoot>/.thinkube — that form is deprecated (TEP-0008).",
       );
     }
-    this.boardDir = boardDir;
+    this.thinkingSpaceDir = thinkingSpaceDir;
   }
 
-  /** Absolute path to the board dir (the sidecar board namespace holding
+  /** Absolute path to the thinking space dir (the sidecar thinking space namespace holding
    * specs/teps/decisions/retros). */
   get thinkubeDir(): string {
-    return this.boardDir;
+    return this.thinkingSpaceDir;
   }
 
   // ─── Org-scoped tree layout (TEP-th8lzj) ────────────────────────────────
-  // The board stores artifacts as a tree under a per-maintainer org segment:
+  // The thinking space stores artifacts as a tree under a per-maintainer org segment:
   //   <org>/teps/TEP-n/tep.md · <org>/teps/TEP-n/SP-m/spec.md · …/SL-k.md
-  // The org is discovered (a child dir of the board holding a `teps/`). Cached
+  // The org is discovered (a child dir of the thinking space holding a `teps/`). Cached
   // once found; sync so the path builders stay synchronous.
   private _orgSeg: string | undefined;
   private orgSeg(): string | undefined {
     if (this._orgSeg) return this._orgSeg;
     try {
-      for (const e of fsSync.readdirSync(this.boardDir, {
+      for (const e of fsSync.readdirSync(this.thinkingSpaceDir, {
         withFileTypes: true,
       })) {
         if (
@@ -157,19 +157,19 @@ export class ThinkubeStore implements vscode.Disposable {
           e.name === "node_modules"
         )
           continue;
-        if (fsSync.existsSync(path.join(this.boardDir, e.name, "teps"))) {
+        if (fsSync.existsSync(path.join(this.thinkingSpaceDir, e.name, "teps"))) {
           this._orgSeg = e.name;
           return e.name;
         }
       }
     } catch {
-      /* board dir missing / unreadable → no org yet */
+      /* thinking space dir missing / unreadable → no org yet */
     }
     return undefined;
   }
 
-  /** Board-relative `teps` root — `<org>/teps` in the new tree, bare `teps`
-   *  for an org-less (empty/uninitialised) board. */
+  /** Thinking Space-relative `teps` root — `<org>/teps` in the new tree, bare `teps`
+   *  for an org-less (empty/uninitialised) thinking space. */
   private tepsRoot(): string {
     const org = this.orgSeg();
     return org ? `${org}/${KIND_TO_DIR.tep}` : KIND_TO_DIR.tep;
@@ -178,10 +178,10 @@ export class ThinkubeStore implements vscode.Disposable {
   /** Start watching `.thinkube/**`. Idempotent. */
   activate(): void {
     if (this.watcher) return;
-    // Watch the board dir directly (it IS the board namespace). Using
-    // the board dir as the RelativePattern base lets the watcher fire even when
-    // the board lives at a central root outside the code repo (SP-8).
-    const pattern = new vscode.RelativePattern(this.boardDir, "**/*.md");
+    // Watch the thinking space dir directly (it IS the thinking space namespace). Using
+    // the thinking space dir as the RelativePattern base lets the watcher fire even when
+    // the thinking space lives at a central root outside the code repo (SP-8).
+    const pattern = new vscode.RelativePattern(this.thinkingSpaceDir, "**/*.md");
     this.watcher = vscode.workspace.createFileSystemWatcher(pattern);
     this.watcher.onDidCreate((uri) => this.handleFsEvent(uri, "created"));
     this.watcher.onDidChange((uri) => this.handleFsEvent(uri, "changed"));
@@ -313,7 +313,7 @@ export class ThinkubeStore implements vscode.Disposable {
   /** Canonical path for a NEW TEP document (slugless). Legacy TEPs may carry a
    *  `-{slug}` suffix in the filename — use `findTep` to resolve those. */
   pathForTep(tepId: string): string {
-    // The org-agnostic TEMPLATE scaffold stays at the fixed board-level path.
+    // The org-agnostic TEMPLATE scaffold stays at the fixed thinking space-level path.
     if (tepId === "TEMPLATE") return `${KIND_TO_DIR.tep}/TEP-TEMPLATE.md`;
     return `${this.tepsRoot()}/TEP-${tepId}/tep.md`;
   }
@@ -424,7 +424,7 @@ export class ThinkubeStore implements vscode.Disposable {
    * is **not** retired. A slice whose frontmatter `status:` is the terminal
    * `retired` token (`sliceLifecycle.RETIRED_STATUS`, read via `isRetiredStatus`
    * — never a re-spelled literal) is dropped here, because a retired slice
-   * leaves the active board/frontier (SP-th4wqd_SL-1; the → Done gate never runs
+   * leaves the active thinking space/frontier (SP-th4wqd_SL-1; the → Done gate never runs
    * for it).
    *
    * This is deliberately distinct from the numbering allocator: a retired slice

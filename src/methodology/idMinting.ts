@@ -2,7 +2,7 @@
  * Spec-id resolution for `write_spec` (SP-th4wqd_SL-2, TEP-th3i18 #6).
  *
  * `write_spec` historically *required* the caller to hand a Spec id, which
- * forced manual board surgery (hand-minting an `SP-{id}` before every spec).
+ * forced manual thinking space surgery (hand-minting an `SP-{id}` before every spec).
  * This brings it to parity with `write_tep`, where omitting the id mints a
  * conflict-free base36-epoch id via the store's allocator.
  *

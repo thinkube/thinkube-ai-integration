@@ -6,25 +6,25 @@ import "./installVscodeStub";
 /**
  * Stdio MCP server for the Thinkube methodology kanban (files-first / Tandem).
  *
- * Board-independent (ADR-0007 Phase-6 decision): ONE server serves every
- * enabled board. Each tool takes an optional `board` parameter resolved per
- * call, so a session can work across boards and a board enabled mid-session
- * is immediately addressable — no relaunch. When `board` is omitted the
+ * Thinking Space-independent (ADR-0007 Phase-6 decision): ONE server serves every
+ * enabled thinking space. Each tool takes an optional `thinking space` parameter resolved per
+ * call, so a session can work across thinkingSpaces and a thinking space enabled mid-session
+ * is immediately addressable — no relaunch. When `thinking space` is omitted the
  * session's own repo is used (the repo containing this process's cwd; Claude
  * Code spawns `.mcp.json` servers with the session's cwd).
  *
- * Board addressing: the canonical id is the repo's HOME-RELATIVE path
+ * Thinking Space addressing: the canonical id is the repo's HOME-RELATIVE path
  * (e.g. `apps/vllm`, `thinkube-platform/core/thinkube`). The workspace
  * organization is semantic, so bare basenames are systemically ambiguous
  * (template vs deployed app) and are NEVER resolved — an unknown id fails
- * with candidate suggestions, and `list_boards` supplies the vocabulary.
+ * with candidate suggestions, and `list_thinking_spaces` supplies the vocabulary.
  * Absolute paths are also accepted.
  *
  * Source of truth: the committed `specs/SP-{n}/SL-{m}.md` slice files in the
- * board's sidecar namespace (`<board-root>/<container>/<rel>`, ADR-0008), plus
+ * thinking space's sidecar namespace (`<thinking space-root>/<container>/<rel>`, ADR-0008), plus
  * the parent `SP-{n}/spec.md` documents. There is NO GitHub here —
  * this server reads and writes only through `ThinkubeStore` and projects the
- * board with the same pure `sliceBoard.ts` logic the panel uses, so the MCP
+ * thinking space with the same pure `sliceThinkingSpace.ts` logic the panel uses, so the MCP
  * surface and the kanban panel always agree.
  *
  * State plumbing: this is a separate Node process, so settings come in via
@@ -32,15 +32,15 @@ import "./installVscodeStub";
  * injected by the VS Code provider):
  *
  *   THINKUBE_ROOTS            path-delimiter-separated directories scanned for
- *                             boards (repos whose sidecar board dir exists).
+ *                             thinkingSpaces (repos whose sidecar thinking space dir exists).
  *                             Optional — defaults to the session's own repo.
  *   THINKUBE_ALLOW_AI_WRITES  "true" | "false" — gates every mutating tool.
  *                             One global flag: solo platform, git is the undo
  *                             (ADR-0007 Phase-6 decision).
- *   THINKUBE_WORKSPACE        legacy single-board binding; honoured as a
- *                             fallback root / default board so `.mcp.json`
+ *   THINKUBE_WORKSPACE        legacy single-thinking space binding; honoured as a
+ *                             fallback root / default thinking space so `.mcp.json`
  *                             files from older bundle installs keep working.
- *   THINKUBE_BOARD_ROOT       central board root (SP-8): boards live at
+ *   THINKUBE_THINKING_SPACE_ROOT       central thinking space root (SP-8): thinkingSpaces live at
  *                             <root>/<container>/<rel>, not co-located.
  *   THINKUBE_FOLDERS          JSON [{name,path}] of workspace folders; the
  *                             folder name supplies the namespace container.
@@ -97,7 +97,7 @@ import {
   type DocsGateMode,
 } from "../methodology/qualityGates";
 import { ThinkubeStore } from "../store/ThinkubeStore";
-import { isBoardDir } from "./boardDetection";
+import { isThinkingSpaceDir } from "./thinkingSpaceDetection";
 import { resolveServerConfig, type ServerConfigFile } from "./serverConfig";
 import type { Frontmatter, ParsedFile } from "../store/frontmatter";
 import {
@@ -143,24 +143,24 @@ import {
 } from "../methodology/implementsPromoteCheck";
 import { ConcurrencyLock } from "../services/concurrencyLock";
 import {
-  boardDirForNamespace,
+  thinkingSpaceDirForNamespace,
   namespaceForRepo,
   type WorkspaceFolderRef,
-} from "../store/boardNamespace";
+} from "../store/thinkingSpaceNamespace";
 import {
-  buildSliceBoard,
+  buildSliceThinkingSpace,
   deriveSpecMeta,
   SliceInput,
   sliceHandle,
   SpecMeta,
-} from "../views/kanban/host/storage/sliceBoard";
+} from "../views/kanban/host/storage/sliceThinkingSpace";
 
 interface ServerEnv {
   roots: string[];
   /** Workspace folders with names — supply the namespace container (SP-8). */
   folders: WorkspaceFolderRef[];
-  /** Central board root; when set, boards live at <root>/<container>/<rel>. */
-  boardRoot?: string;
+  /** Central thinking space root; when set, thinkingSpaces live at <root>/<container>/<rel>. */
+  thinkingSpaceRoot?: string;
   allowAIWrites: boolean;
   /** → Done docs gate mode (TEP-tgh6iy): advisory warns, blocking refuses. */
   docsGateMode: DocsGateMode;
@@ -183,7 +183,7 @@ function readConfigFile(): ServerConfigFile | null {
 }
 
 /** Effective config: `THINKUBE_*` env (back-compat) → machine-level file → cwd
- *  discovery (in BoardRegistry). See `serverConfig.resolveServerConfig`. */
+ *  discovery (in ThinkingSpaceRegistry). See `serverConfig.resolveServerConfig`. */
 function readEnv(): ServerEnv {
   return resolveServerConfig(process.env, readConfigFile(), path.delimiter);
 }
@@ -194,9 +194,9 @@ function log(msg: string): void {
 
 async function main(): Promise<void> {
   const env = readEnv();
-  const boards = new BoardRegistry(env);
+  const thinkingSpaces = new ThinkingSpaceRegistry(env);
   log(
-    `booting: roots=[${env.roots.join(", ")}] writes=${env.allowAIWrites} cwd=${process.cwd()} defaultBoard=${boards.defaultBoardPath ?? "(none)"}`,
+    `booting: roots=[${env.roots.join(", ")}] writes=${env.allowAIWrites} (thinking_space= required per call; cwd is not a thinking space criterion)`,
   );
 
   // Dynamic import: the MCP SDK is ESM-only, this entrypoint is CJS.
@@ -211,7 +211,11 @@ async function main(): Promise<void> {
     { capabilities: { tools: {}, resources: {} } },
   );
 
-  const ctx: HandlerContext = { env, boards, lock: new ConcurrencyLock() };
+  const ctx: HandlerContext = {
+    env,
+    thinkingSpaces,
+    lock: new ConcurrencyLock(),
+  };
   registerHandlers(server, sdkTypes, ctx);
 
   const transport = new sdkStdio.StdioServerTransport();
@@ -219,21 +223,21 @@ async function main(): Promise<void> {
   log("connected");
 }
 
-// ─── Board registry ─────────────────────────────────────────────────────────
+// ─── Thinking Space registry ─────────────────────────────────────────────────────────
 
-export interface BoardInfo {
+export interface ThinkingSpaceInfo {
   /** Canonical id: home-relative path (absolute when outside $HOME). */
   id: string;
   /** Basename — display only, never an address. */
   name: string;
   /** Absolute repo path. */
   path: string;
-  /** The board dir (the `.thinkube`-equivalent) — central or co-located (SP-8). */
-  boardDir: string;
+  /** The thinking space dir (the `.thinkube`-equivalent) — central or co-located (SP-8). */
+  thinkingSpaceDir: string;
   /**
    * True when this entry is a linked git worktree (SP-5/SP-9), not a standalone
-   * board: it shares its canonical repo's namespace. Listed separately so the
-   * board vocabulary stays a list of logical Thinking Spaces, not checkouts.
+   * thinking space: it shares its canonical repo's namespace. Listed separately so the
+   * thinking space vocabulary stays a list of logical Thinking Spaces, not checkouts.
    */
   worktree?: boolean;
 }
@@ -242,47 +246,41 @@ const DISCOVERY_TTL_MS = 10_000;
 const MAX_WALK_DEPTH = 3;
 
 /**
- * Discovers boards under the configured roots and resolves `board` arguments to
+ * Discovers thinkingSpaces under the configured roots and resolves `thinking space` arguments to
  * `ThinkubeStore`s. Discovery mirrors the navigator's `discoverRepos`: a
- * directory containing `.git` is a repo and a leaf; it is a board iff its board
+ * directory containing `.git` is a repo and a leaf; it is a thinking space iff its thinking space
  * dir exists — the central sidecar namespace (ADR-0008) or a co-located
  * `.thinkube/`. Linked worktrees map to their canonical repo's namespace.
  */
-export class BoardRegistry {
-  /** The session's own board: the enabled repo containing process.cwd(). */
-  readonly defaultBoardPath: string | undefined;
-
+export class ThinkingSpaceRegistry {
   private readonly env: ServerEnv;
   private readonly roots: string[];
   private readonly stores = new Map<string, ThinkubeStore>();
-  private discovered: BoardInfo[] | undefined;
+  private discovered: ThinkingSpaceInfo[] | undefined;
   private discoveredAt = 0;
 
   constructor(env: ServerEnv) {
     this.env = env;
-    this.defaultBoardPath =
-      findEnclosingBoard(process.cwd(), env) ??
-      (env.legacyWorkspace && isBoard(env.legacyWorkspace)
-        ? env.legacyWorkspace
-        : undefined);
+    // Discovery roots come from CONFIGURATION only (thinkingSpaceRoot + the configured
+    // roots). process.cwd() is never consulted — cwd is not a criterion for the
+    // thinking space axis (passed explicitly per call) nor the repo axis (the spec's
+    // `repo:`); it is only ever the worktree a process happens to run in, a
+    // downstream consequence, never an input.
     const roots = [...env.roots];
-    // Always be able to discover at least the session's own board (and the
-    // legacy workspace, until its .mcp.json is re-installed with roots).
-    if (this.defaultBoardPath) roots.push(this.defaultBoardPath);
     if (env.legacyWorkspace) roots.push(env.legacyWorkspace);
     this.roots = [...new Set(roots)];
   }
 
-  list(forceRefresh = false): BoardInfo[] {
+  list(forceRefresh = false): ThinkingSpaceInfo[] {
     const now = Date.now();
     if (
       !this.discovered ||
       forceRefresh ||
       now - this.discoveredAt > DISCOVERY_TTL_MS
     ) {
-      const found = new Map<string, BoardInfo>();
+      const found = new Map<string, ThinkingSpaceInfo>();
       for (const root of this.roots) {
-        walkForBoards(root, 0, found, this.env);
+        walkForThinkingSpaces(root, 0, found, this.env);
       }
       this.discovered = [...found.values()].sort((a, b) =>
         a.id.localeCompare(b.id),
@@ -293,61 +291,61 @@ export class BoardRegistry {
   }
 
   /**
-   * Resolve a `board` argument to a store. Omitted → the session's own
-   * board. Canonical id or absolute path → that board. Anything else —
+   * Resolve a `thinking space` argument to a store. Omitted → the session's own
+   * thinking space. Canonical id or absolute path → that thinking space. Anything else —
    * including a bare basename, even a currently-unique one — fails with
    * candidate suggestions ("currently unique" is one deploy away from
    * ambiguous).
    */
-  resolve(boardArg: string | undefined): ThinkubeStore {
-    if (this.env.boardRoot && !fsSync.existsSync(this.env.boardRoot)) {
+  resolve(thinkingSpaceArg: string | undefined): ThinkubeStore {
+    if (
+      this.env.thinkingSpaceRoot &&
+      !fsSync.existsSync(this.env.thinkingSpaceRoot)
+    ) {
       throw new Error(
-        `Board repo not available: thinkube.boards.root (${this.env.boardRoot}) does not exist — clone or mount the board repo.`,
+        `Thinking Space repo not available: thinkube.thinkingSpace.root (${this.env.thinkingSpaceRoot}) does not exist — clone or mount the thinking space repo.`,
       );
     }
-    if (boardArg === undefined || boardArg.trim() === "") {
-      if (!this.defaultBoardPath) {
-        throw new Error(
-          "No default board: this session's cwd is not inside a repo with a board-shaped board dir (a `specs/` directory). Pass `board` explicitly — call list_boards for the available ids." +
-            this.missingBoardRootHint(),
-        );
-      }
-      return this.storeFor(
-        this.defaultBoardPath,
-        boardDirOf(this.defaultBoardPath, this.env),
+    if (thinkingSpaceArg === undefined || thinkingSpaceArg.trim() === "") {
+      // No default thinking space — every thinking space-scoped call MUST name its thinking space, so the
+      // session can never silently act on the wrong thinking space (the cwd's repo thinking space
+      // is NOT assumed). Pass `thinking_space=<id>` explicitly.
+      throw new Error(
+        "A thinking space is required: pass `thinking_space=<id>` — the thinking space's home-relative id (e.g. `thinkube-platform/core/thinkube`) or a `<product>/projects/<id>` project namespace. There is no default thinking space; call list_thinking_spaces for the available ids." +
+          this.missingThinkingSpaceRootHint(),
       );
     }
 
-    const arg = boardArg.trim();
+    const arg = thinkingSpaceArg.trim();
     if (path.isAbsolute(arg)) {
-      const boardDir = boardDirOf(arg, this.env);
-      if (!isBoardDir(boardDir)) {
+      const thinkingSpaceDir = thinkingSpaceDirOf(arg, this.env);
+      if (!isThinkingSpaceDir(thinkingSpaceDir)) {
         throw new Error(
-          `"${arg}" is not a board — no board-shaped board directory at ${boardDir}.` +
-            this.missingBoardRootHint(),
+          `"${arg}" is not a thinking space — no thinking space-shaped thinking space directory at ${thinkingSpaceDir}.` +
+            this.missingThinkingSpaceRootHint(),
         );
       }
-      return this.storeFor(arg, boardDir);
+      return this.storeFor(arg, thinkingSpaceDir);
     }
 
-    const boards = this.list();
-    const exact = boards.find((b) => b.id === normalizeId(arg));
-    if (exact) return this.storeFor(exact.path, exact.boardDir);
+    const thinkingSpaces = this.list();
+    const exact = thinkingSpaces.find((b) => b.id === normalizeId(arg));
+    if (exact) return this.storeFor(exact.path, exact.thinkingSpaceDir);
 
-    // A Project is a first-class but CODE-LESS board at `<product>/projects/<id>`
+    // A Project is a first-class but CODE-LESS thinking space at `<product>/projects/<id>`
     // in the sidecar root, addressable by that namespace. It has no code repo, so
-    // its store path IS its board dir; its member specs carry `repo:` naming the
+    // its store path IS its thinking space dir; its member specs carry `repo:` naming the
     // working repo the orchestrator branches a worktree in. This is what makes a
     // project fully tool-managed (write_spec/create_slice/get_thinkube_file target
-    // it like any board) rather than a half-board special-cased around.
-    if (this.env.boardRoot && /(^|\/)projects\/[^/]+\/?$/.test(arg)) {
-      const projDir = path.join(this.env.boardRoot, ...arg.split("/"));
-      if (isBoardDir(projDir)) return this.storeFor(projDir, projDir);
+    // it like any thinking space) rather than a half-thinking space special-cased around.
+    if (this.env.thinkingSpaceRoot && /(^|\/)projects\/[^/]+\/?$/.test(arg)) {
+      const projDir = path.join(this.env.thinkingSpaceRoot, ...arg.split("/"));
+      if (isThinkingSpaceDir(projDir)) return this.storeFor(projDir, projDir);
     }
 
     // Never resolve fuzzy/basename matches — suggest instead.
     const needle = arg.toLowerCase();
-    const candidates = boards
+    const candidates = thinkingSpaces
       .filter(
         (b) =>
           b.name.toLowerCase() === needle ||
@@ -357,83 +355,62 @@ export class BoardRegistry {
     const hint =
       candidates.length > 0
         ? ` Did you mean: ${candidates.join(", ")}?`
-        : " Call list_boards for the available ids.";
+        : " Call list_thinking_spaces for the available ids.";
     throw new Error(
-      `Unknown board "${arg}" — boards are addressed by their home-relative id (e.g. thinkube-platform/core/thinkube), never by bare name.${hint}`,
+      `Unknown thinking space "${arg}" — thinkingSpaces are addressed by their home-relative id (e.g. thinkube-platform/core/thinkube), never by bare name.${hint}`,
     );
   }
 
-  defaultBoardId(): string | undefined {
-    return this.defaultBoardPath ? boardId(this.defaultBoardPath) : undefined;
-  }
-
   /**
-   * Hint appended to "not a board" errors when no board root is configured —
-   * the common cause is a missing `thinkube.boards.root` / `THINKUBE_BOARD_ROOT`
-   * for a board that lives in a central sidecar. Without it we'd resolve to a
+   * Hint appended to "not a thinking space" errors when no thinking space root is configured —
+   * the common cause is a missing `thinkube.thinkingSpace.root` / `THINKUBE_THINKING_SPACE_ROOT`
+   * for a thinking space that lives in a central sidecar. Without it we'd resolve to a
    * fabricated co-located `.thinkube/` (TEP-tghb9t). Empty when one IS set.
    */
-  private missingBoardRootHint(): string {
-    return this.env.boardRoot
+  private missingThinkingSpaceRootHint(): string {
+    return this.env.thinkingSpaceRoot
       ? ""
-      : " (No thinkube.boards.root / THINKUBE_BOARD_ROOT is configured — if this repo's board lives in a central sidecar, that setting is required.)";
+      : " (No thinkube.thinkingSpace.root / THINKUBE_THINKING_SPACE_ROOT is configured — if this repo's thinking space lives in a central sidecar, that setting is required.)";
   }
 
-  private storeFor(repoPath: string, boardDir: string): ThinkubeStore {
+  private storeFor(repoPath: string, thinkingSpaceDir: string): ThinkubeStore {
     let store = this.stores.get(repoPath);
     if (!store) {
-      store = new ThinkubeStore(repoPath, boardDir);
+      store = new ThinkubeStore(repoPath, thinkingSpaceDir);
       this.stores.set(repoPath, store);
     }
     return store;
   }
 }
 
-function isBoard(dir: string): boolean {
-  // Legacy co-located board: a `<dir>/.thinkube/` that is board-shaped (has
+function isThinkingSpace(dir: string): boolean {
+  // Legacy co-located thinking space: a `<dir>/.thinkube/` that is thinking space-shaped (has
   // `specs/`). A bare `.thinkube/` holding something else (e.g. an api-token
-  // store) is NOT a board — see boardDetection.ts (TEP-tghb9t).
-  return isBoardDir(path.join(dir, ".thinkube"));
+  // store) is NOT a thinking space — see thinkingSpaceDetection.ts (TEP-tghb9t).
+  return isThinkingSpaceDir(path.join(dir, ".thinkube"));
 }
 
 /**
- * The board dir for a repo: central `<board-root>/<namespace>` when a board
+ * The thinking space dir for a repo: central `<thinking space-root>/<namespace>` when a thinking space
  * root is configured and the repo maps to a namespace, else the co-located
  * `<repo>/.thinkube` (legacy default + fallback for unmapped paths). Mirrors
  * the navigator's resolver (SP-8).
  */
-function boardDirOf(repoPath: string, env: ServerEnv): string {
-  if (env.boardRoot) {
-    // A linked worktree shares its canonical Spec's board (SP-9): map it to the
+function thinkingSpaceDirOf(repoPath: string, env: ServerEnv): string {
+  if (env.thinkingSpaceRoot) {
+    // A linked worktree shares its canonical Spec's thinking space (SP-9): map it to the
     // canonical repo's namespace, not the worktree's own out-of-folder path. So
-    // a worktree session's default board + addressing both resolve to the same
-    // central board as the canonical repo.
+    // a worktree session's default thinking space + addressing both resolve to the same
+    // central thinking space as the canonical repo.
     const wt = linkedWorktreeInfo(repoPath);
     const ns = namespaceForRepo(wt ? wt.canonicalRepo : repoPath, env.folders);
-    if (ns) return boardDirForNamespace(env.boardRoot, ns);
+    if (ns) return thinkingSpaceDirForNamespace(env.thinkingSpaceRoot, ns);
   }
   return path.join(repoPath, ".thinkube");
 }
 
-/**
- * Walk up from `start` to the enclosing board: a repo (`.git`) whose board dir
- * exists, or a legacy dir with a co-located `.thinkube/` even without `.git`.
- */
-function findEnclosingBoard(start: string, env: ServerEnv): string | undefined {
-  let dir = path.resolve(start);
-  for (;;) {
-    const isRepo = fsSync.existsSync(path.join(dir, ".git"));
-    if ((isRepo && isBoardDir(boardDirOf(dir, env))) || isBoard(dir)) {
-      return dir;
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) return undefined;
-    dir = parent;
-  }
-}
-
-/** Canonical board id: home-relative path (forward slashes), else absolute. */
-function boardId(absPath: string): string {
+/** Canonical thinking space id: home-relative path (forward slashes), else absolute. */
+function thinkingSpaceId(absPath: string): string {
   const rel = path.relative(os.homedir(), absPath);
   if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return absPath;
   return rel.split(path.sep).join("/");
@@ -443,10 +420,10 @@ function normalizeId(id: string): string {
   return id.replace(/\\/g, "/").replace(/\/+$/, "");
 }
 
-function walkForBoards(
+function walkForThinkingSpaces(
   dir: string,
   depth: number,
-  out: Map<string, BoardInfo>,
+  out: Map<string, ThinkingSpaceInfo>,
   env: ServerEnv,
 ): void {
   let entries: fsSync.Dirent[];
@@ -458,34 +435,34 @@ function walkForBoards(
   const gitEntry = entries.find((e) => e.name === ".git");
   if (gitEntry) {
     // A repo (`.git` dir) or a linked worktree (`.git` file) — a leaf. It is a
-    // board iff its board dir exists. A worktree (SP-5/SP-9) carries NO board of
-    // its own: its board is the CANONICAL Spec's central namespace, and it
+    // thinking space iff its thinking space dir exists. A worktree (SP-5/SP-9) carries NO thinking space of
+    // its own: its thinking space is the CANONICAL Spec's central namespace, and it
     // displays as a worktree of its canonical repo.
     const abs = path.resolve(dir);
     const wt = gitEntry.isFile() ? linkedWorktreeInfo(abs) : undefined;
-    const boardDir = boardDirOf(abs, env); // boardDirOf maps a worktree → canonical
-    if (isBoardDir(boardDir)) {
+    const thinkingSpaceDir = thinkingSpaceDirOf(abs, env); // thinkingSpaceDirOf maps a worktree → canonical
+    if (isThinkingSpaceDir(thinkingSpaceDir)) {
       const name = wt
         ? `${path.basename(wt.canonicalRepo)} · ${wt.name} worktree`
         : path.basename(abs);
       out.set(abs, {
-        id: boardId(abs),
+        id: thinkingSpaceId(abs),
         name,
         path: abs,
-        boardDir,
+        thinkingSpaceDir,
         worktree: !!wt,
       });
     }
-    return; // a repo is a leaf — no nested boards
+    return; // a repo is a leaf — no nested thinkingSpaces
   }
   // Legacy: a co-located `.thinkube/` without a `.git` (e.g. a bare workspace).
-  if (isBoard(dir)) {
+  if (isThinkingSpace(dir)) {
     const abs = path.resolve(dir);
     out.set(abs, {
-      id: boardId(abs),
+      id: thinkingSpaceId(abs),
       name: path.basename(abs),
       path: abs,
-      boardDir: path.join(abs, ".thinkube"),
+      thinkingSpaceDir: path.join(abs, ".thinkube"),
     });
     return;
   }
@@ -493,7 +470,7 @@ function walkForBoards(
   for (const e of entries) {
     if (!e.isDirectory()) continue;
     if (e.name === "node_modules" || e.name.startsWith(".")) continue;
-    walkForBoards(path.join(dir, e.name), depth + 1, out, env);
+    walkForThinkingSpaces(path.join(dir, e.name), depth + 1, out, env);
   }
 }
 
@@ -501,20 +478,20 @@ function walkForBoards(
 
 interface HandlerContext {
   env: ServerEnv;
-  boards: BoardRegistry;
+  thinkingSpaces: ThinkingSpaceRegistry;
   /**
-   * Serializes mutating board writes per board handle (#20). Optional so the
-   * many test harnesses that hand-build a minimal `{ env, boards }` context keep
+   * Serializes mutating thinking space writes per thinking space handle (#20). Optional so the
+   * many test harnesses that hand-build a minimal `{ env, thinkingSpaces }` context keep
    * compiling; `dispatchTool` falls back to a module-level singleton
-   * (`defaultBoardWriteLock`) when it is absent, so writes are serialized either
+   * (`defaultThinkingSpaceWriteLock`) when it is absent, so writes are serialized either
    * way. Production (`main`) injects a fresh per-process lock.
    */
   lock?: ConcurrencyLock;
   /**
-   * Cross-board `implements:` promote locator consulted by `write_spec` (#3).
+   * Cross-thinking space `implements:` promote locator consulted by `write_spec` (#3).
    * Injected so AC#3 can drive the real refusal through `dispatchTool` with a fake
-   * locator (no board fixture). Absent ⇒ `dispatchTool` builds the real, board-
-   * backed locator (`makeBoardPromoteLocator`) from this context. See
+   * locator (no thinking space fixture). Absent ⇒ `dispatchTool` builds the real, thinking space-
+   * backed locator (`makeThinkingSpacePromoteLocator`) from this context. See
    * `methodology/implementsPromoteCheck` for the contract — the pure check lives
    * there and this only resolves "is this qualified TEP promoted?".
    */
@@ -522,27 +499,29 @@ interface HandlerContext {
 }
 
 /**
- * The real, board-backed promote locator for `write_spec` (#3). Only consulted by
+ * The real, thinking space-backed promote locator for `write_spec` (#3). Only consulted by
  * `implementsPromoteCheck` for **qualified** (`<namespace>:TEP-<id>`) refs — bare
  * repo-local refs are accepted by the pure check without consulting us. Returns:
  *   - `true`  (promoted)   — the namespace is a project (`<product>/projects/<id>`)
  *                            whose `teps/` actually owns the TEP, OR we can't
- *                            classify (no board root) so we accept rather than
+ *                            classify (no thinking space root) so we accept rather than
  *                            block a write we can't reason about.
- *   - `false` (unpromoted) — a cross-board ref whose TEP has not been promoted into
+ *   - `false` (unpromoted) — a cross-thinking space ref whose TEP has not been promoted into
  *                            a project; `implementsPromoteCheck` refuses it, naming
  *                            `promote_tep`.
  */
-function makeBoardPromoteLocator(ctx: HandlerContext): PromoteLocator {
+function makeThinkingSpacePromoteLocator(ctx: HandlerContext): PromoteLocator {
   return (ref) => {
-    const boardRoot = ctx.env.boardRoot;
-    if (!boardRoot) return true; // can't classify → accept
+    const thinkingSpaceRoot = ctx.env.thinkingSpaceRoot;
+    if (!thinkingSpaceRoot) return true; // can't classify → accept
     const m = /^([^/]+)\/projects\/([^/]+)$/.exec(ref.namespace);
     if (m) {
-      const owned = projectTeps(boardRoot, m[1], m[2]).map(normalizeTepId);
+      const owned = projectTeps(thinkingSpaceRoot, m[1], m[2]).map(
+        normalizeTepId,
+      );
       return owned.includes(normalizeTepId(ref.id));
     }
-    // A non-project (repo board) namespace: a real cross-board ref that hasn't
+    // A non-project (repo thinking space) namespace: a real cross-thinking space ref that hasn't
     // been promoted into a project.
     return false;
   };
@@ -551,9 +530,9 @@ function makeBoardPromoteLocator(ctx: HandlerContext): PromoteLocator {
 /**
  * Process-wide fallback lock for `move_slice` / `accept_spec` when a caller did
  * not inject one via `ctx.lock` (e.g. unit tests). A single instance keyed by
- * board handle is enough: per-handle slots keep different boards independent.
+ * thinking space handle is enough: per-handle slots keep different thinkingSpaces independent.
  */
-const defaultBoardWriteLock = new ConcurrencyLock();
+const defaultThinkingSpaceWriteLock = new ConcurrencyLock();
 
 function registerHandlers(server: any, types: any, ctx: HandlerContext): void {
   const writeGate = (toolName: string) => {
@@ -622,21 +601,21 @@ function registerHandlers(server: any, types: any, ctx: HandlerContext): void {
 // ─── Tool definitions + dispatcher ──────────────────────────────────────────
 
 /**
- * The optional `board` parameter shared by every board-scoped tool.
+ * The optional `thinking space` parameter shared by every thinking space-scoped tool.
  */
-const BOARD_PARAM = {
-  board: {
+const THINKING_SPACE_PARAM = {
+  thinking_space: {
     type: "string",
     description:
-      "Board id — the repo's home-relative path (e.g. `thinkube-platform/core/thinkube`), or an absolute path. Omit for the current session's own board. Bare repo names are not accepted (ambiguous: the workspace layout is semantic) — call `list_boards` for the ids.",
+      "REQUIRED — the thinking space this call acts on: the thinking space's home-relative id (e.g. `thinkube-platform/core/thinkube`), a `<product>/projects/<id>` project namespace, or an absolute path. There is NO default thinking space (a call must never silently act on the session's cwd repo thinking space). Bare repo names are not accepted (ambiguous) — call `list_thinking_spaces` for the ids.",
   },
 } as const;
 
 const TOOL_DEFS = [
   {
-    name: "list_boards",
+    name: "list_thinking_spaces",
     description:
-      "Discover every Tandem board across the configured roots: repos whose board dir exists in the central sidecar namespace `<board-root>/<container>/<rel>` (ADR-0008). Returns each board's canonical id (home-relative path — the value to pass as `board` to the other tools), name, and absolute path, plus which board is this session's default. Linked git worktrees are omitted (they share their canonical repo's board — address them by that repo's id). The semantic location is part of the id (`apps/…` = deployed app, `user-templates/…` = template, `thinkube-platform/…` = platform code).",
+      "Discover every Tandem thinking space across the configured roots: repos whose thinking space dir exists in the central sidecar namespace `<thinking space-root>/<container>/<rel>` (ADR-0008). Returns each thinking space's canonical id (home-relative path — the value to pass as `thinking space` to the other tools), name, and absolute path, plus which thinking space is this session's default. Linked git worktrees are omitted (they share their canonical repo's thinking space — address them by that repo's id). The semantic location is part of the id (`apps/…` = deployed app, `user-templates/…` = template, `thinkube-platform/…` = platform code).",
     inputSchema: {
       type: "object",
       properties: {},
@@ -646,7 +625,7 @@ const TOOL_DEFS = [
   {
     name: "list_tags",
     description:
-      "Aggregate the #hashtag mesh (SP-tgvil2) across every board in the workspace. Returns each tag with its `count` and the `items` carrying it ({ board: the board id, handle: SP-{n} | SP-{n}_SL-{m} | TEP-{id}, kind }), sorted by tag. An item with N tags appears under all N; a tag clusters items from multiple boards (the cross-board clustering layer — a project is a promoted tag). Folds a legacy `theme:` in as a tag.",
+      "Aggregate the #hashtag mesh (SP-tgvil2) across every thinking space in the workspace. Returns each tag with its `count` and the `items` carrying it ({ thinking space: the thinking space id, handle: SP-{n} | SP-{n}_SL-{m} | TEP-{id}, kind }), sorted by tag. An item with N tags appears under all N; a tag clusters items from multiple thinkingSpaces (the cross-thinking space clustering layer — a project is a promoted tag). Folds a legacy `theme:` in as a tag.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -656,7 +635,7 @@ const TOOL_DEFS = [
   {
     name: "list_products",
     description:
-      "List Products — the code-less top nodes of the hierarchy (SP-tgvjug / TEP-tgvh8p). A Product is a top-level directory in the sidecar board root whose member Thinking Spaces are the board namespaces nested under it. Returns each Product `{ id, name (from <product>/product.yaml, else the id), members: namespaces }`, sorted by id. Empty when no board root is configured. Products generalize the old fixed Platform/Apps/Templates containers into arbitrary user-defined groupings; a Project (later) is a tag promoted under a Product.",
+      "List Products — the code-less top nodes of the hierarchy (SP-tgvjug / TEP-tgvh8p). A Product is a top-level directory in the sidecar thinking space root whose member Thinking Spaces are the thinking space namespaces nested under it. Returns each Product `{ id, name (from <product>/product.yaml, else the id), members: namespaces }`, sorted by id. Empty when no thinking space root is configured. Products generalize the old fixed Platform/Apps/Templates containers into arbitrary user-defined groupings; a Project (later) is a tag promoted under a Product.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -666,7 +645,7 @@ const TOOL_DEFS = [
   {
     name: "list_projects",
     description:
-      "List Projects across all Products (SP-tgvkmt / TEP-tgvh8p). A Project is a bounded multi-repo effort = a promoted tag with a version-controlled home (`<product>/projects/<name>/project.yaml`). Returns each Project `{ product, id, name, state (open|done), tag, tep? }`, sorted. Empty when no board root is configured. Use `get_project` to resolve a project's members (the items carrying its tag).",
+      "List Projects across all Products (SP-tgvkmt / TEP-tgvh8p). A Project is a bounded multi-repo effort = a promoted tag with a version-controlled home (`<product>/projects/<name>/project.yaml`). Returns each Project `{ product, id, name, state (open|done), tag, tep? }`, sorted. Empty when no thinking space root is configured. Use `get_project` to resolve a project's members (the items carrying its tag).",
     inputSchema: {
       type: "object",
       properties: {},
@@ -676,7 +655,7 @@ const TOOL_DEFS = [
   {
     name: "get_project",
     description:
-      "Get one Project's umbrella TEPs + its members (SP-tgvpbm). A Project is a code-less umbrella owning TEPs; its members are the specs (across boards) whose `implements:` resolves to one of those TEPs, plus their slices (inherited) — structural, not tags. Returns `{ project, teps: [TEP-id], members: [{ board, handle, kind }] }`.",
+      "Get one Project's umbrella TEPs + its members (SP-tgvpbm). A Project is a code-less umbrella owning TEPs; its members are the specs (across thinkingSpaces) whose `implements:` resolves to one of those TEPs, plus their slices (inherited) — structural, not tags. Returns `{ project, teps: [TEP-id], members: [{ thinking space, handle, kind }] }`.",
     inputSchema: {
       type: "object",
       properties: {
@@ -698,7 +677,7 @@ const TOOL_DEFS = [
   {
     name: "promote_tep",
     description:
-      "Promote a repo TEP into an existing Project's umbrella (SP-tgvpbm). Moves `TEP-<tep>` out of its repo's `teps/` into `<product>/projects/<id>/teps/`, then rewrites EVERY spec that implemented it (across boards) to the qualified umbrella ref — so all former implementers stay members and no dangling/bare ref remains. Returns `{ tep, movedTo, rewritten: [SP-handles] }`. The Project must already exist (create it with New Project first).",
+      "Promote a repo TEP into an existing Project's umbrella (SP-tgvpbm). Moves `TEP-<tep>` out of its repo's `teps/` into `<product>/projects/<id>/teps/`, then rewrites EVERY spec that implemented it (across thinkingSpaces) to the qualified umbrella ref — so all former implementers stay members and no dangling/bare ref remains. Returns `{ tep, movedTo, rewritten: [SP-handles] }`. The Project must already exist (create it with New Project first).",
     inputSchema: {
       type: "object",
       properties: {
@@ -722,12 +701,12 @@ const TOOL_DEFS = [
     },
   },
   {
-    name: "list_board",
+    name: "list_thinking_space",
     description:
-      "Current Tandem board, projected from the committed `specs/SP-{n}/SL-{m}.md` slice files (in the board's sidecar namespace). Returns the Ready / Doing / Done columns; each card carries its slice handle (`id`, e.g. `SP-3_SL-42`), title (`description`), and `specStale` / `specChange` (whether the parent Spec's requirements changed since the slice was last verified).",
+      "Current Tandem thinking space, projected from the committed `specs/SP-{n}/SL-{m}.md` slice files (in the thinking space's sidecar namespace). Returns the Ready / Doing / Done columns; each card carries its slice handle (`id`, e.g. `SP-3_SL-42`), title (`description`), and `specStale` / `specChange` (whether the parent Spec's requirements changed since the slice was last verified).",
     inputSchema: {
       type: "object",
-      properties: { ...BOARD_PARAM },
+      properties: { ...THINKING_SPACE_PARAM },
       additionalProperties: false,
     },
   },
@@ -742,7 +721,7 @@ const TOOL_DEFS = [
           type: "string",
           description: "Slice handle, e.g. `SP-3_SL-42`.",
         },
-        ...BOARD_PARAM,
+        ...THINKING_SPACE_PARAM,
       },
       required: ["slice"],
       additionalProperties: false,
@@ -751,12 +730,12 @@ const TOOL_DEFS = [
   {
     name: "get_thinkube_file",
     description:
-      "Read a specific markdown file from the board (frontmatter + body). Path is relative to the board directory (the sidecar namespace).",
+      "Read a specific markdown file from the thinking space (frontmatter + body). Path is relative to the thinking space directory (the sidecar namespace).",
     inputSchema: {
       type: "object",
       properties: {
         relative_path: { type: "string", description: "e.g. specs/SP-50.md" },
-        ...BOARD_PARAM,
+        ...THINKING_SPACE_PARAM,
       },
       required: ["relative_path"],
       additionalProperties: false,
@@ -765,7 +744,7 @@ const TOOL_DEFS = [
   {
     name: "move_slice",
     description:
-      "Move a slice to a different column by setting its `status:` frontmatter. Status must be one of: Ready, Doing, Done, Requires-attention (a needs-human state the orchestrator sets when a worker can't resolve a problem — SP-tgs8nz; /attend returns it to the loop), or Retired. **Retired** (SP-th4wqd) is a TERMINAL state DISTINCT from Done — it records a required `reason` (a retire with no `reason` is refused), drops the slice off the active board/frontier, and the → Done gate never runs for it; the slice file stays on disk so its `SL-{m}` stays reserved (the next slice is still `max+1`). Moving to Done is REFUSED unless every acceptance criterion the slice lists in `satisfies` is checked on the parent Spec (the error names the offending criterion); slices with no `satisfies` are not gated. The → Done **docs gate** (TEP-tgh6iy) also applies: a `docs: required` slice must have its documentation done — pass `docs_done: true` once you've updated the doc module. In blocking mode an unsatisfied obligation is refused; in advisory mode (default) the move returns a `docsWarning`. On a successful Done it stamps the slice's `verified_req_hash` from the parent Spec so a later requirement edit re-flags it stale.",
+      "Move a slice to a different column by setting its `status:` frontmatter. Status must be one of: Ready, Doing, Done, Requires-attention (a needs-human state the orchestrator sets when a worker can't resolve a problem — SP-tgs8nz; /attend returns it to the loop), or Retired. **Retired** (SP-th4wqd) is a TERMINAL state DISTINCT from Done — it records a required `reason` (a retire with no `reason` is refused), drops the slice off the active thinking space/frontier, and the → Done gate never runs for it; the slice file stays on disk so its `SL-{m}` stays reserved (the next slice is still `max+1`). Moving to Done is REFUSED unless every acceptance criterion the slice lists in `satisfies` is checked on the parent Spec (the error names the offending criterion); slices with no `satisfies` are not gated. The → Done **docs gate** (TEP-tgh6iy) also applies: a `docs: required` slice must have its documentation done — pass `docs_done: true` once you've updated the doc module. In blocking mode an unsatisfied obligation is refused; in advisory mode (default) the move returns a `docsWarning`. On a successful Done it stamps the slice's `verified_req_hash` from the parent Spec so a later requirement edit re-flags it stale.",
     inputSchema: {
       type: "object",
       properties: {
@@ -787,7 +766,7 @@ const TOOL_DEFS = [
           description:
             "Attest that a `docs: required` slice's documentation was updated in this slice (TEP-tgh6iy). Satisfies the → Done docs gate; persisted as `docs_done` on the slice. Only meaningful when moving to Done.",
         },
-        ...BOARD_PARAM,
+        ...THINKING_SPACE_PARAM,
       },
       required: ["slice", "status"],
       additionalProperties: false,
@@ -804,7 +783,7 @@ const TOOL_DEFS = [
           type: "string",
           description: "The Spec id (SP-{id}) to accept.",
         },
-        ...BOARD_PARAM,
+        ...THINKING_SPACE_PARAM,
       },
       required: ["spec"],
       additionalProperties: false,
@@ -906,9 +885,9 @@ const TOOL_DEFS = [
           type: "array",
           items: { type: "string" },
           description:
-            "Free-form clustering tags — the #hashtag mesh (SP-tgvil2): component (`keycloak`), concern (`security`), project (`rebrand`). Many-to-many, cross-board (surfaced by `list_tags`).",
+            "Free-form clustering tags — the #hashtag mesh (SP-tgvil2): component (`keycloak`), concern (`security`), project (`rebrand`). Many-to-many, cross-thinking space (surfaced by `list_tags`).",
         },
-        ...BOARD_PARAM,
+        ...THINKING_SPACE_PARAM,
       },
       required: ["spec", "title", "body"],
       additionalProperties: false,
@@ -917,7 +896,7 @@ const TOOL_DEFS = [
   {
     name: "write_spec",
     description:
-      "Write a Spec's document at `specs/SP-{id}/spec.md` in the board (the sidecar namespace), creating it if absent. Replaces the markdown body; existing frontmatter (e.g. `accepted:`) is preserved, and `implements:` can be set via its parameter. Omit `spec` to mint a conflict-free base36-epoch id (parity with `write_tep`); pass it to update an existing Spec. The minted/given id is returned as `spec`. This is the board-aware write path for `/spec-prepare` — use it instead of a raw file write, which would land outside the board.",
+      "Write a Spec's document at `specs/SP-{id}/spec.md` in the thinking space (the sidecar namespace), creating it if absent. Replaces the markdown body; existing frontmatter (e.g. `accepted:`) is preserved, and `implements:` can be set via its parameter. Omit `spec` to mint a conflict-free base36-epoch id (parity with `write_tep`); pass it to update an existing Spec. The minted/given id is returned as `spec`. This is the thinking space-aware write path for `/spec-prepare` — use it instead of a raw file write, which would land outside the thinking space.",
     inputSchema: {
       type: "object",
       properties: {
@@ -934,12 +913,12 @@ const TOOL_DEFS = [
         implements: {
           type: "string",
           description:
-            "The TEP this Spec implements — a bare `TEP-<id>` (repo-local) or a qualified `<namespace>:TEP-<id>` (cross-board / umbrella project). Sets the `implements:` frontmatter (the TEP↔spec link + umbrella membership, which `promote_tep` rewrites). Omit to leave it unchanged; empty string clears it.",
+            "The TEP this Spec implements — a bare `TEP-<id>` (repo-local) or a qualified `<namespace>:TEP-<id>` (cross-thinking space / umbrella project). Sets the `implements:` frontmatter (the TEP↔spec link + umbrella membership, which `promote_tep` rewrites). Omit to leave it unchanged; empty string clears it.",
         },
         repo: {
           type: "string",
           description:
-            "The WORKING repository for a project-member spec — a board namespace (e.g. `thinkube-platform/core/thinkube-metadata`) the orchestrator branches a worktree in, independent of where the spec file lives under the project umbrella. Sets the `repo:` frontmatter. Omit to leave unchanged; empty clears it. A normal same-repo spec needs none (the orchestrator falls back to the board's repo).",
+            "The WORKING repository for a project-member spec — a thinking space namespace (e.g. `thinkube-platform/core/thinkube-metadata`) the orchestrator branches a worktree in, independent of where the spec file lives under the project umbrella. Sets the `repo:` frontmatter. Omit to leave unchanged; empty clears it. A normal same-repo spec needs none (the orchestrator falls back to the thinking space's repo).",
         },
         ac_verifications: {
           type: "object",
@@ -955,7 +934,7 @@ const TOOL_DEFS = [
             additionalProperties: false,
           },
         },
-        ...BOARD_PARAM,
+        ...THINKING_SPACE_PARAM,
       },
       required: ["body"],
       additionalProperties: false,
@@ -983,7 +962,7 @@ const TOOL_DEFS = [
           description:
             "The replacement content for that named section. Every other section of the Spec is left byte-identical.",
         },
-        ...BOARD_PARAM,
+        ...THINKING_SPACE_PARAM,
       },
       required: ["spec", "section", "content"],
       additionalProperties: false,
@@ -992,7 +971,7 @@ const TOOL_DEFS = [
   {
     name: "update_slice",
     description:
-      "Update a slice in place, keeping its `SL-{m}` number. Pass `body` to replace the markdown body (frontmatter is preserved; the body's first line must be the `# title` heading — if the new body lacks one, the existing title is re-attached and the input is treated as detail, so a card can never become heading-less). **Re-cut (SP-th4wqd):** pass `files` / `satisfies` / `work_units` to REPLACE the slice's footprint fields without re-creating it — a re-scope. A provided field replaces wholesale (an empty array clears it); an omitted field is left untouched. A re-cut whose declared footprint (any `files` path or `work_units[].footprint` path) escapes the board repo is REFUSED with the same rejection `create_slice` gives — the check routes through the shared repo guard, not a copy. `body` is optional: omit it for a pure re-cut and the body is left unchanged.",
+      "Update a slice in place, keeping its `SL-{m}` number. Pass `body` to replace the markdown body (frontmatter is preserved; the body's first line must be the `# title` heading — if the new body lacks one, the existing title is re-attached and the input is treated as detail, so a card can never become heading-less). **Re-cut (SP-th4wqd):** pass `files` / `satisfies` / `work_units` to REPLACE the slice's footprint fields without re-creating it — a re-scope. A provided field replaces wholesale (an empty array clears it); an omitted field is left untouched. A re-cut whose declared footprint (any `files` path or `work_units[].footprint` path) escapes the thinking space repo is REFUSED with the same rejection `create_slice` gives — the check routes through the shared repo guard, not a copy. `body` is optional: omit it for a pure re-cut and the body is left unchanged.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1015,7 +994,7 @@ const TOOL_DEFS = [
           type: "array",
           items: { type: "string" },
           description:
-            "Re-cut (SP-th4wqd): REPLACE the slice's machine-readable file set (repo-relative paths). Omit to leave unchanged; pass `[]` to clear. Validated against the board repo with the same guard `create_slice` uses — a path that escapes the repo is refused.",
+            "Re-cut (SP-th4wqd): REPLACE the slice's machine-readable file set (repo-relative paths). Omit to leave unchanged; pass `[]` to clear. Validated against the thinking space repo with the same guard `create_slice` uses — a path that escapes the repo is refused.",
         },
         satisfies: {
           type: "array",
@@ -1040,9 +1019,9 @@ const TOOL_DEFS = [
             additionalProperties: false,
           },
           description:
-            "Re-cut (SP-th4wqd): REPLACE the slice's execution-aware work units. Omit to leave unchanged; pass `[]` to clear. Each unit's `footprint` is checked against the board repo with the same guard `create_slice` uses.",
+            "Re-cut (SP-th4wqd): REPLACE the slice's execution-aware work units. Omit to leave unchanged; pass `[]` to clear. Each unit's `footprint` is checked against the thinking space repo with the same guard `create_slice` uses.",
         },
-        ...BOARD_PARAM,
+        ...THINKING_SPACE_PARAM,
       },
       required: ["slice"],
       additionalProperties: false,
@@ -1051,7 +1030,7 @@ const TOOL_DEFS = [
   {
     name: "write_tep",
     description:
-      "Write a Tandem Enhancement Proposal at `teps/TEP-<id>.md` in the board (the sidecar namespace), creating it if absent (TEP-0009). The board-aware write path for `/tep` — use it instead of a raw file write. Omit `tep` to mint a conflict-free base36-epoch id; pass it to update an existing TEP. On create, the body defaults to the `TEP-TEMPLATE.md` scaffold and canonical frontmatter (kind/id/status/created/implemented_by) is filled; on update, existing frontmatter is preserved. `title`/`status` set those fields. Promotion-aware (TEP-th3i18 #14): if the TEP has been promoted into a Project (its canonical home moved to `<product>/projects/<id>/teps/`), the update lands on that **project copy** — no stale duplicate is left on the session board; if more than one project claims it the write is refused, pointing you at `promote_tep` to reconcile the single home.",
+      "Write a Tandem Enhancement Proposal at `teps/TEP-<id>.md` in the thinking space (the sidecar namespace), creating it if absent (TEP-0009). The thinking space-aware write path for `/tep` — use it instead of a raw file write. Omit `tep` to mint a conflict-free base36-epoch id; pass it to update an existing TEP. On create, the body defaults to the `TEP-TEMPLATE.md` scaffold and canonical frontmatter (kind/id/status/created/implemented_by) is filled; on update, existing frontmatter is preserved. `title`/`status` set those fields. Promotion-aware (TEP-th3i18 #14): if the TEP has been promoted into a Project (its canonical home moved to `<product>/projects/<id>/teps/`), the update lands on that **project copy** — no stale duplicate is left on the session thinking space; if more than one project claims it the write is refused, pointing you at `promote_tep` to reconcile the single home.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1075,9 +1054,9 @@ const TOOL_DEFS = [
           type: "array",
           items: { type: "string" },
           description:
-            "Clustering tags for the TEP — the #hashtag mesh (SP-tgvil2), surfaced cross-board by `list_tags`.",
+            "Clustering tags for the TEP — the #hashtag mesh (SP-tgvil2), surfaced cross-thinking space by `list_tags`.",
         },
-        ...BOARD_PARAM,
+        ...THINKING_SPACE_PARAM,
       },
       required: [],
       additionalProperties: false,
@@ -1086,10 +1065,10 @@ const TOOL_DEFS = [
   {
     name: "write_retro_note",
     description:
-      "Append a retro note to today's `retros/{YYYY-MM-DD}.md` in the board.",
+      "Append a retro note to today's `retros/{YYYY-MM-DD}.md` in the thinking space.",
     inputSchema: {
       type: "object",
-      properties: { body: { type: "string" }, ...BOARD_PARAM },
+      properties: { body: { type: "string" }, ...THINKING_SPACE_PARAM },
       required: ["body"],
       additionalProperties: false,
     },
@@ -1097,7 +1076,7 @@ const TOOL_DEFS = [
   {
     name: "start_spec_worktree",
     description:
-      "Open the Spec's git worktree session (the 'Start Spec in Worktree' action) without a manual button — so a session that just sliced a Spec can hand off directly into a board-connected worktree pair session. Writes a one-shot control request the Extension Host picks up via a file watcher (the same MCP→host filesystem channel the board uses), which runs `thinkube.specs.startWorktree` (create-or-reuse + board-root inject + open session). Requires the host to be running.",
+      "Open the Spec's git worktree session (the 'Start Spec in Worktree' action) without a manual button — so a session that just sliced a Spec can hand off directly into a thinking space-connected worktree pair session. Writes a one-shot control request the Extension Host picks up via a file watcher (the same MCP→host filesystem channel the thinking space uses), which runs `thinkube.specs.startWorktree` (create-or-reuse + thinking space-root inject + open session). Requires the host to be running.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1106,7 +1085,7 @@ const TOOL_DEFS = [
           description:
             "The Spec id (the SP-{id}) whose worktree session to open — an opaque string (base36-epoch or a legacy integer).",
         },
-        ...BOARD_PARAM,
+        ...THINKING_SPACE_PARAM,
       },
       required: ["spec"],
       additionalProperties: false,
@@ -1120,7 +1099,7 @@ export async function dispatchTool(
   ctx: HandlerContext,
   writeGate: (n: string) => void,
 ): Promise<unknown> {
-  if (name === "list_boards") return listBoards(ctx);
+  if (name === "list_thinking_spaces") return listThinkingSpaces(ctx);
   if (name === "list_tags") return listTags(ctx);
   if (name === "list_products") return listProducts(ctx);
   if (name === "list_projects") return listProjects(ctx);
@@ -1136,28 +1115,28 @@ export async function dispatchTool(
     );
   }
 
-  // Every other tool is board-scoped: resolve the store per call.
-  const store = ctx.boards.resolve(optString(args, "board"));
+  // Every other tool is thinking space-scoped: resolve the store per call.
+  const store = ctx.thinkingSpaces.resolve(optString(args, "thinking_space"));
 
   // Per-handle write lock (#20): `move_slice` / `accept_spec` do a
-  // read-modify-write of the board, so two interleaving on the SAME board race
+  // read-modify-write of the thinking space, so two interleaving on the SAME thinking space race
   // — the second clobbers the first ("last write wins"). Serialize them per
-  // board handle so a queued op only reads state after the in-flight write has
-  // landed. The handle is the board dir (a stable absolute path); distinct
-  // boards stay independent.
-  const writeLock = ctx.lock ?? defaultBoardWriteLock;
-  const boardHandle = store.thinkubeDir;
+  // thinking space handle so a queued op only reads state after the in-flight write has
+  // landed. The handle is the thinking space dir (a stable absolute path); distinct
+  // thinkingSpaces stay independent.
+  const writeLock = ctx.lock ?? defaultThinkingSpaceWriteLock;
+  const thinkingSpaceHandle = store.thinkubeDir;
 
   switch (name) {
-    case "list_board":
-      return listBoard(store);
+    case "list_thinking_space":
+      return listThinkingSpace(store);
     case "get_slice":
       return getSlice(store, asString(args, "slice"));
     case "get_thinkube_file":
       return getThinkubeFile(store, asString(args, "relative_path"));
     case "move_slice":
       writeGate(name);
-      return writeLock.runExclusive(boardHandle, () =>
+      return writeLock.runExclusive(thinkingSpaceHandle, () =>
         moveSlice(store, asString(args, "slice"), asString(args, "status"), {
           docsGateMode: ctx.env.docsGateMode,
           docsDone: optBoolean(args, "docs_done"),
@@ -1166,7 +1145,7 @@ export async function dispatchTool(
       );
     case "accept_spec":
       writeGate(name);
-      return writeLock.runExclusive(boardHandle, () =>
+      return writeLock.runExclusive(thinkingSpaceHandle, () =>
         acceptSpec(
           store,
           typeof args.spec === "number"
@@ -1182,7 +1161,7 @@ export async function dispatchTool(
           : asString(args, "spec");
       // Approval gate (SP-th4wqg_SL-1, TEP-th3i18 #25): a slice may not reach
       // Ready while the parent Spec's `implements:` TEP is not yet `accepted`
-      // (approved-to-build). Resolve the TEP's status via board context and run
+      // (approved-to-build). Resolve the TEP's status via thinking space context and run
       // the pure `tepApprovalGate` before `createSlice` does any work, so the
       // refusal (naming the TEP + its status) fires at the door.
       await assertTepApproved(ctx, store, createSpecId);
@@ -1218,14 +1197,14 @@ export async function dispatchTool(
     }
     case "write_spec": {
       writeGate(name);
-      // #3 cross-board learnability: refuse an `implements:` naming a TEP on
-      // another board that hasn't been promoted into a project — the link would
+      // #3 cross-thinking space learnability: refuse an `implements:` naming a TEP on
+      // another thinking space that hasn't been promoted into a project — the link would
       // dangle. The locator is injected (AC#3 drives this with a fake) or built
-      // from the board context here.
+      // from the thinking space context here.
       const implementsRaw = optString(args, "implements");
       const promoteCheck = await implementsPromoteCheck(
         implementsRaw,
-        ctx.promoteLocator ?? makeBoardPromoteLocator(ctx),
+        ctx.promoteLocator ?? makeThinkingSpacePromoteLocator(ctx),
       );
       if (!promoteCheck.ok) throw new Error(promoteCheck.message);
       // #6 minting: `spec` is optional — when omitted, mint a fresh base36-epoch
@@ -1300,13 +1279,13 @@ export async function dispatchTool(
       // Completeness gate (SP-th4wqg_SL-3, TEP-th3i18 #26): `implemented` is the
       // terminal "delivered" status — refuse it while any implementing Spec is
       // still unaccepted (the TEP hasn't actually been delivered). Resolve the
-      // TEP's implementing Specs via board context and run the pure `tepComplete`.
+      // TEP's implementing Specs via thinking space context and run the pure `tepComplete`.
       if (tepStatus === "implemented" && tepArg) {
         await assertTepComplete(ctx, store, tepArg);
       }
       // #14 — pass the full handler context so `writeTep` can resolve a promoted
-      // TEP to its project copy (boardRoot + boards), not split-brain the session
-      // board. `ctx` is last + optional so the existing `writeTep(store, args)`
+      // TEP to its project copy (thinkingSpaceRoot + thinkingSpaces), not split-brain the session
+      // thinking space. `ctx` is last + optional so the existing `writeTep(store, args)`
       // call sites (tagsTools.test) keep compiling.
       return writeTep(
         store,
@@ -1343,8 +1322,8 @@ export async function dispatchTool(
  * MCP process can't open a VS Code session itself, so it writes a one-shot
  * control request into the host-published `THINKUBE_CONTROL_DIR`; the host's
  * file watcher consumes it and runs `thinkube.specs.startWorktree` (the same
- * create-or-reuse + board-root inject + open-session machinery as the button,
- * SL-7). Reuses the board's filesystem MCP→host channel — not the tmux bridge.
+ * create-or-reuse + thinking space-root inject + open-session machinery as the button,
+ * SL-7). Reuses the thinking space's filesystem MCP→host channel — not the tmux bridge.
  */
 async function startSpecWorktree(spec: string, repo: string): Promise<unknown> {
   const dir = process.env[CONTROL_DIR_ENV];
@@ -1393,13 +1372,13 @@ const VALID_STATUSES = [
   RETIRED_STATUS,
 ] as const;
 
-function listBoards(ctx: HandlerContext): unknown {
-  // A linked worktree shares its canonical repo's board (it is addressable via
+function listThinkingSpaces(ctx: HandlerContext): unknown {
+  // A linked worktree shares its canonical repo's thinking space (it is addressable via
   // that repo's id), so it is not its own Thinking Space — omit worktree
-  // checkouts so the vocabulary lists logical boards, not checkouts.
+  // checkouts so the vocabulary lists logical thinkingSpaces, not checkouts.
   return {
-    defaultBoard: ctx.boards.defaultBoardId() ?? null,
-    boards: ctx.boards
+    // No default thinking space — every thinking space-scoped tool must pass `thinking_space=` explicitly.
+    thinkingSpaces: ctx.thinkingSpaces
       .list(true)
       .filter((b) => !b.worktree)
       .map((b) => ({
@@ -1410,10 +1389,10 @@ function listBoards(ctx: HandlerContext): unknown {
   };
 }
 
-/** Collect every tagged item (spec / TEP / slice) in one board's store. */
+/** Collect every tagged item (spec / TEP / slice) in one thinking space's store. */
 async function collectTaggedItems(
   store: ThinkubeStore,
-  boardId: string,
+  thinkingSpaceId: string,
   out: TaggedItem[],
 ): Promise<void> {
   for (const t of await store.listTeps()) {
@@ -1421,14 +1400,19 @@ async function collectTaggedItems(
       (await store.getFile(t.relativePath))?.frontmatter,
     );
     if (tags.length)
-      out.push({ boardId, handle: `TEP-${t.id}`, kind: "tep", tags });
+      out.push({ thinkingSpaceId, handle: `TEP-${t.id}`, kind: "tep", tags });
   }
   for (const spec of await store.listSpecDirs()) {
     const tags = effectiveTags(
       (await store.getFile(store.pathForSpecDoc(spec)))?.frontmatter,
     );
     if (tags.length)
-      out.push({ boardId, handle: specHandle(spec), kind: "spec", tags });
+      out.push({
+        thinkingSpaceId,
+        handle: specHandle(spec),
+        kind: "spec",
+        tags,
+      });
   }
   for (const rel of await store.listSlices()) {
     const m = SLICE_PATH_RE.exec(rel);
@@ -1436,7 +1420,7 @@ async function collectTaggedItems(
     const tags = effectiveTags((await store.getFile(rel))?.frontmatter);
     if (tags.length)
       out.push({
-        boardId,
+        thinkingSpaceId,
         handle: sliceHandleFromMatch(m),
         kind: "slice",
         tags,
@@ -1447,25 +1431,26 @@ async function collectTaggedItems(
 export interface TagAggregate {
   tag: string;
   count: number;
-  items: { board: string; handle: string; kind: string }[];
+  items: { thinking_space: string; handle: string; kind: string }[];
 }
 
 /**
- * Walk a set of boards, collect their tagged items, and group by tag — the pure
+ * Walk a set of thinkingSpaces, collect their tagged items, and group by tag — the pure
  * core of `list_tags` (exported for testing against tmp stores; the registry
  * walk in `listTags` is the thin glue over it).
  */
-export async function aggregateTagsAcrossBoards(
-  boards: { boardId: string; store: ThinkubeStore }[],
+export async function aggregateTagsAcrossThinkingSpaces(
+  thinkingSpaces: { thinkingSpaceId: string; store: ThinkubeStore }[],
 ): Promise<TagAggregate[]> {
   const items: TaggedItem[] = [];
-  for (const b of boards) await collectTaggedItems(b.store, b.boardId, items);
+  for (const b of thinkingSpaces)
+    await collectTaggedItems(b.store, b.thinkingSpaceId, items);
   return [...groupByTag(items).entries()]
     .map(([tag, its]) => ({
       tag,
       count: its.length,
       items: its.map((i) => ({
-        board: i.boardId,
+        thinking_space: i.thinkingSpaceId,
         handle: i.handle,
         kind: i.kind,
       })),
@@ -1473,34 +1458,41 @@ export async function aggregateTagsAcrossBoards(
     .sort((a, b) => a.tag.localeCompare(b.tag));
 }
 
-/** `list_tags` — aggregate tags across every (non-worktree) board in the workspace. */
+/** `list_tags` — aggregate tags across every (non-worktree) thinking space in the workspace. */
 async function listTags(ctx: HandlerContext): Promise<unknown> {
-  const boards = ctx.boards
+  const thinkingSpaces = ctx.thinkingSpaces
     .list(true)
     .filter((b) => !b.worktree)
-    .map((b) => ({ boardId: b.id, store: ctx.boards.resolve(b.id) }));
-  return { tags: await aggregateTagsAcrossBoards(boards) };
+    .map((b) => ({
+      thinkingSpaceId: b.id,
+      store: ctx.thinkingSpaces.resolve(b.id),
+    }));
+  return { tags: await aggregateTagsAcrossThinkingSpaces(thinkingSpaces) };
 }
 
 /** `list_products` — Products (code-less top nodes) discovered from the sidecar
- * board root, each with its member namespaces. Empty when no board root is set. */
+ * thinking space root, each with its member namespaces. Empty when no thinking space root is set. */
 export function listProducts(ctx: HandlerContext): unknown {
   return {
-    products: ctx.env.boardRoot ? discoverProducts(ctx.env.boardRoot) : [],
+    products: ctx.env.thinkingSpaceRoot
+      ? discoverProducts(ctx.env.thinkingSpaceRoot)
+      : [],
   };
 }
 
 /** `list_projects` — every product's Projects (manifests) discovered from the
- * sidecar board root. Empty when no board root is set. */
+ * sidecar thinking space root. Empty when no thinking space root is set. */
 export function listProjects(ctx: HandlerContext): unknown {
   return {
-    projects: ctx.env.boardRoot ? discoverProjects(ctx.env.boardRoot) : [],
+    projects: ctx.env.thinkingSpaceRoot
+      ? discoverProjects(ctx.env.thinkingSpaceRoot)
+      : [],
   };
 }
 
 /**
  * `get_project` — a Project's manifest + its members (SP-tgvpbm). A Project is a
- * code-less umbrella owning TEPs; its members are the specs (across boards) whose
+ * code-less umbrella owning TEPs; its members are the specs (across thinkingSpaces) whose
  * `implements:` resolves to one of the project's umbrella TEPs, PLUS each such
  * spec's slices (inherited). Membership is structural (`implements:`), not tags.
  * Throws if the project is unknown.
@@ -1510,22 +1502,26 @@ export async function getProject(
   product: string,
   id: string,
 ): Promise<unknown> {
-  const boardRoot = ctx.env.boardRoot;
-  const project = (boardRoot ? discoverProjects(boardRoot) : []).find(
-    (p) => p.product === product && p.id === id,
-  );
+  const thinkingSpaceRoot = ctx.env.thinkingSpaceRoot;
+  const project = (
+    thinkingSpaceRoot ? discoverProjects(thinkingSpaceRoot) : []
+  ).find((p) => p.product === product && p.id === id);
   if (!project) {
-    throw new Error(`No project "${product}/${id}" under the board root.`);
+    throw new Error(
+      `No project "${product}/${id}" under the thinking space root.`,
+    );
   }
   const projectNamespace = `${product}/projects/${id}`;
-  const tepIds = projectTeps(boardRoot!, product, id).map(normalizeTepId);
+  const tepIds = projectTeps(thinkingSpaceRoot!, product, id).map(
+    normalizeTepId,
+  );
 
-  const members: { board: string; handle: string; kind: string }[] = [];
+  const members: { thinking_space: string; handle: string; kind: string }[] = [];
   // Per-umbrella-TEP implementing Specs (id + accepted stamp), for completeness.
   const implByTep = new Map<string, ImplementingSpec[]>();
   for (const t of tepIds) implByTep.set(t, []);
-  for (const b of ctx.boards.list(true).filter((bb) => !bb.worktree)) {
-    const store = ctx.boards.resolve(b.id);
+  for (const b of ctx.thinkingSpaces.list(true).filter((bb) => !bb.worktree)) {
+    const store = ctx.thinkingSpaces.resolve(b.id);
     for (const spec of await store.listSpecDirs()) {
       const fm = (await store.getFile(store.pathForSpecDoc(spec)))?.frontmatter;
       const ref = parseImplements(
@@ -1540,7 +1536,11 @@ export async function getProject(
       ) {
         continue;
       }
-      members.push({ board: b.id, handle: specHandle(spec), kind: "spec" });
+      members.push({
+        thinking_space: b.id,
+        handle: specHandle(spec),
+        kind: "spec",
+      });
       implByTep.get(ref.id)!.push({
         id: specHandle(spec),
         accepted: typeof fm?.accepted === "string" ? fm.accepted : undefined,
@@ -1550,7 +1550,7 @@ export async function getProject(
         const m = SLICE_PATH_RE.exec(rel);
         if (m)
           members.push({
-            board: b.id,
+            thinking_space: b.id,
             handle: sliceHandleFromMatch(m),
             kind: "slice",
           });
@@ -1561,9 +1561,9 @@ export async function getProject(
   // (`<project>/<org>/teps/TEP-n/SP-m/`) — promote_tep relocated them there. Read
   // them location-based; each carries `repo:` = its WORKING repository (the repo
   // the orchestrator branches a worktree in), which is what we surface as the
-  // member's `board`. (The cross-board sweep above only catches any legacy
-  // flat-model member still living in a repo board with a qualified `implements:`.)
-  const projDir = path.join(boardRoot!, product, "projects", id);
+  // member's `thinking space`. (The cross-thinking space sweep above only catches any legacy
+  // flat-model member still living in a repo thinking space with a qualified `implements:`.)
+  const projDir = path.join(thinkingSpaceRoot!, product, "projects", id);
   const projStore = new ThinkubeStore(projDir, projDir);
   for (const spec of await projStore.listSpecDirs()) {
     const tep = normalizeTepId(spec.split("/")[0]);
@@ -1575,7 +1575,7 @@ export async function getProject(
         ? fm.repo.trim()
         : projectNamespace;
     members.push({
-      board: workingRepo,
+      thinking_space: workingRepo,
       handle: specHandle(spec),
       kind: "spec",
     });
@@ -1587,7 +1587,7 @@ export async function getProject(
       const m = SLICE_PATH_RE.exec(rel);
       if (m)
         members.push({
-          board: workingRepo,
+          thinking_space: workingRepo,
           handle: sliceHandleFromMatch(m),
           kind: "slice",
         });
@@ -1612,34 +1612,40 @@ export async function getProject(
   };
 }
 
-/** A board's sidecar namespace = its board dir relative to the board root. */
-function namespaceOfBoardDir(boardRoot: string, boardDir: string): string {
-  return path.relative(boardRoot, boardDir).split(path.sep).join("/");
+/** A thinking space's sidecar namespace = its thinking space dir relative to the thinking space root. */
+function namespaceOfThinkingSpaceDir(
+  thinkingSpaceRoot: string,
+  thinkingSpaceDir: string,
+): string {
+  return path
+    .relative(thinkingSpaceRoot, thinkingSpaceDir)
+    .split(path.sep)
+    .join("/");
 }
 
 // ─── TEP-lifecycle gate wiring (SP-th4wqg) ──────────────────────────────────
 // The pure decisions live in `methodology/tepLifecycle`; these functions only do
-// the board-backed RESOLUTION (a TEP's status, a TEP's implementing Specs) and
-// hand the result to the pure gate — the cross-board side `promoteTep` models.
+// the thinking space-backed RESOLUTION (a TEP's status, a TEP's implementing Specs) and
+// hand the result to the pure gate — the cross-thinking space side `promoteTep` models.
 
-/** A board's namespace key for `resolvesTo`: its sidecar namespace when a board
- *  root is configured, else its absolute board dir (so same-board bare refs still
- *  match and different boards stay distinct). */
-function boardNamespace(
-  boardRoot: string | undefined,
+/** A thinking space's namespace key for `resolvesTo`: its sidecar namespace when a thinking space
+ *  root is configured, else its absolute thinking space dir (so same-thinking space bare refs still
+ *  match and different thinkingSpaces stay distinct). */
+function thinkingSpaceNamespace(
+  thinkingSpaceRoot: string | undefined,
   store: ThinkubeStore,
 ): string {
-  return boardRoot
-    ? namespaceOfBoardDir(boardRoot, store.thinkubeDir)
+  return thinkingSpaceRoot
+    ? namespaceOfThinkingSpaceDir(thinkingSpaceRoot, store.thinkubeDir)
     : store.thinkubeDir;
 }
 
 /**
  * Resolve the lifecycle status of the TEP a Spec's `implements:` ref names —
- * across boards. A **bare** ref resolves to a TEP in the Spec's OWN board
+ * across thinkingSpaces. A **bare** ref resolves to a TEP in the Spec's OWN thinking space
  * (`store`); a **qualified** `<namespace>:TEP-id` ref to
- * `<boardRoot>/<namespace>/teps/TEP-id.md` (the sidecar layout
- * `namespaceOfBoardDir` inverts). Returns the resolved `status` string, or
+ * `<thinkingSpaceRoot>/<namespace>/teps/TEP-id.md` (the sidecar layout
+ * `namespaceOfThinkingSpaceDir` inverts). Returns the resolved `status` string, or
  * `undefined` when the ref names no resolvable TEP — `tepApprovalGate` treats
  * that as not-accepted.
  */
@@ -1652,18 +1658,21 @@ async function resolveTepStatus(
     const fm = (await s.getFile(s.pathForTep(ref.id)))?.frontmatter;
     return typeof fm?.status === "string" ? fm.status : undefined;
   };
-  // Bare ref → the Spec's own board owns the TEP.
+  // Bare ref → the Spec's own thinking space owns the TEP.
   if (!ref.namespace) return readStatus(store);
-  // Qualified ref → the board dir is <boardRoot>/<namespace>.
-  const boardRoot = ctx.env.boardRoot;
-  if (!boardRoot) return undefined;
-  const boardDir = path.join(boardRoot, ...ref.namespace.split("/"));
-  return readStatus(new ThinkubeStore(boardDir, boardDir));
+  // Qualified ref → the thinking space dir is <thinkingSpaceRoot>/<namespace>.
+  const thinkingSpaceRoot = ctx.env.thinkingSpaceRoot;
+  if (!thinkingSpaceRoot) return undefined;
+  const thinkingSpaceDir = path.join(
+    thinkingSpaceRoot,
+    ...ref.namespace.split("/"),
+  );
+  return readStatus(new ThinkubeStore(thinkingSpaceDir, thinkingSpaceDir));
 }
 
 /**
  * Approval gate (AC#1): refuse a `create_slice` → Ready when the parent Spec's
- * `implements:` TEP is not `accepted`. Resolves the TEP's status via board
+ * `implements:` TEP is not `accepted`. Resolves the TEP's status via thinking space
  * context and runs the pure `tepApprovalGate`; throws its refusal message
  * (naming the TEP + status) on a block. A Spec with no `implements:` — or a
  * missing Spec doc (left for `createSlice` to report) — passes.
@@ -1686,10 +1695,10 @@ async function assertTepApproved(
 }
 
 /**
- * Resolve, across all (non-worktree) boards, the Specs whose `implements:`
+ * Resolve, across all (non-worktree) thinkingSpaces, the Specs whose `implements:`
  * resolves to the TEP `tepId` owned by `targetNamespace`, projected to
  * {@link ImplementingSpec} (id + `accepted:` stamp). A bare ref resolves to its
- * own board; a qualified ref to its explicit namespace (`resolvesTo`). The pure
+ * own thinking space; a qualified ref to its explicit namespace (`resolvesTo`). The pure
  * `tepComplete` derives completeness from these.
  */
 async function implementingSpecsOfTep(
@@ -1697,11 +1706,11 @@ async function implementingSpecsOfTep(
   targetNamespace: string,
   tepId: string,
 ): Promise<ImplementingSpec[]> {
-  const boardRoot = ctx.env.boardRoot;
+  const thinkingSpaceRoot = ctx.env.thinkingSpaceRoot;
   const out: ImplementingSpec[] = [];
-  for (const b of ctx.boards.list(true).filter((bb) => !bb.worktree)) {
-    const s = ctx.boards.resolve(b.id);
-    const specNs = boardNamespace(boardRoot, s);
+  for (const b of ctx.thinkingSpaces.list(true).filter((bb) => !bb.worktree)) {
+    const s = ctx.thinkingSpaces.resolve(b.id);
+    const specNs = thinkingSpaceNamespace(thinkingSpaceRoot, s);
     for (const spec of await s.listSpecDirs()) {
       const fm = (await s.getFile(s.pathForSpecDoc(spec)))?.frontmatter;
       const ref = parseImplements(
@@ -1730,7 +1739,7 @@ async function assertTepComplete(
   tepArg: string,
 ): Promise<void> {
   const tepId = normalizeTepId(tepArg);
-  const targetNs = boardNamespace(ctx.env.boardRoot, store);
+  const targetNs = thinkingSpaceNamespace(ctx.env.thinkingSpaceRoot, store);
   const specs = await implementingSpecsOfTep(ctx, targetNs, tepId);
   const result = tepComplete(tepId, specs);
   if (!result.complete) {
@@ -1758,10 +1767,10 @@ export async function promoteTep(
   product: string,
   projectId: string,
 ): Promise<unknown> {
-  const boardRoot = ctx.env.boardRoot;
-  if (!boardRoot) throw new Error("No board root configured.");
+  const thinkingSpaceRoot = ctx.env.thinkingSpaceRoot;
+  if (!thinkingSpaceRoot) throw new Error("No thinking space root configured.");
   const tepId = normalizeTepId(tepArg);
-  const project = discoverProjects(boardRoot).find(
+  const project = discoverProjects(thinkingSpaceRoot).find(
     (p) => p.product === product && p.id === projectId,
   );
   if (!project) {
@@ -1770,17 +1779,23 @@ export async function promoteTep(
     );
   }
   const projectNamespace = `${product}/projects/${projectId}`;
-  const boards = ctx.boards.list(true).filter((b) => !b.worktree);
+  const thinkingSpaces = ctx.thinkingSpaces
+    .list(true)
+    .filter((b) => !b.worktree);
 
-  // Locate the TEP's origin board (the repo whose teps/ holds TEP-{id}).
+  // Locate the TEP's origin thinking space (the repo whose teps/ holds TEP-{id}).
   let origin:
-    { boardDir: string; namespace: string; tepDirRel: string } | undefined;
-  for (const b of boards) {
-    const store = ctx.boards.resolve(b.id);
+    | { thinkingSpaceDir: string; namespace: string; tepDirRel: string }
+    | undefined;
+  for (const b of thinkingSpaces) {
+    const store = ctx.thinkingSpaces.resolve(b.id);
     if ((await store.listTeps()).some((t) => normalizeTepId(t.id) === tepId)) {
       origin = {
-        boardDir: store.thinkubeDir,
-        namespace: namespaceOfBoardDir(boardRoot, store.thinkubeDir),
+        thinkingSpaceDir: store.thinkubeDir,
+        namespace: namespaceOfThinkingSpaceDir(
+          thinkingSpaceRoot,
+          store.thinkubeDir,
+        ),
         // Org-scoped tree (TEP-th8lzj): a TEP is the dir `<org>/teps/TEP-n/`
         // (its `SP-m` specs nested inside), not a flat `teps/TEP-n.md`.
         tepDirRel: path.dirname(store.pathForTep(tepId)),
@@ -1788,13 +1803,14 @@ export async function promoteTep(
       break;
     }
   }
-  if (!origin) throw new Error(`TEP-${tepId} not found in any repo board.`);
+  if (!origin)
+    throw new Error(`TEP-${tepId} not found in any repo thinking space.`);
   if (origin.namespace === projectNamespace) {
     throw new Error(`TEP-${tepId} is already under ${projectNamespace}.`);
   }
 
   // RE-ID into the project's scope. The org-scoped sequential scheme makes a
-  // TEP's number unique only within a (board, org) scope, so a project keeps its
+  // TEP's number unique only within a (thinking space, org) scope, so a project keeps its
   // OWN TEP sequence — preserving the origin number would collide with the
   // project's existing TEP-{n} (or leave its numbering non-contiguous). Allocate
   // the project's next free number and resolve the destination through the
@@ -1802,7 +1818,12 @@ export async function promoteTep(
   // actually uses (`<org>/teps` for a migrated project, bare `teps` for a fresh
   // one) — NOT a hardcoded bare `teps`, which would be invisible to a project
   // whose other TEPs live under `<org>/teps`.
-  const projectDir = path.join(boardRoot, product, "projects", projectId);
+  const projectDir = path.join(
+    thinkingSpaceRoot,
+    product,
+    "projects",
+    projectId,
+  );
   const projectStore = new ThinkubeStore(projectDir, projectDir);
   const newId = await projectStore.nextTepId();
   const movedTepRel = projectStore.pathForTep(newId); // org-aware, BEFORE the move
@@ -1812,7 +1833,7 @@ export async function promoteTep(
   // specs) into the project under the re-allocated number. Slice handles derive
   // from the PATH, so the nested spec/slice handles re-id with the moved dir —
   // only the link layer needs rewiring.
-  const src = path.join(origin.boardDir, origin.tepDirRel);
+  const src = path.join(origin.thinkingSpaceDir, origin.tepDirRel);
   const dest = path.join(projectDir, destTepDirRel);
   fsSync.mkdirSync(path.dirname(dest), { recursive: true });
   fsSync.renameSync(src, dest);
@@ -1827,12 +1848,15 @@ export async function promoteTep(
     );
   }
 
-  // Sweep every board's specs; rewrite each dependent's implements: to the
+  // Sweep every thinking space's specs; rewrite each dependent's implements: to the
   // qualified umbrella ref at the NEW id (matched by the OLD one).
   const rewritten: string[] = [];
-  for (const b of boards) {
-    const store = ctx.boards.resolve(b.id);
-    const specNs = namespaceOfBoardDir(boardRoot, store.thinkubeDir);
+  for (const b of thinkingSpaces) {
+    const store = ctx.thinkingSpaces.resolve(b.id);
+    const specNs = namespaceOfThinkingSpaceDir(
+      thinkingSpaceRoot,
+      store.thinkubeDir,
+    );
     for (const spec of await store.listSpecDirs()) {
       const rel = store.pathForSpecDoc(spec);
       const parsed = await store.getFile(rel);
@@ -1899,11 +1923,13 @@ function sliceTitle(body: string | undefined, fallback: string): string {
 }
 
 /**
- * Project the committed slice files into the Tandem board. Mirrors
+ * Project the committed slice files into the Tandem thinking space. Mirrors
  * `ThinkubeFilesAdapter.load()`'s read loop (we don't instantiate the adapter —
  * it builds a vscode EventEmitter, and this subprocess only has a vscode stub).
  */
-export async function listBoard(store: ThinkubeStore): Promise<unknown> {
+export async function listThinkingSpace(
+  store: ThinkubeStore,
+): Promise<unknown> {
   // Per-Spec requirement-hash, computed once per Spec (specs are few).
   const reqHashBySpec = new Map<string, string>();
   const specMeta = new Map<string, SpecMeta>();
@@ -1939,15 +1965,15 @@ export async function listBoard(store: ThinkubeStore): Promise<unknown> {
     });
   }
 
-  // Scope = the board's canonical id, so cross-board output is unambiguous.
-  const scope = boardId(store.workspaceRoot);
-  const board = buildSliceBoard(inputs, scope, specMeta);
+  // Scope = the thinking space's canonical id, so cross-thinking space output is unambiguous.
+  const scope = thinkingSpaceId(store.workspaceRoot);
+  const thinkingSpace = buildSliceThinkingSpace(inputs, scope, specMeta);
 
-  const columns = board.columns.map((col) => ({
+  const columns = thinkingSpace.columns.map((col) => ({
     id: col.id,
     title: col.title,
     cards: col.tasksIds.map((id) => {
-      const card = board.tasks[id];
+      const card = thinkingSpace.tasks[id];
       return {
         id: card.id,
         description: card.description,
@@ -1977,7 +2003,7 @@ export async function listBoard(store: ThinkubeStore): Promise<unknown> {
     }),
   }));
 
-  return { scope: board.scope, columns };
+  return { scope: thinkingSpace.scope, columns };
 }
 
 async function getSlice(
@@ -2002,7 +2028,9 @@ async function getThinkubeFile(
 ): Promise<unknown> {
   const parsed = await store.getFile(relativePath);
   if (!parsed) {
-    throw new Error(`No board file at ${store.thinkubeDir}/${relativePath}`);
+    throw new Error(
+      `No thinking space file at ${store.thinkubeDir}/${relativePath}`,
+    );
   }
   return { relativePath, frontmatter: parsed.frontmatter, body: parsed.body };
 }
@@ -2261,9 +2289,9 @@ export async function createSlice(
   }
 
   // Preliminary-control gate (SP-th1ddy_SL-2): a slice's declared footprint must
-  // resolve **repo-relative inside the board's own repo**. An absolute path, a
+  // resolve **repo-relative inside the thinking space's own repo**. An absolute path, a
   // `..`-escaping path, or a different-repo path is structurally invalid — the
-  // orchestrated worker runs from the board repo's worktree root and could never
+  // orchestrated worker runs from the thinking space repo's worktree root and could never
   // legally write it, so the slice would fail orchestration *after* a run is
   // burned. Refuse it at creation, naming the offending path. Both `files:` and
   // every work_unit `footprint` are footprints, so both are checked.
@@ -2579,10 +2607,10 @@ async function uniqueSlug(
 }
 
 /**
- * Write a Spec's `specs/SP-{id}/spec.md` into the board (the sidecar namespace),
- * creating it if absent. The board-aware write path for `/spec-prepare` (SP-tg7jnf
+ * Write a Spec's `specs/SP-{id}/spec.md` into the thinking space (the sidecar namespace),
+ * creating it if absent. The thinking space-aware write path for `/spec-prepare` (SP-tg7jnf
  * SL-4): a raw file write resolves against the session cwd (the code repo), not
- * the board, so spec authoring must go through the store like slice creation does.
+ * the thinking space, so spec authoring must go through the store like slice creation does.
  * Existing frontmatter is preserved — only the markdown body is replaced.
  */
 async function writeSpec(
@@ -2620,7 +2648,7 @@ async function writeSpec(
     if (v) fm.implements = v;
     else delete fm.implements;
   }
-  // `repo:` — the WORKING repository (a board namespace) for a project-member
+  // `repo:` — the WORKING repository (a thinking space namespace) for a project-member
   // spec: the repo the orchestrator branches a worktree in, independent of where
   // the spec file is located (TEP-5 / the project-layer cutover). Omitted →
   // preserved; empty → cleared (a normal same-repo spec needs none).
@@ -2667,7 +2695,7 @@ async function writeSpec(
  * `patch_spec_section` (SP-th1ddy) — replace exactly one named section of an
  * existing Spec's body via the pure `sectionPatch` helper, leaving every other
  * section byte-identical, and write the whole body back through
- * `ThinkubeStore.writeFile` so the secret scan applies (the only board-write
+ * `ThinkubeStore.writeFile` so the secret scan applies (the only thinking space-write
  * boundary — no second write path). Frontmatter is preserved untouched. This is
  * the surgical single-section edit that replaces the model's
  * read-modify-write-whole-body dance; `write_spec` still replaces the full body.
@@ -2715,7 +2743,7 @@ export async function patchSpecSection(
  * Returns `undefined` when no `tsconfig.test.json` exists at the repo root, or it is
  * unparseable: the precheck only applies to repos that use the `tsconfig.test.json`
  * test-compile convention, so a repo lacking (or with a broken) one imposes no
- * runnable requirement here — fail open rather than block every slice on a board that
+ * runnable requirement here — fail open rather than block every slice on a thinking space that
  * has no such config to validate against.
  */
 function repoStateForRunnableCheck(repoRoot: string): RepoState | undefined {
@@ -2788,7 +2816,7 @@ export async function updateSlice(
   // Re-cut (SP-th4wqd #5): REPLACE the slice's footprint fields (files / satisfies
   // / work_units) in place, keeping the same `SL-{m}` (its identity lives in the
   // path, not these fields). The decision — including refusing a footprint that
-  // escapes the board repo with the SAME `sliceFilesResolveInRepo` rejection
+  // escapes the thinking space repo with the SAME `sliceFilesResolveInRepo` rejection
   // `create_slice` gives — is owned by the shared `recutSliceFrontmatter`, which is
   // *driven* (not duplicated) here. A provided field replaces; omitted is left.
   const reCut = hasRecutFields(recut);
@@ -2832,7 +2860,7 @@ export async function updateSlice(
 }
 
 /**
- * Write a TEP into the board (TEP-0009) — the board-aware path for `/tep`.
+ * Write a TEP into the thinking space (TEP-0009) — the thinking space-aware path for `/tep`.
  * Omit `tep` to mint a conflict-free base36-epoch id; pass it to update an
  * existing one. On create the body defaults to the `TEP-TEMPLATE.md` scaffold
  * and canonical frontmatter is filled; on update existing frontmatter is
@@ -2854,19 +2882,19 @@ export async function writeTep(
     provided && provided.length ? provided : await store.nextTepId();
 
   // #14 — promotion-aware target (TEP-th3i18). Once a TEP is promoted into a
-  // Project, its canonical home moves out of the session board's `teps/` and
+  // Project, its canonical home moves out of the session thinking space's `teps/` and
   // into `<product>/projects/<id>/teps/TEP-<id>.md`. A naive write keeps
-  // clobbering the stale session-board copy while the promoted one drifts. So
+  // clobbering the stale session-thinking space copy while the promoted one drifts. So
   // resolve where the bytes belong BEFORE writing, via the SAME ownership
   // lookup `promote_tep`/`get_project` use (discoverProjects + projectTeps over
-  // the board root). The decision itself is the pure `resolveTepWritePath`
+  // the thinking space root). The decision itself is the pure `resolveTepWritePath`
   // (SL-3 sibling) — we never re-spell it here.
-  const boardRoot = ctx?.env.boardRoot;
-  const projects: PromotedProject[] = boardRoot
-    ? discoverProjects(boardRoot).map((p) => ({
+  const thinkingSpaceRoot = ctx?.env.thinkingSpaceRoot;
+  const projects: PromotedProject[] = thinkingSpaceRoot
+    ? discoverProjects(thinkingSpaceRoot).map((p) => ({
         product: p.product,
         id: p.id,
-        teps: projectTeps(boardRoot, p.product, p.id),
+        teps: projectTeps(thinkingSpaceRoot, p.product, p.id),
       }))
     : [];
   const dest = resolveTepWritePath(tepId, projects);
@@ -2877,8 +2905,8 @@ export async function writeTep(
   }
 
   // The two homes differ only in *where* the bytes land:
-  //   - session  → the store, store-relative (`teps/TEP-{id}.md` on this board);
-  //   - project  → the promoted copy, board-root-relative fs (no session dup).
+  //   - session  → the store, store-relative (`teps/TEP-{id}.md` on this thinking space);
+  //   - project  → the promoted copy, thinking space-root-relative fs (no session dup).
   // Everything between (read existing → merge body/frontmatter → write) is shared.
   // For the project copy resolve the path through the project's OWN store so it
   // lands under whatever `teps` root the project uses (`<org>/teps` for a
@@ -2887,9 +2915,9 @@ export async function writeTep(
   const sessionRel = store.pathForTep(tepId);
   let projectAbs: string | undefined;
   let relativePath: string;
-  if (dest.kind === "project" && boardRoot) {
+  if (dest.kind === "project" && thinkingSpaceRoot) {
     const projDir = path.join(
-      boardRoot,
+      thinkingSpaceRoot,
       dest.product,
       "projects",
       dest.projectId,
@@ -2934,8 +2962,8 @@ export async function writeTep(
 
   const finalBody = body.endsWith("\n") ? body : `${body}\n`;
   if (projectAbs) {
-    // Promoted copy: write board-root-relative via fs (mirrors `promote_tep`'s
-    // direct moves). NO session-board copy is created — that's the whole point.
+    // Promoted copy: write thinking space-root-relative via fs (mirrors `promote_tep`'s
+    // direct moves). NO session-thinking space copy is created — that's the whole point.
     await fsSync.promises.mkdir(path.dirname(projectAbs), { recursive: true });
     await fsSync.promises.writeFile(
       projectAbs,
@@ -2958,8 +2986,8 @@ export async function writeTep(
 }
 
 /** Read a markdown file by absolute path, ENOENT → undefined (parity with
- *  `ThinkubeStore.getFile`, used for the board-root-relative promoted TEP copy
- *  which lives outside any single board's `thinkubeDir`). */
+ *  `ThinkubeStore.getFile`, used for the thinking space-root-relative promoted TEP copy
+ *  which lives outside any single thinking space's `thinkubeDir`). */
 async function readMarkdownFile(abs: string): Promise<ParsedFile | undefined> {
   let text: string;
   try {
@@ -2994,36 +3022,32 @@ async function writeRetroNote(
 
 const RESOURCE_DEFS = [
   {
-    uri: "thinkube://board_state",
-    name: "Board state",
+    uri: "thinkube://thinking_space_state",
+    name: "Thinking Space state",
     description:
-      "Current Tandem board of this session's own repo: the Ready / Doing / Done columns projected from the committed slice files. (Resources are bound to the default board; use the tools' `board` parameter for other boards.)",
+      "Current Tandem thinking space of this session's own repo: the Ready / Doing / Done columns projected from the committed slice files. (Resources are bound to the default thinking space; use the tools' `thinking space` parameter for other thinkingSpaces.)",
     mimeType: "application/json",
   },
   {
     uri: "thinkube://thinkube_file/{path}",
-    name: "A board file",
+    name: "A thinking space file",
     description:
-      "Read a specific board markdown file from this session's own repo. Substitute `{path}` with the path relative to the board directory (the sidecar namespace).",
+      "Read a specific thinking space markdown file from this session's own repo. Substitute `{path}` with the path relative to the thinking space directory (the sidecar namespace).",
     mimeType: "application/json",
   },
 ];
 
-async function readResource(uri: string, ctx: HandlerContext): Promise<string> {
-  // Resources can't take parameters — they are bound to the default board.
-  const store = ctx.boards.resolve(undefined);
-  if (uri === "thinkube://board_state") {
-    return JSON.stringify(await listBoard(store), null, 2);
-  }
-  const fileMatch = /^thinkube:\/\/thinkube_file\/(.+)$/.exec(uri);
-  if (fileMatch) {
-    return JSON.stringify(
-      await getThinkubeFile(store, decodeURIComponent(fileMatch[1])),
-      null,
-      2,
-    );
-  }
-  throw new Error(`unknown resource: ${uri}`);
+async function readResource(
+  uri: string,
+  _ctx: HandlerContext,
+): Promise<string> {
+  // MCP resources take no parameters, so they could only ever bind to a *default*
+  // thinking space — which no longer exists (`thinking_space=` is mandatory per call, so the server
+  // never silently picks a thinking space). Resources are therefore unavailable; use the
+  // thinking space-scoped tools with an explicit `thinking_space=` instead.
+  throw new Error(
+    `Thinking Space resources are unavailable: a resource (\`${uri}\`) can't name a thinking space, and there is no default thinking space. Use the thinking space-scoped tools — list_thinking_space / get_thinkube_file — with an explicit \`thinking_space=\`.`,
+  );
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -3086,7 +3110,7 @@ function optNumberArray(
   return v as number[];
 }
 
-// Kick off LAST: `main()` references classes (BoardRegistry) that — unlike
+// Kick off LAST: `main()` references classes (ThinkingSpaceRegistry) that — unlike
 // function declarations — are not hoisted, so launching at the top of the
 // module dies in the temporal dead zone.
 // Guard on `require.main === module` so importing this module (e.g. a unit test

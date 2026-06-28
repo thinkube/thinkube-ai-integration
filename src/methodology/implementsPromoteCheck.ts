@@ -1,10 +1,10 @@
 /**
- * `implementsPromoteCheck` (SP-th4wqe_SL-3 / issue #3) — the cross-board promote
+ * `implementsPromoteCheck` (SP-th4wqe_SL-3 / issue #3) — the cross-thinking space promote
  * guard for `write_spec`'s `implements:`.
  *
- * Cross-board learnability gap: a Spec may set `implements:` to a **qualified**
+ * Cross-thinking space learnability gap: a Spec may set `implements:` to a **qualified**
  * `<namespace>:TEP-<id>` ref (the umbrella membership link — see
- * `store/implementsRef.ts`). That only resolves cross-board once the TEP has been
+ * `store/implementsRef.ts`). That only resolves cross-thinking space once the TEP has been
  * **promoted** into a project's `teps/` (a `<product>/projects/<name>` home — see
  * `store/projects.ts#projectTeps`). If the author qualifies an `implements:`
  * against a TEP that was never promoted, the membership link silently dangles.
@@ -14,8 +14,8 @@
  * Pure (no fs / vscode): the actual "does this TEP live at that namespace?"
  * lookup is injected as a {@link PromoteLocator}, so this is unit-testable
  * vscode-free and `write_spec` drives the real seam via `dispatchTool` with the
- * board-backed locator. A **bare** (repo-local) ref is always accepted — there's
- * nothing cross-board to promote. Only **qualified** refs consult the locator.
+ * thinking space-backed locator. A **bare** (repo-local) ref is always accepted — there's
+ * nothing cross-thinking space to promote. Only **qualified** refs consult the locator.
  */
 
 import { parseImplements, type ParsedImplements } from "../store/implementsRef";
@@ -26,7 +26,7 @@ export const PROMOTE_TOOL = "promote_tep";
 
 /**
  * Injected lookup for whether a **qualified** `implements:` ref names an already
- * **promoted** (cross-board reachable) TEP. Returns `true` when the TEP exists at
+ * **promoted** (cross-thinking space reachable) TEP. Returns `true` when the TEP exists at
  * the ref's namespace (e.g. `projectTeps()` lists it under
  * `<product>/projects/<name>/teps/`), `false` when it does not (unpromoted /
  * dangling). May be sync or async — `write_spec` injects an fs-backed lookup.
@@ -54,8 +54,8 @@ export type PromoteCheckResult =
  * Decide whether a Spec's `implements:` value may be written.
  *
  * - Absent / empty `implements:` → **ok** (nothing to link).
- * - **Bare** `TEP-<id>` (repo-local) → **ok** (resolves to the spec's own board;
- *   no cross-board promotion involved).
+ * - **Bare** `TEP-<id>` (repo-local) → **ok** (resolves to the spec's own thinking space;
+ *   no cross-thinking space promotion involved).
  * - **Qualified** `<namespace>:TEP-<id>` → consult `locator`:
  *     - promoted (`true`) → **ok**.
  *     - unpromoted (`false`) → **refuse**, with a message naming `promote_tep`.
@@ -68,7 +68,7 @@ export async function implementsPromoteCheck(
   locator: PromoteLocator,
 ): Promise<PromoteCheckResult> {
   const ref = parseImplements(implementsRaw);
-  // No ref, or a bare (repo-local) ref → nothing cross-board to promote.
+  // No ref, or a bare (repo-local) ref → nothing cross-thinking space to promote.
   if (!ref || !ref.namespace) return { ok: true };
 
   const qualified = ref as ParsedImplements & { namespace: string };
@@ -81,7 +81,7 @@ export async function implementsPromoteCheck(
     ok: false,
     refuse: { tool: PROMOTE_TOOL, namespace, tepId },
     message:
-      `implements: "${implementsRaw?.trim()}" names the cross-board TEP ` +
+      `implements: "${implementsRaw?.trim()}" names the cross-thinking space TEP ` +
       `${namespace}:TEP-${tepId}, which has not been promoted into a project. ` +
       `A qualified (umbrella) ref only resolves once its TEP lives in a ` +
       `project's teps/. Promote it first with the ${PROMOTE_TOOL} tool ` +

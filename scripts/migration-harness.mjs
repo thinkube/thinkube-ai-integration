@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
- * Harness for SP-8_SL-3 — migrating a co-located board into the sidecar.
+ * Harness for SP-8_SL-3 — migrating a co-located thinking space into the sidecar.
  *
  * Proves, end-to-end:
- *   1. migrateBoardDir moves EVERY file (no loss) and removes the source
+ *   1. migrateThinkingSpaceDir moves EVERY file (no loss) and removes the source
  *      `.thinkube/` (no stub)
  *   2. it REFUSES to overwrite a non-empty target
- *   3. the migrated board is then read from its central namespace by the real
+ *   3. the migrated thinking space is then read from its central namespace by the real
  *      server — the Thinking Space still works (AC #5)
  *
  * Build first: `npm run compile`. Run: `node scripts/migration-harness.mjs`.
@@ -28,8 +28,8 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "..");
 const require = createRequire(import.meta.url);
-const { migrateBoardDir } = require(
-  path.join(REPO, "dist", "store", "boardMigration.js"),
+const { migrateThinkingSpaceDir } = require(
+  path.join(REPO, "dist", "store", "thinkingSpaceMigration.js"),
 );
 const SERVER = path.join(REPO, "dist", "mcp", "kanbanMcpServer.js");
 
@@ -42,14 +42,14 @@ function countFiles(dir) {
   return n;
 }
 
-const tmp = mkdtempSync(path.join(tmpdir(), "migrate-board-"));
+const tmp = mkdtempSync(path.join(tmpdir(), "migrate-thinking space-"));
 const wsFolder = path.join(tmp, "ws");
 const repo = path.join(wsFolder, "extensions", "foo");
 const coLocated = path.join(repo, ".thinkube");
-const boardRoot = path.join(tmp, "board");
-const central = path.join(boardRoot, "Platform", "extensions", "foo");
+const thinkingSpaceRoot = path.join(tmp, "thinking space");
+const central = path.join(thinkingSpaceRoot, "Platform", "extensions", "foo");
 
-// Seed a co-located board: specs + decisions + retros + the bundle stamp.
+// Seed a co-located thinking space: specs + decisions + retros + the bundle stamp.
 mkdirSync(path.join(repo, ".git"), { recursive: true });
 mkdirSync(path.join(coLocated, "specs", "SP-1"), { recursive: true });
 mkdirSync(path.join(coLocated, "decisions"), { recursive: true });
@@ -74,15 +74,15 @@ const record = (label, pass, detail) => {
   if (detail) console.log(`        ${detail}`);
 };
 
-console.log("\nharness — SP-8_SL-3 board migration\n");
+console.log("\nharness — SP-8_SL-3 thinking space migration\n");
 
 // ── Part A: the move (no loss, no stub) ──
 try {
-  const res = await migrateBoardDir(coLocated, central);
+  const res = await migrateThinkingSpaceDir(coLocated, central);
   const after = existsSync(central) ? countFiles(central) : -1;
   const specThere = existsSync(path.join(central, "specs", "SP-1", "spec.md"));
   record(
-    "migrateBoardDir moves every file (no loss) and reports the count",
+    "migrateThinkingSpaceDir moves every file (no loss) and reports the count",
     res.files === before && after === before && specThere,
     `before=${before} after=${after} reported=${res.files}`,
   );
@@ -92,7 +92,7 @@ try {
     `coLocated exists=${existsSync(coLocated)}`,
   );
 } catch (err) {
-  record("migrateBoardDir ran without error", false, err.message);
+  record("migrateThinkingSpaceDir ran without error", false, err.message);
   record("the source .thinkube/ is fully removed — no stub", false);
 }
 
@@ -101,13 +101,13 @@ mkdirSync(path.join(tmp, "occupied"), { recursive: true });
 writeFileSync(path.join(tmp, "occupied", "f"), "x");
 let refused = false;
 try {
-  await migrateBoardDir(path.join(tmp, "occupied"), central);
+  await migrateThinkingSpaceDir(path.join(tmp, "occupied"), central);
 } catch {
   refused = true;
 }
 record("refuses to overwrite a non-empty target", refused);
 
-// ── Part B: the migrated board reads back from the central root (AC #5) ──
+// ── Part B: the migrated thinking space reads back from the central root (AC #5) ──
 const child = spawn(process.execPath, [SERVER], {
   cwd: repo,
   env: {
@@ -115,7 +115,7 @@ const child = spawn(process.execPath, [SERVER], {
     THINKUBE_ALLOW_AI_WRITES: "true",
     THINKUBE_ROOTS: wsFolder,
     THINKUBE_FOLDERS: JSON.stringify([{ name: "Platform", path: wsFolder }]),
-    THINKUBE_BOARD_ROOT: boardRoot,
+    THINKUBE_THINKING_SPACE_ROOT: thinkingSpaceRoot,
   },
   stdio: ["pipe", "pipe", "inherit"],
 });
@@ -162,7 +162,7 @@ try {
       "\n",
   );
   const res = await rpc("tools/call", {
-    name: "list_board",
+    name: "list_thinking_space",
     arguments: {},
   });
   const text = res.result?.content?.[0]?.text ?? "";
@@ -176,12 +176,12 @@ try {
     /* leave empty */
   }
   record(
-    "the migrated board reads back from the central root (AC #5)",
+    "the migrated thinking space reads back from the central root (AC #5)",
     ready.includes("SP-1_SL-1"),
     `ready=[${ready.join(", ")}]`,
   );
 } catch (err) {
-  record("server read of the migrated board", false, err.message);
+  record("server read of the migrated thinking space", false, err.message);
 }
 
 const passed = checks.filter((c) => c.pass).length;

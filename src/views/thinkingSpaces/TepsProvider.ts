@@ -1,13 +1,13 @@
 /**
  * TepsProvider — the "TEPs" section under Thinking Spaces (TEP-0009).
  *
- * Lists the Tandem Enhancement Proposals (`<boardDir>/teps/TEP-{id}.md`) of
+ * Lists the Tandem Enhancement Proposals (`<thinkingSpaceDir>/teps/TEP-{id}.md`) of
  * whichever thinking space is selected in the navigator above — peer to the
  * Specs section, the orthogonal *why* axis. Files-first: each row IS a file —
  * clicking it opens the TEP document (pair with Markdown Preview, `Ctrl+K V`).
  *
- * A TEP is NOT a board-flowing tier (TEP-0003 keeps Spec→Slice); it's read from
- * the board, not dragged. Selection is pushed in by extension.ts (`setRepo`)
+ * A TEP is NOT a thinking space-flowing tier (TEP-0003 keeps Spec→Slice); it's read from
+ * the thinking space, not dragged. Selection is pushed in by extension.ts (`setRepo`)
  * from the navigator's onDidChangeSelection; this provider stays a dumb renderer
  * over the files. The spec↔TEP link roll-up is layered on in SL-2.
  */
@@ -15,15 +15,15 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 
 import { ThinkubeStore } from "../../store/ThinkubeStore";
-import { RepoEntry } from "./BoardNavigatorProvider";
-import { namespaceForRepo } from "../../store/boardNamespace";
+import { RepoEntry } from "./ThinkingSpaceNavigatorProvider";
+import { namespaceForRepo } from "../../store/thinkingSpaceNamespace";
 
 /** A Project source the TEPs view can scope to (SP-tgvud7) — lists its umbrella TEPs. */
 export interface ProjectSource {
   product: string;
   id: string;
   name: string;
-  boardRoot: string;
+  thinkingSpaceRoot: string;
 }
 
 /** A Spec that delivers a TEP, rolled up under it (TEP-0009). */
@@ -41,7 +41,7 @@ export type TepNode =
       status: string;
       file: string;
       /** The namespace owning this TEP — repo namespace or project namespace
-       *  (SP-tgvud7). Drives the cross-board Specs resolver on selection. */
+       *  (SP-tgvud7). Drives the cross-thinking space Specs resolver on selection. */
       ownerNamespace: string;
       /** Specs delivering this TEP (its `SP-m` subdirs in the tree). */
       implementedBy: ImplementingSpec[];
@@ -71,7 +71,7 @@ export class TepsProvider implements vscode.TreeDataProvider<TepNode> {
   private showArchived = false;
 
   /** The currently-scoped thinking space — the "+ New TEP" command roots its
-   *  session here and mints the id from its board. */
+   *  session here and mints the id from its thinking space. */
   get repoEntry(): RepoEntry | undefined {
     return this.repo;
   }
@@ -122,7 +122,7 @@ export class TepsProvider implements vscode.TreeDataProvider<TepNode> {
     let ownerNamespace: string;
     if (this.project) {
       const dir = path.join(
-        this.project.boardRoot,
+        this.project.thinkingSpaceRoot,
         this.project.product,
         "projects",
         this.project.id,
@@ -140,7 +140,7 @@ export class TepsProvider implements vscode.TreeDataProvider<TepNode> {
           },
         ];
       }
-      store = new ThinkubeStore(this.repo.path, this.repo.boardDir);
+      store = new ThinkubeStore(this.repo.path, this.repo.thinkingSpaceDir);
       const folders = (vscode.workspace.workspaceFolders ?? []).map((f) => ({
         name: f.name,
         path: f.uri.fsPath,
@@ -152,7 +152,7 @@ export class TepsProvider implements vscode.TreeDataProvider<TepNode> {
       return [
         {
           kind: "placeholder",
-          text: "No TEPs yet — use ＋ New TEP on the board",
+          text: "No TEPs yet — use ＋ New TEP on the thinking space",
         },
       ];
     }

@@ -1,12 +1,12 @@
 /**
  * Product discovery (SP-tgvjug / TEP-tgvh8p) — the code-less top node of the
- * hierarchy. A **Product** is a top-level directory in the sidecar board root
- * whose member Thinking Spaces are the board namespaces nested under it,
+ * hierarchy. A **Product** is a top-level directory in the sidecar thinking space root
+ * whose member Thinking Spaces are the thinking space namespaces nested under it,
  * optionally described by a `<product>/product.yaml` (display name + metadata).
  *
  * Pure `fs` + `yaml` (no vscode, no ThinkubeStore) so it is unit-testable
  * vscode-free. The sidecar tree is the source of truth — Products are NOT
- * derived from board ids (a board id's top segment is the on-disk repo dir, not
+ * derived from thinking space ids (a thinking space id's top segment is the on-disk repo dir, not
  * the Product container).
  */
 import * as fs from "node:fs";
@@ -18,7 +18,7 @@ export interface Product {
   id: string;
   /** Display name: `product.yaml`'s `name`, else the `id`. */
   name: string;
-  /** Member board namespaces (`<product>/<rel>`) — the dirs holding a `specs/`. */
+  /** Member thinking space namespaces (`<product>/<rel>`) — the dirs holding a `specs/`. */
   members: string[];
 }
 
@@ -36,19 +36,19 @@ function hasSubdir(dir: string, child: string): boolean {
 }
 
 /**
- * A board-shaped dir holds either a legacy flat `specs/` directory OR — under
+ * A thinking space-shaped dir holds either a legacy flat `specs/` directory OR — under
  * the org-scoped layout (SP-th8m5b / TEP-th8lzj) — an `<org>/teps/` subtree (a
- * board namespaces its sequential ids one level deeper, under a per-maintainer
+ * thinking space namespaces its sequential ids one level deeper, under a per-maintainer
  * org dir). Accepting both keeps discovery working before and after the
  * one-shot migration moves data into the nested tree.
  */
-// Methodology dirs that mark an enabled board (teps arrives with the first TEP;
+// Methodology dirs that mark an enabled thinking space (teps arrives with the first TEP;
 // specs/decisions/retros are scaffolded on enable). Any one — flat or under an
-// `<org>/` segment — counts, so an enabled-but-empty board is still a board.
-const BOARD_MARKERS = ["teps", "specs", "decisions", "retros"];
+// `<org>/` segment — counts, so an enabled-but-empty thinking space is still a thinking space.
+const THINKING_SPACE_MARKERS = ["teps", "specs", "decisions", "retros"];
 
-function isBoardShaped(dir: string): boolean {
-  if (BOARD_MARKERS.some((m) => hasSubdir(dir, m))) return true;
+function isThinkingSpaceShaped(dir: string): boolean {
+  if (THINKING_SPACE_MARKERS.some((m) => hasSubdir(dir, m))) return true;
   // Org-scoped tree: any immediate `<org>` child that holds a methodology dir.
   let entries: fs.Dirent[];
   try {
@@ -59,19 +59,19 @@ function isBoardShaped(dir: string): boolean {
   for (const e of entries) {
     if (!e.isDirectory() || e.name.startsWith(".") || SKIP.has(e.name))
       continue;
-    if (BOARD_MARKERS.some((m) => hasSubdir(path.join(dir, e.name), m)))
+    if (THINKING_SPACE_MARKERS.some((m) => hasSubdir(path.join(dir, e.name), m)))
       return true;
   }
   return false;
 }
 
-/** Member namespaces under a Product dir (board-shaped dirs are leaves). */
+/** Member namespaces under a Product dir (thinking space-shaped dirs are leaves). */
 function collectMembers(productDir: string, productId: string): string[] {
   const members: string[] = [];
   const walk = (dir: string, rel: string, depth: number): void => {
-    if (isBoardShaped(dir)) {
+    if (isThinkingSpaceShaped(dir)) {
       members.push(rel ? `${productId}/${rel}` : productId);
-      return; // a board is a leaf — never descend into it
+      return; // a thinking space is a leaf — never descend into it
     }
     if (depth >= MAX_DEPTH) return;
     let entries: fs.Dirent[];
@@ -109,15 +109,15 @@ function readProductName(productDir: string, fallback: string): string {
 }
 
 /**
- * Discover Products under a sidecar board root. Each top-level dir with ≥1
- * board-shaped descendant is a Product (its members are those namespaces);
- * a top dir with no board namespace is not a Product. A missing board root (or
+ * Discover Products under a sidecar thinking space root. Each top-level dir with ≥1
+ * thinking space-shaped descendant is a Product (its members are those namespaces);
+ * a top dir with no thinking space namespace is not a Product. A missing thinking space root (or
  * unreadable dir) yields `[]`.
  */
-export function discoverProducts(boardRoot: string): Product[] {
+export function discoverProducts(thinkingSpaceRoot: string): Product[] {
   let tops: fs.Dirent[];
   try {
-    tops = fs.readdirSync(boardRoot, { withFileTypes: true });
+    tops = fs.readdirSync(thinkingSpaceRoot, { withFileTypes: true });
   } catch {
     return [];
   }
@@ -125,9 +125,9 @@ export function discoverProducts(boardRoot: string): Product[] {
   for (const t of tops) {
     if (!t.isDirectory() || t.name.startsWith(".") || SKIP.has(t.name))
       continue;
-    const dir = path.join(boardRoot, t.name);
+    const dir = path.join(thinkingSpaceRoot, t.name);
     const members = collectMembers(dir, t.name);
-    if (members.length === 0) continue; // a Product exists by holding board namespaces
+    if (members.length === 0) continue; // a Product exists by holding thinking space namespaces
     products.push({ id: t.name, name: readProductName(dir, t.name), members });
   }
   return products.sort((a, b) => a.id.localeCompare(b.id));

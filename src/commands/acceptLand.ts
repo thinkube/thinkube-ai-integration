@@ -1,7 +1,7 @@
 /**
  * The cleanup half of accept-land (TEP-tgqa78), shared by both accept entry
  * points — `thinkube.accept` (the delivery-report surface, `orchestrate.ts`) and
- * `onAcceptSpec` (the kanban panel button, `boards.ts`). The merge half lives in
+ * `onAcceptSpec` (the kanban panel button, `thinkingSpaces.ts`). The merge half lives in
  * `github/specMerge.ts`; this retires the Spec's worktree afterwards.
  *
  * The `acceptLandSpec` dispatcher below ties the two halves together through the
@@ -119,7 +119,7 @@ export interface AcceptLandResult {
  * landed** and **best-effort** so a cleanup failure (including an already-merged /
  * branch-gone Spec whose worktree is already gone) never turns a landed, stamped
  * accept into an error. This is the single seam both accept call sites
- * (`boards.ts` / `orchestrate.ts`) route through.
+ * (`thinkingSpaces.ts` / `orchestrate.ts`) route through.
  */
 export async function acceptLandSpec(
   args: AcceptLandArgs,

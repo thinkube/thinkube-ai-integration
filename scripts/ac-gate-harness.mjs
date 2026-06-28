@@ -24,9 +24,9 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "..");
 const SERVER = path.join(REPO, "dist", "mcp", "kanbanMcpServer.js");
 
-// ── temp board: a dir with a committed-shape .thinkube/ (no git needed) ──
-const board = mkdtempSync(path.join(tmpdir(), "ac-gate-board-"));
-const specDir = path.join(board, ".thinkube", "specs", "SP-1");
+// ── temp thinking space: a dir with a committed-shape .thinkube/ (no git needed) ──
+const thinkingSpace = mkdtempSync(path.join(tmpdir(), "ac-gate-thinking space-"));
+const specDir = path.join(thinkingSpace, ".thinkube", "specs", "SP-1");
 mkdirSync(specDir, { recursive: true });
 const specPath = path.join(specDir, "spec.md");
 const specWith = (firstChecked) => `# Harness spec
@@ -54,11 +54,11 @@ writeFileSync(specPath, specWith(false));
 
 // ── minimal JSON-RPC-over-stdio client (MCP uses newline-delimited JSON) ──
 const child = spawn(process.execPath, [SERVER], {
-  cwd: board,
+  cwd: thinkingSpace,
   env: {
     ...process.env,
     THINKUBE_ALLOW_AI_WRITES: "true",
-    THINKUBE_ROOTS: board,
+    THINKUBE_ROOTS: thinkingSpace,
   },
   stdio: ["pipe", "pipe", "inherit"],
 });
@@ -185,11 +185,11 @@ try {
   const passed = checks.filter((c) => c.pass).length;
   console.log(`\n${passed}/${checks.length} behaviours held\n`);
   child.kill();
-  rmSync(board, { recursive: true, force: true });
+  rmSync(thinkingSpace, { recursive: true, force: true });
   process.exit(passed === checks.length ? 0 : 1);
 } catch (err) {
   console.error(`harness error: ${err.message}`);
   child.kill();
-  rmSync(board, { recursive: true, force: true });
+  rmSync(thinkingSpace, { recursive: true, force: true });
   process.exit(2);
 }

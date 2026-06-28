@@ -25,7 +25,7 @@ export interface Project {
   tag: string;
   /** Optional "why"-TEP reference (e.g. `TEP-tgkx1k`). */
   tep?: string;
-  /** Manifest path relative to the board root. */
+  /** Manifest path relative to the thinking space root. */
   manifestPath: string;
 }
 
@@ -35,22 +35,22 @@ function str(v: unknown, fallback: string): string {
   return typeof v === "string" && v.trim() ? v.trim() : fallback;
 }
 
-/** The board-relative `teps` dir of a board namespace, org-scoped-tree-aware
+/** The thinking space-relative `teps` dir of a thinking space namespace, org-scoped-tree-aware
  *  (TEP-th8lzj): `<org>/teps` when an `<org>/` child holds a `teps/`, else the
  *  bare `teps`. Mirrors `ThinkubeStore.orgSeg`/`tepsRoot` for the pure (no-store)
  *  Project readers. */
-function tepsRootDir(boardDir: string): string {
+function tepsRootDir(thinkingSpaceDir: string): string {
   try {
-    for (const e of fs.readdirSync(boardDir, { withFileTypes: true })) {
+    for (const e of fs.readdirSync(thinkingSpaceDir, { withFileTypes: true })) {
       if (!e.isDirectory() || e.name.startsWith(".") || SKIP.has(e.name))
         continue;
-      if (fs.existsSync(path.join(boardDir, e.name, "teps")))
-        return path.join(boardDir, e.name, "teps");
+      if (fs.existsSync(path.join(thinkingSpaceDir, e.name, "teps")))
+        return path.join(thinkingSpaceDir, e.name, "teps");
     }
   } catch {
-    /* board dir missing → fall through to the bare-teps default */
+    /* thinking space dir missing → fall through to the bare-teps default */
   }
-  return path.join(boardDir, "teps");
+  return path.join(thinkingSpaceDir, "teps");
 }
 
 /** The umbrella TEP ids under a project's teps tree (SP-tgvpbm) — the TEPs a
@@ -59,12 +59,12 @@ function tepsRootDir(boardDir: string): string {
  *  (holding `tep.md` + its `SP-m` specs), under `<org>/teps` or bare `teps`.
  *  Returns [] when the project / its teps dir is absent. */
 export function projectTeps(
-  boardRoot: string,
+  thinkingSpaceRoot: string,
   product: string,
   projectId: string,
 ): string[] {
   const tepsDir = tepsRootDir(
-    path.join(boardRoot, product, "projects", projectId),
+    path.join(thinkingSpaceRoot, product, "projects", projectId),
   );
   let entries: fs.Dirent[];
   try {
@@ -81,12 +81,12 @@ export function projectTeps(
   return ids.sort();
 }
 
-function readProject(boardRoot: string, product: string, id: string): Project {
+function readProject(thinkingSpaceRoot: string, product: string, id: string): Project {
   let m: Record<string, unknown> = {};
   try {
     const parsed = yamlParse(
       fs.readFileSync(
-        path.join(boardRoot, product, "projects", id, "project.yaml"),
+        path.join(thinkingSpaceRoot, product, "projects", id, "project.yaml"),
         "utf8",
       ),
     );
@@ -107,15 +107,15 @@ function readProject(boardRoot: string, product: string, id: string): Project {
 }
 
 /**
- * Discover Projects under a sidecar board root: every
+ * Discover Projects under a sidecar thinking space root: every
  * `<product>/projects/<name>/` directory yields a Project (its manifest parsed
  * with graceful defaults). A product with no `projects/` contributes none; a
- * missing/unreadable board root yields `[]`. Sorted by `(product, id)`.
+ * missing/unreadable thinking space root yields `[]`. Sorted by `(product, id)`.
  */
-export function discoverProjects(boardRoot: string): Project[] {
+export function discoverProjects(thinkingSpaceRoot: string): Project[] {
   let tops: fs.Dirent[];
   try {
-    tops = fs.readdirSync(boardRoot, { withFileTypes: true });
+    tops = fs.readdirSync(thinkingSpaceRoot, { withFileTypes: true });
   } catch {
     return [];
   }
@@ -125,7 +125,7 @@ export function discoverProjects(boardRoot: string): Project[] {
       continue;
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(path.join(boardRoot, top.name, "projects"), {
+      entries = fs.readdirSync(path.join(thinkingSpaceRoot, top.name, "projects"), {
         withFileTypes: true,
       });
     } catch {
@@ -133,7 +133,7 @@ export function discoverProjects(boardRoot: string): Project[] {
     }
     for (const e of entries) {
       if (!e.isDirectory() || e.name.startsWith(".")) continue;
-      out.push(readProject(boardRoot, top.name, e.name));
+      out.push(readProject(thinkingSpaceRoot, top.name, e.name));
     }
   }
   return out.sort(

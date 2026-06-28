@@ -2,10 +2,10 @@
  * Kanban commands (thinkube.kanban.*).
  *
  * Files-first, per-repo surface (ADR-0006): `openKanban` opens the Tandem
- * board of an enabled repo — one enabled repo opens directly, several offer a
- * quick-pick, none falls back to the in-memory demo board. The real board
- * rendering is owned by the Boards navigator's `thinkube.boards.open`; this
- * palette command just routes there, so there is exactly one open-board path.
+ * thinking space of an enabled repo — one enabled repo opens directly, several offer a
+ * quick-pick, none falls back to the in-memory demo thinking space. The real thinking space
+ * rendering is owned by the ThinkingSpaces navigator's `thinkube.thinkingSpace.open`; this
+ * palette command just routes there, so there is exactly one open-thinking space path.
  */
 import * as vscode from "vscode";
 
@@ -13,11 +13,11 @@ import { AuthService } from "../github/AuthService";
 import { GitHubService } from "../github/GitHubService";
 import { InMemoryAdapter } from "../views/kanban/host/InMemoryAdapter";
 import { KanbanPanel } from "../views/kanban/host/Panel";
-import { discoverRepos } from "../views/boards/BoardNavigatorProvider";
+import { discoverRepos } from "../views/thinkingSpaces/ThinkingSpaceNavigatorProvider";
 
 interface KanbanDeps {
   // Retained for now so extension.ts wiring is untouched; the files-first
-  // board no longer reads GitHub, but the inbox + auth stack still hangs here.
+  // thinking space no longer reads GitHub, but the inbox + auth stack still hangs here.
   auth: AuthService;
   github: GitHubService;
   output: vscode.OutputChannel;
@@ -54,7 +54,7 @@ async function refreshFromGitHub(deps: KanbanDeps): Promise<void> {
 async function openKanban(deps: KanbanDeps): Promise<void> {
   const enabled = discoverRepos().filter((r) => r.enabled);
 
-  // No enabled board anywhere → the in-memory demo board.
+  // No enabled thinking space anywhere → the in-memory demo thinking space.
   if (enabled.length === 0) {
     try {
       await KanbanPanel.open({
@@ -77,9 +77,9 @@ async function openKanban(deps: KanbanDeps): Promise<void> {
       : (
           await vscode.window.showQuickPick(
             enabled.map((r) => ({ label: r.name, description: r.rel, r })),
-            { placeHolder: "Open which Tandem board?" },
+            { placeHolder: "Open which Tandem thinking space?" },
           )
         )?.r;
   if (!repo) return;
-  await vscode.commands.executeCommand("thinkube.boards.open", repo);
+  await vscode.commands.executeCommand("thinkube.thinkingSpace.open", repo);
 }

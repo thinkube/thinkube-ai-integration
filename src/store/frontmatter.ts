@@ -32,18 +32,18 @@ export type Kind =
 export interface Frontmatter {
   kind?: Kind;
   // ── Tandem (files-first Spec→Slice) ──
-  /** Stable internal id for a slice — the board links on this; never changes. */
+  /** Stable internal id for a slice — the thinking space links on this; never changes. */
   uid?: string;
   /** Parent Spec handle for a slice, e.g. "SP-3". Supersedes `parent_issue`. */
   parent?: string;
   /** Free-form clustering tags — the #hashtag mesh (SP-tgvil2 / TEP-tgvh8p):
    *  component (`keycloak`), concern (`security`), project (`rebrand`). Many-to-many
-   *  and cross-board. Read via `effectiveTags` (which also folds the legacy `theme`). */
+   *  and cross-thinking space. Read via `effectiveTags` (which also folds the legacy `theme`). */
   tags?: string[];
   /** @deprecated Superseded by `tags` (SP-tgvil2); still read via `effectiveTags`.
    *  Legacy single grouping tag (sat above the Spec; not a tier). */
   theme?: string;
-  /** Board column / lifecycle status. Slices use ready|doing|done|archived;
+  /** Thinking Space column / lifecycle status. Slices use ready|doing|done|archived;
    *  TEPs use proposed|accepted|superseded|implemented (TEP-0009; `implemented`
    *  is the terminal "delivered" status per SP-th4wqg, distinct from `accepted`
    *  = approved-to-build); draft|active are legacy. */
@@ -125,13 +125,13 @@ export interface Frontmatter {
   /** Spec-level: ISO timestamp the human accepted the Spec (set by `accept_spec`, TEP-0010). */
   accepted?: string;
   /** Spec/TEP-level: hidden from the nav by default when true; a manual, reversible
-   *  flag (TEP-tg86v7). Distinct from a slice's `status: archived` board column. */
+   *  flag (TEP-tg86v7). Distinct from a slice's `status: archived` thinking space column. */
   archived?: boolean;
   /** Spec-level: the TEP this Spec implements, e.g. `TEP-0009` (TEP-0009 link). */
   implements?: string;
   /** TEP-level: the Specs that deliver this TEP, e.g. `["SP-tg7y99"]` (TEP-0009 link). */
   implemented_by?: string[];
-  /** `owner/name`; the repo this board belongs to. */
+  /** `owner/name`; the repo this thinking space belongs to. */
   repo?: string;
   // ── legacy GitHub-backed model (removed once consumers go, phases 5–7) ──
   /** @deprecated GitHub issue this file extends. */

@@ -6,7 +6,7 @@
  * node (= the slice handle), so legacy slices render as before. Node ids align with the live
  * `runningWorkers` / `parkedWorkers` keys, so clicking a running node floats out *that SDK
  * worker's* JSON-log, and a parked (needs-input) node answers it via `/attend`. Pure
- * presentation over the board the host already sends.
+ * presentation over the thinking space the host already sends.
  */
 import { useMemo } from "react";
 import { useGlobalState } from "../utils/context";

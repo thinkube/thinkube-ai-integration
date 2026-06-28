@@ -1,7 +1,7 @@
 /**
- * Pure, vscode-free core of the board orchestrator (SP-tgs8nz_SL-1): the work-unit DAG +
+ * Pure, vscode-free core of the thinking space orchestrator (SP-tgs8nz_SL-1): the work-unit DAG +
  * scheduler, plus session-log helpers that parse a worker's persisted `.jsonl` events.
- * Mostly I/O-free — the `OrchestratorService` shell supplies board rows + the event stream
+ * Mostly I/O-free — the `OrchestratorService` shell supplies thinking space rows + the event stream
  * and acts on the results. Unit-tested directly (high AI-testability per the lever, SP-tgsdvw);
  * the live SDK worker / advance is the shell's job — a human verdict (low AI-testability).
  *
@@ -342,7 +342,7 @@ export function readyFrontier(
 /**
  * Build the **autonomy-first prompt** for a worker dispatched on one execution unit
  * (SP-tgs8nz). Scoped to the unit's footprint + shape, it tells the worker to decide
- * autonomously (never seek confirmation), never touch git or the board, and escalate
+ * autonomously (never seek confirmation), never touch git or the thinking space, and escalate
  * with a question ONLY when genuinely blocked — the posture that keeps headless
  * execution from stopping on routine approvals. Pure → unit-tested.
  */
@@ -372,7 +372,7 @@ export function buildWorkerPrompt(
       : unit.shape === "fan-out"
         ? `This is a FAN-OUT unit over [${fp}].${unit.note ? ` Task: ${unit.note}` : ""}`
         : `This is a SERIAL unit — do its steps in order over [${fp}].${unit.note ? ` Task: ${unit.note}` : ""}`;
-  // The worker runs in a worktree of the CODE repo — the board/specs dir is NOT there. Embed the
+  // The worker runs in a worktree of the CODE repo — the thinking space/specs dir is NOT there. Embed the
   // spec + slice so it has full context inline rather than hunting the filesystem for a spec it
   // cannot reach.
   const specBlock = context?.specBody?.trim()
@@ -386,14 +386,14 @@ export function buildWorkerPrompt(
     `You are an autonomous Tandem worker for execution unit ${unit.id} of slice ${unit.slice}.\n` +
     `Implement THIS unit only — touch only its footprint: ${fp}.\n` +
     (hasCtx
-      ? `The board/specs dir is NOT in this worktree; your spec + slice are embedded below — use them, don't search the filesystem for specs/.\n`
+      ? `The thinking space/specs dir is NOT in this worktree; your spec + slice are embedded below — use them, don't search the filesystem for specs/.\n`
       : `(Read the parent spec/slice for context if available — note the specs dir may not be in this worktree.)\n`) +
     `\n${task}\n` +
     consumesBlock +
     specBlock +
     sliceBlock +
     `\nWork autonomously to the slice's acceptance criteria above. Make reasonable engineering decisions and do NOT ask for confirmation. ` +
-    `Do NOT commit, run git, or move the board card — the orchestrator owns git and the gate. ` +
+    `Do NOT commit, run git, or move the thinking space card — the orchestrator owns git and the gate. ` +
     `Only if you hit a genuine decision you cannot make from the spec/slice/codebase, output a single final message that begins with ${NEEDS_INPUT_SENTINEL} followed by your question, then stop — never guess.`
   );
 }

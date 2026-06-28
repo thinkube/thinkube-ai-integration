@@ -3,11 +3,11 @@
  * engine for the structural Project model.
  *
  * A Spec's `implements:` is either:
- *   - **bare** `TEP-id` / `id` → the TEP in the spec's OWN board (repo-local;
+ *   - **bare** `TEP-id` / `id` → the TEP in the spec's OWN thinking space (repo-local;
  *     unchanged, backward-compatible), or
  *   - **qualified** `<namespace>:TEP-id` → the TEP owned by `<namespace>` (a
- *     repo board `<container>/<rel>` or a project `<product>/projects/<name>`),
- *     resolving across boards.
+ *     repo thinking space `<container>/<rel>` or a project `<product>/projects/<name>`),
+ *     resolving across thinkingSpaces.
  *
  * Pure (no vscode/fs) so it's unit-testable vscode-free. A spec is a member of a
  * project iff its `implements:` resolves to one of the project's umbrella TEPs —
@@ -16,7 +16,7 @@
  */
 
 export interface ParsedImplements {
-  /** Owner namespace when qualified; undefined ⇒ the spec's own board (bare). */
+  /** Owner namespace when qualified; undefined ⇒ the spec's own thinking space (bare). */
   namespace?: string;
   /** Bare TEP id (no `TEP-` prefix). */
   id: string;
@@ -60,7 +60,7 @@ export function formatImplements(
 /**
  * Does a spec's parsed `implements:` (the spec lives in `specNamespace`) resolve
  * to the TEP `targetId` owned by `targetNamespace`? A bare ref resolves to the
- * spec's own board; a qualified ref to its explicit namespace.
+ * spec's own thinking space; a qualified ref to its explicit namespace.
  */
 export function resolvesTo(
   ref: ParsedImplements,
@@ -85,7 +85,7 @@ export function resolvesTo(
  *
  * `newTepId` (default = `tepId`) is the id the TEP is RE-ASSIGNED on promotion:
  * under the org-scoped sequential scheme a TEP's number is unique only within a
- * `(board, org)` scope, so moving it into a project re-allocates it to the
+ * `(thinking space, org)` scope, so moving it into a project re-allocates it to the
  * project's next free number to avoid colliding with the project's own TEPs.
  * Dependents must then point at the NEW id, while we still MATCH them by the old
  * one.

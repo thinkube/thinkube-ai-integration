@@ -1,7 +1,7 @@
 /**
  * Unit tests for the nested tree-path builders (SP-th8m5b / TEP-th8lzj, AC 3).
- * Pure strings — no vscode, no fs. Asserts the board-RELATIVE shape the store
- * joins onto a board root to get `<board>/<org>/teps/TEP-n/SP-m/SL-k.md`.
+ * Pure strings — no vscode, no fs. Asserts the thinking space-RELATIVE shape the store
+ * joins onto a thinking space root to get `<thinking space>/<org>/teps/TEP-n/SP-m/SL-k.md`.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -27,7 +27,7 @@ test("builders produce the nested <org>/teps/TEP-n/SP-m/SL-k.md tree", () => {
 
 test("the org segment is verbatim and forward-slashed (deepened namespace)", () => {
   // An org derived from a deepened namespace keeps its `/` separators so the
-  // tree nests correctly under a multi-segment board.
+  // tree nests correctly under a multi-segment thinking space.
   assert.equal(
     slicePath("Platform/projects/plugin-delivery/cmxela", 1, 1, 1),
     "Platform/projects/plugin-delivery/cmxela/teps/TEP-1/SP-1/SL-1.md",

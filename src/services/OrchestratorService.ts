@@ -1,5 +1,5 @@
 /**
- * Board orchestrator (SP-tgs8nz) — the integration shell around `orchestratorCore`'s pure
+ * Thinking Space orchestrator (SP-tgs8nz) — the integration shell around `orchestratorCore`'s pure
  * scheduler. `dispatchSpec` runs a **makespan scheduler over the Spec's work-unit DAG**: it
  * pools every slice's execution units into one graph (units span slices, never Specs), keeps
  * a per-Spec pool of N workers saturated (ready frontier ∧ footprint-disjoint, critical-path
@@ -75,8 +75,8 @@ export interface OrchestratorDeps {
   output: vscode.OutputChannel;
   /** Absolute path to the canonical (non-worktree) code repo. */
   canonicalRepo: string;
-  /** `thinkube.boards.root` — injected into the worktree's `.mcp.json`. */
-  boardRoot?: string;
+  /** `thinkube.thinkingSpace.root` — injected into the worktree's `.mcp.json`. */
+  thinkingSpaceRoot?: string;
   /** `thinkube.worktree.baseDir` — where linked worktrees are created. */
   baseDir?: string;
   /** Run the Spec's declared per-AC verifications at quiescence (tests): defaults to the core
@@ -165,7 +165,7 @@ export interface SpecRunResult {
   rolledBack: string[];
   /** The whole Spec landed and was committed. */
   committed: boolean;
-  /** Board-relative path of the written delivery summary (DELIVERY.md), set when the report is written. */
+  /** Thinking Space-relative path of the written delivery summary (DELIVERY.md), set when the report is written. */
   deliveryDoc?: string;
   /** The closing gate's per-AC verification results (pass/fail + evidence); empty when it couldn't run. */
   acResults: AcResult[];
@@ -190,7 +190,7 @@ export class OrchestratorService {
     { unitsLanded: boolean; committed: boolean }
   > = new Map();
 
-  /** Fetch the parent spec doc + each slice body from the board, to embed in worker prompts. */
+  /** Fetch the parent spec doc + each slice body from the thinking space, to embed in worker prompts. */
   private async loadPromptContext(specNumber: string): Promise<void> {
     const { store } = this.deps;
     const sliceBodies = new Map<string, string>();
@@ -294,7 +294,7 @@ export class OrchestratorService {
       return { ...result, ok: false, reason: v.reason };
     }
 
-    // Seed scheduler state from board statuses.
+    // Seed scheduler state from thinking space statuses.
     const unitsBySlice = new Map<string, SchedUnit[]>();
     for (const u of dag) {
       const arr = unitsBySlice.get(u.slice) ?? [];
@@ -306,7 +306,7 @@ export class OrchestratorService {
       running: new Set(),
       blocked: new Set(),
     };
-    // Slices already Done on the board (or advanced by this run's closing gate) — the **commit
+    // Slices already Done on the thinking space (or advanced by this run's closing gate) — the **commit
     // gate** is "every slice Done". `landed` (below) tracks slices whose units all landed THIS
     // run; they only become Done once the closing AC-verification gate passes for their ACs.
     const doneSlices = new Set<string>();
@@ -365,7 +365,7 @@ export class OrchestratorService {
       this.deps.canonicalRepo,
       specNumber,
       this.deps.baseDir,
-      this.deps.boardRoot,
+      this.deps.thinkingSpaceRoot,
     );
     const limit = Math.max(1, Math.floor(cap));
     output.appendLine(
@@ -448,7 +448,7 @@ export class OrchestratorService {
         // Non-resident needs-input: a worker that RETURNED a question instead of parking its live
         // session. runViaSdk parks resident via onPark and never returns this; this branch covers a
         // runUnit seam (tests) / a future exit-model runner. No live session to feed → flag via the
-        // board for resume-by-session-id (/attend fallback).
+        // thinking space for resume-by-session-id (/attend fallback).
         await this.flagNeedsInput(
           d.slice,
           d.question ?? "(no question text)",
@@ -479,7 +479,7 @@ export class OrchestratorService {
           // Slice's units all LANDED. No per-slice verify any more — verification is the Spec's
           // declared per-AC plan, run once at quiescence (the closing gate below). Mark the slice
           // done for SCHEDULING (so dependents unblock) and record it as a gate candidate; it only
-          // becomes Done-on-the-board when the closing gate passes for the ACs it satisfies.
+          // becomes Done-on-the-thinking space when the closing gate passes for the ACs it satisfies.
           state.done.add(d.slice);
           landed.add(d.slice);
           remaining.delete(d.slice);
@@ -968,7 +968,7 @@ export class OrchestratorService {
   }
 
   /** Write the delivery summary to `specs/SP-{n}/DELIVERY.md` (a separate doc, so it doesn't touch
-   *  the spec body / trip the staleness hash). Returns the board-relative path, or undefined. */
+   *  the spec body / trip the staleness hash). Returns the thinking space-relative path, or undefined. */
   private async writeDeliverySummary(
     specNumber: string,
     worktreePath: string,
