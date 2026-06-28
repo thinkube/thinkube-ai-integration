@@ -21,8 +21,8 @@ import { ThinkubeStore } from "../store/ThinkubeStore";
 import { dispatchTool } from "./kanbanMcpServer";
 
 async function seededStore(spec = "1/1"): Promise<ThinkubeStore> {
-  const board = fs.mkdtempSync(path.join(os.tmpdir(), "tk-wu-board-"));
-  const store = new ThinkubeStore(board, board);
+  const thinkingSpace = fs.mkdtempSync(path.join(os.tmpdir(), "tk-wu-thinking space-"));
+  const store = new ThinkubeStore(thinkingSpace, thinkingSpace);
   await store.writeFile(
     store.pathForSpecDoc(spec),
     { implements: "TEP-x", ac_verifications: { "1": { run: "npm test" } } },
@@ -33,10 +33,10 @@ async function seededStore(spec = "1/1"): Promise<ThinkubeStore> {
 
 test("create_slice through the dispatcher persists work_units", async () => {
   const store = await seededStore();
-  // Minimal HandlerContext: create_slice only touches ctx.boards.resolve.
+  // Minimal HandlerContext: create_slice only touches ctx.thinkingSpaces.resolve.
   const ctx = {
     env: {} as never,
-    boards: { resolve: () => store } as never,
+    thinkingSpaces: { resolve: () => store } as never,
   };
 
   const res = (await dispatchTool(

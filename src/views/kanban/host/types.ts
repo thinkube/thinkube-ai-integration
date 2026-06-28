@@ -36,9 +36,9 @@ export interface TaskCard {
   updatedAt?: string;
   /** Parent Spec changed more recently than this task → may need review. */
   specStale?: boolean;
-  /** Board "Due" date (ISO yyyy-mm-dd), if set. */
+  /** Thinking Space "Due" date (ISO yyyy-mm-dd), if set. */
   dueDate?: string;
-  /** Board "Priority" single-select value (P0–P3), if set. */
+  /** Thinking Space "Priority" single-select value (P0–P3), if set. */
   priority?: string;
   /** How the parent Spec last changed relative to this task (SP-86). */
   specChange?: "none" | "metadata" | "requirements";
@@ -76,27 +76,27 @@ export interface TaskCard {
   tags?: string[];
 }
 
-export interface BoardColumn {
+export interface ThinkingSpaceColumn {
   id: string;
   title: string;
   archived?: boolean;
   tasksIds: string[];
 }
 
-export interface Board {
-  columns: BoardColumn[];
+export interface ThinkingSpace {
+  columns: ThinkingSpaceColumn[];
   tasks: Record<string, TaskCard>;
   /** Panel key + fallback label. */
   scope: string;
   /** Display title — the thinking space name (SP-tgs8nz). */
   title?: string;
-  /** Display subtitle — the Spec's description (spec-scoped board). */
+  /** Display subtitle — the Spec's description (spec-scoped thinking space). */
   subtitle?: string;
 }
 
 export type WebviewMessage =
   | { kind: "load" }
-  | { kind: "save"; board: Board }
+  | { kind: "save"; thinkingSpace: ThinkingSpace }
   | { kind: "notify"; level: "info" | "warn" | "error"; text: string }
   | { kind: "update-task"; id: string; title?: string; body?: string }
   | { kind: "set-due"; id: string; date: string | null }
@@ -118,5 +118,5 @@ export type WebviewMessage =
 export type ModeFlag = "navigator" | "driver" | "both";
 
 export type HostMessage =
-  | { kind: "state"; board: Board; mode: ModeFlag }
-  | { kind: "external-change"; board: Board; mode: ModeFlag };
+  | { kind: "state"; thinkingSpace: ThinkingSpace; mode: ModeFlag }
+  | { kind: "external-change"; thinkingSpace: ThinkingSpace; mode: ModeFlag };

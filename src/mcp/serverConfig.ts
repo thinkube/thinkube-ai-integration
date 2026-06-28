@@ -8,8 +8,8 @@
  *
  *   1. explicit `THINKUBE_*` env   (back-compat — per-repo `.mcp.json` still works)
  *   2. a machine-level config file (`<CLAUDE_CONFIG_DIR>/thinkube-mcp.json`,
- *      written by the extension on activation from `thinkube.boards.root`)
- *   3. defaults / cwd discovery    (BoardRegistry already appends the cwd board)
+ *      written by the extension on activation from `thinkube.thinkingSpace.root`)
+ *   3. defaults / cwd discovery    (ThinkingSpaceRegistry already appends the cwd thinking space)
  *
  * Pure (no fs / vscode) → unit-tested. The caller reads the file and passes the
  * parsed object (or null on missing/unparseable).
@@ -24,7 +24,7 @@ export interface WorkspaceFolderRef {
 
 /** Machine-level config file shape (a subset; all fields optional). */
 export interface ServerConfigFile {
-  boardRoot?: string;
+  thinkingSpaceRoot?: string;
   folders?: WorkspaceFolderRef[];
   roots?: string[];
   allowAIWrites?: boolean;
@@ -33,7 +33,7 @@ export interface ServerConfigFile {
 export interface ResolvedServerConfig {
   roots: string[];
   folders: WorkspaceFolderRef[];
-  boardRoot?: string;
+  thinkingSpaceRoot?: string;
   allowAIWrites: boolean;
   docsGateMode: DocsGateMode;
   legacyWorkspace?: string;
@@ -90,8 +90,8 @@ export function resolveServerConfig(
   const envFolders = parseFolders(env.THINKUBE_FOLDERS);
   const folders = envFolders ?? cleanFolders(f.folders) ?? [];
 
-  const envBoardRoot = (env.THINKUBE_BOARD_ROOT ?? "").trim() || undefined;
-  const boardRoot = envBoardRoot ?? (typeof f.boardRoot === "string" && f.boardRoot.trim() ? f.boardRoot.trim() : undefined);
+  const envThinkingSpaceRoot = (env.THINKUBE_THINKING_SPACE_ROOT ?? "").trim() || undefined;
+  const thinkingSpaceRoot = envThinkingSpaceRoot ?? (typeof f.thinkingSpaceRoot === "string" && f.thinkingSpaceRoot.trim() ? f.thinkingSpaceRoot.trim() : undefined);
 
   const allowAIWrites =
     env.THINKUBE_ALLOW_AI_WRITES != null
@@ -107,5 +107,5 @@ export function resolveServerConfig(
 
   const legacyWorkspace = (env.THINKUBE_WORKSPACE ?? "").trim() || undefined;
 
-  return { roots, folders, boardRoot, allowAIWrites, docsGateMode, legacyWorkspace };
+  return { roots, folders, thinkingSpaceRoot, allowAIWrites, docsGateMode, legacyWorkspace };
 }

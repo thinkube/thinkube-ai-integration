@@ -1,5 +1,5 @@
 /**
- * Unit tests for cross-board tag grouping (SP-tgvil2_SL-3). Pure, no vscode/fs.
+ * Unit tests for cross-thinking space tag grouping (SP-tgvil2_SL-3). Pure, no vscode/fs.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -7,10 +7,10 @@ import assert from "node:assert/strict";
 import { groupByTag, TaggedItem } from "./tags";
 
 const fixture: TaggedItem[] = [
-  { boardId: "A", handle: "SP-1", kind: "spec", tags: ["security", "auth"] },
-  { boardId: "A", handle: "SP-1_SL-1", kind: "slice", tags: ["auth"] },
-  { boardId: "B", handle: "TEP-x", kind: "tep", tags: ["security"] },
-  { boardId: "B", handle: "SP-9", kind: "spec", tags: [] },
+  { thinkingSpaceId: "A", handle: "SP-1", kind: "spec", tags: ["security", "auth"] },
+  { thinkingSpaceId: "A", handle: "SP-1_SL-1", kind: "slice", tags: ["auth"] },
+  { thinkingSpaceId: "B", handle: "TEP-x", kind: "tep", tags: ["security"] },
+  { thinkingSpaceId: "B", handle: "SP-9", kind: "spec", tags: [] },
 ];
 
 test("an item with N tags appears under all N", () => {
@@ -25,10 +25,10 @@ test("an item with N tags appears under all N", () => {
   );
 });
 
-test("a tag clusters items across boards", () => {
+test("a tag clusters items across thinkingSpaces", () => {
   const g = groupByTag(fixture);
-  const boards = new Set(g.get("security")?.map((i) => i.boardId));
-  assert.ok(boards.has("A") && boards.has("B"));
+  const thinkingSpaces = new Set(g.get("security")?.map((i) => i.thinkingSpaceId));
+  assert.ok(thinkingSpaces.has("A") && thinkingSpaces.has("B"));
 });
 
 test("an untagged item contributes to no bucket", () => {

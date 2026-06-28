@@ -2,7 +2,7 @@
  * Writes the machine-level kanban-MCP config file (TEP-tgvwct, Phase 3).
  *
  * The plugin-shipped server (`node ${CLAUDE_PLUGIN_ROOT}/mcp/kanban.js`) gets no
- * per-repo `.mcp.json` env injection, so the extension writes the same board
+ * per-repo `.mcp.json` env injection, so the extension writes the same thinking space
  * root / folders / roots it would have injected into a machine-level file the
  * server reads (`serverConfig.resolveServerConfig`, precedence env → file → cwd).
  * Mirrors `buildMcpEnv` in `commands/bundle.ts`.
@@ -29,13 +29,13 @@ export async function writeMachineMcpConfig(): Promise<void> {
     name: f.name,
     path: f.uri.fsPath,
   }));
-  const boardRoot = vscode.workspace
-    .getConfiguration("thinkube.boards")
+  const thinkingSpaceRoot = vscode.workspace
+    .getConfiguration("thinkube.thinkingSpace")
     .get<string>("root")
     ?.trim();
 
   const cfg: Record<string, unknown> = { allowAIWrites };
-  if (boardRoot) cfg.boardRoot = boardRoot;
+  if (thinkingSpaceRoot) cfg.thinkingSpaceRoot = thinkingSpaceRoot;
   if (folders.length) {
     cfg.folders = folders;
     cfg.roots = folders.map((f) => f.path);

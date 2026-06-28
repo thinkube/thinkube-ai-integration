@@ -1,8 +1,8 @@
 /**
  * Handler-driven tests for the TEP-lifecycle gate (SP-th4wqg / SP-G of
  * TEP-th3i18). The ACs drive the REAL handlers through `dispatchTool` over a
- * `{ env: { boardRoot }, boards }` fixture that seeds a TEP + its implementing
- * Specs (cross-board, resolved via `implementsRef`) — NOT the pure
+ * `{ env: { thinkingSpaceRoot }, thinkingSpaces }` fixture that seeds a TEP + its implementing
+ * Specs (cross-thinking space, resolved via `implementsRef`) — NOT the pure
  * `tepLifecycle` predicates in isolation (the auditor reframe). The three
  * groups match the spec's `ac_verifications` name-patterns:
  *
@@ -32,16 +32,16 @@ import { dispatchTool, getProject } from "./kanbanMcpServer";
 const ALLOW = () => {}; // writeGate: AI writes permitted.
 const AC_BODY = "# Demo\n\n## Acceptance Criteria\n\n- [ ] x\n";
 
-/** A single-board fixture: a board dir under a board root holding one TEP (with
+/** A single-thinking space fixture: a thinking space dir under a thinking space root holding one TEP (with
  *  `status`) and one Spec implementing it bare, certified for the → Ready gate. */
-async function singleBoardFixture(opts: {
+async function singleThinkingSpaceFixture(opts: {
   tepStatus: string;
   specAccepted?: boolean;
 }): Promise<{ ctx: unknown; store: ThinkubeStore }> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tk-teplc-"));
-  const boardDir = path.join(root, "Platform", "core", "thinkube");
-  fs.mkdirSync(boardDir, { recursive: true });
-  const store = new ThinkubeStore(boardDir, boardDir);
+  const thinkingSpaceDir = path.join(root, "Platform", "core", "thinkube");
+  fs.mkdirSync(thinkingSpaceDir, { recursive: true });
+  const store = new ThinkubeStore(thinkingSpaceDir, thinkingSpaceDir);
 
   // Composite-id tree layout: TEP "1" and a Spec "1/1" implementing it bare.
   await store.writeFile(
@@ -64,8 +64,8 @@ async function singleBoardFixture(opts: {
   );
 
   const ctx = {
-    env: { boardRoot: root, allowAIWrites: true },
-    boards: {
+    env: { thinkingSpaceRoot: root, allowAIWrites: true },
+    thinkingSpaces: {
       list: () => [{ id: "A", worktree: false }],
       resolve: () => store,
     },
@@ -76,7 +76,7 @@ async function singleBoardFixture(opts: {
 // ── AC#1: approval gate ──────────────────────────────────────────────────────
 
 test("approval: create_slice → Ready is refused while the implements: TEP is proposed", async () => {
-  const { ctx } = await singleBoardFixture({ tepStatus: "proposed" });
+  const { ctx } = await singleThinkingSpaceFixture({ tepStatus: "proposed" });
   await assert.rejects(
     () =>
       dispatchTool(
@@ -101,7 +101,7 @@ test("approval: create_slice → Ready is refused while the implements: TEP is p
 });
 
 test("approval: create_slice succeeds once the implements: TEP is accepted", async () => {
-  const { ctx } = await singleBoardFixture({ tepStatus: "accepted" });
+  const { ctx } = await singleThinkingSpaceFixture({ tepStatus: "accepted" });
   const res = (await dispatchTool(
     "create_slice",
     {
@@ -119,7 +119,7 @@ test("approval: create_slice succeeds once the implements: TEP is accepted", asy
 
 // ── AC#2: completeness on get_project ────────────────────────────────────────
 
-/** A board root with a project owning an umbrella TEP, plus a member-Spec board
+/** A thinking space root with a project owning an umbrella TEP, plus a member-Spec thinking space
  *  whose Spec implements that TEP (optionally accepted). */
 async function projectFixture(specAccepted: boolean): Promise<unknown> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tk-teplc-proj-"));
@@ -150,8 +150,8 @@ async function projectFixture(specAccepted: boolean): Promise<unknown> {
   );
 
   return {
-    env: { boardRoot: root },
-    boards: {
+    env: { thinkingSpaceRoot: root },
+    thinkingSpaces: {
       list: () => [{ id: "A", worktree: false }],
       resolve: () => member,
     },
@@ -190,7 +190,7 @@ test("complete: get_project reports complete once every implementing spec is acc
 // ── AC#3: `implemented` terminal status, gated on completeness ────────────────
 
 test("implemented: write_tep status:implemented is refused while a spec is unaccepted, naming it", async () => {
-  const { ctx } = await singleBoardFixture({
+  const { ctx } = await singleThinkingSpaceFixture({
     tepStatus: "accepted",
     specAccepted: false,
   });
@@ -212,7 +212,7 @@ test("implemented: write_tep status:implemented is refused while a spec is unacc
 });
 
 test("implemented: write_tep status:implemented succeeds once every spec is accepted", async () => {
-  const { ctx, store } = await singleBoardFixture({
+  const { ctx, store } = await singleThinkingSpaceFixture({
     tepStatus: "accepted",
     specAccepted: true,
   });

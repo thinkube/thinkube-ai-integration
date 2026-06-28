@@ -27,18 +27,18 @@ import { dispatchTool } from "./kanbanMcpServer";
 import { CANONICAL_SECTIONS } from "../methodology/specStructure";
 
 // ── tmp-store scaffolding (mirrors workUnitsDispatch.test.ts) ────────────────
-// A fresh board; `write_spec` creates the spec doc itself, so no seeding needed.
+// A fresh thinking space; `write_spec` creates the spec doc itself, so no seeding needed.
 function freshStore(): ThinkubeStore {
-  const board = fs.mkdtempSync(path.join(os.tmpdir(), "tk-sections-board-"));
-  return new ThinkubeStore(board, board);
+  const thinkingSpace = fs.mkdtempSync(path.join(os.tmpdir(), "tk-sections-thinking space-"));
+  return new ThinkubeStore(thinkingSpace, thinkingSpace);
 }
 
-// Minimal HandlerContext for `write_spec`: it touches ctx.boards.resolve and the
+// Minimal HandlerContext for `write_spec`: it touches ctx.thinkingSpaces.resolve and the
 // promote locator. A bare/absent `implements:` never consults the locator, but
 // the locator is constructed eagerly, so supply a no-op to stay self-contained.
 const ctxFor = (store: ThinkubeStore) => ({
   env: {} as never,
-  boards: { resolve: () => store } as never,
+  thinkingSpaces: { resolve: () => store } as never,
   promoteLocator: (() => undefined) as never,
 });
 
@@ -106,7 +106,7 @@ test("write_spec accepts a body with all four canonical sections", async () => {
 //
 // What this proves: `create_slice`→Ready refuses a slice whose parent Spec
 // certifies an AC with a verification command pointing at a test target that is
-// **absent from the board repo's `tsconfig.test.json` `include`** — such a target
+// **absent from the thinking space repo's `tsconfig.test.json` `include`** — such a target
 // compiles to nothing, so `node --test` never runs it and the AC would report ✓
 // over a check that never executed (TEP-th3i18 / SP-E, row #8). A target whose
 // source IS registered (so it actually compiles + runs) clears the gate.
@@ -115,24 +115,24 @@ test("write_spec accepts a body with all four canonical sections", async () => {
 // computes `repoState` — it parses the real on-disk `tsconfig.test.json` (a
 // `verificationRunnable` `RepoState`) and consults the precheck. So we drive the
 // handler over a tmp store whose `tsconfig.test.json` we seed, and assert the
-// refusal/acceptance + resulting board state — never call the helper directly.
+// refusal/acceptance + resulting thinking space state — never call the helper directly.
 // This unit CONSUMES the `verificationRunnable` contract: the gate it exercises
 // is the one wired to that predicate, so the test can't pass unless the wiring
 // (handler → repoState → precheck) is real.
 // ════════════════════════════════════════════════════════════════════════════
 
-// Seed a fresh board whose `tsconfig.test.json` (the file the create_slice
+// Seed a fresh thinking space whose `tsconfig.test.json` (the file the create_slice
 // handler parses to build `repoState`) carries `include`, and whose Spec
 // certifies its single AC with the given `run` command. The handler is
-// workspace-rooted, so the config goes at `store.workspaceRoot` — the board
+// workspace-rooted, so the config goes at `store.workspaceRoot` — the thinking space
 // repo's own root — exactly where the real toolchain (`tsc -p tsconfig.test.json`)
 // reads it.
 async function seededRunnableStore(opts: {
   run: string;
   include: string[];
 }): Promise<ThinkubeStore> {
-  const board = fs.mkdtempSync(path.join(os.tmpdir(), "tk-runnable-board-"));
-  const store = new ThinkubeStore(board, board);
+  const thinkingSpace = fs.mkdtempSync(path.join(os.tmpdir(), "tk-runnable-thinking space-"));
+  const store = new ThinkubeStore(thinkingSpace, thinkingSpace);
   fs.writeFileSync(
     path.join(store.workspaceRoot, "tsconfig.test.json"),
     JSON.stringify({ include: opts.include }, null, 2),
@@ -218,7 +218,7 @@ test("create_slice accepts a slice whose AC verification target IS registered in
   assert.equal(
     (await store.listSlices(SPEC)).length,
     1,
-    "the accepted slice must be persisted on the board",
+    "the accepted slice must be persisted on the thinking space",
   );
 });
 
@@ -243,13 +243,13 @@ test("create_slice accepts a slice whose AC verification target IS registered in
 // handler wiring (`write_spec` stamps it / `create_slice` consults it) is real.
 // ════════════════════════════════════════════════════════════════════════════
 
-// A fresh board whose root `tsconfig.test.json` registers the AC's verification
+// A fresh thinking space whose root `tsconfig.test.json` registers the AC's verification
 // target's source — so the post-readyGate runnable precheck (AC1) clears and the
 // only gate left to exercise is the AC-hash re-audit. The spec itself is authored
 // through `write_spec` below (the tool under test), not pre-seeded.
 function reauditStore(): ThinkubeStore {
-  const board = fs.mkdtempSync(path.join(os.tmpdir(), "tk-reaudit-board-"));
-  const store = new ThinkubeStore(board, board);
+  const thinkingSpace = fs.mkdtempSync(path.join(os.tmpdir(), "tk-reaudit-thinking space-"));
+  const store = new ThinkubeStore(thinkingSpace, thinkingSpace);
   fs.writeFileSync(
     path.join(store.workspaceRoot, "tsconfig.test.json"),
     JSON.stringify({ include: [sourceEntry("reaudited")] }, null, 2),

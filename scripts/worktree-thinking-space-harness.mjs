@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * Harness for SP-9_SL-1 — a worktree shares its canonical Spec's board.
+ * Harness for SP-9_SL-1 — a worktree shares its canonical Spec's thinking space.
  *
  * Boots the real server with cwd = a linked worktree (a `.git` *file* pointing
- * at a canonical repo) and proves the worktree session's default board resolves
- * to the canonical repo's CENTRAL namespace — i.e. the worktree carries no board
- * of its own; it reads the same sidecar board as the canonical (AC #3).
+ * at a canonical repo) and proves the worktree session's default thinking space resolves
+ * to the canonical repo's CENTRAL namespace — i.e. the worktree carries no thinking space
+ * of its own; it reads the same sidecar thinking space as the canonical (AC #3).
  *
- * Build first: `npm run compile`. Run: `node scripts/worktree-board-harness.mjs`.
+ * Build first: `npm run compile`. Run: `node scripts/worktree-thinking-space-harness.mjs`.
  */
 import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
@@ -23,17 +23,17 @@ const SERVER = path.join(
   "kanbanMcpServer.js",
 );
 
-const tmp = mkdtempSync(path.join(tmpdir(), "wt-board-"));
+const tmp = mkdtempSync(path.join(tmpdir(), "wt-thinking-space-"));
 const wsFolder = path.join(tmp, "ws"); // the "Platform" workspace folder
 const canonical = path.join(wsFolder, "extensions", "foo"); // the code repo
-const boardRoot = path.join(tmp, "board");
-const central = path.join(boardRoot, "Platform", "extensions", "foo"); // its board
+const thinkingSpaceRoot = path.join(tmp, "thinking space");
+const central = path.join(thinkingSpaceRoot, "Platform", "extensions", "foo"); // its thinking space
 const wtBase = path.join(tmp, "foo-worktrees");
 const worktree = path.join(wtBase, "SP-1"); // a linked worktree of foo
 
-// canonical repo (a `.git` *dir*), no co-located board
+// canonical repo (a `.git` *dir*), no co-located thinking space
 mkdirSync(path.join(canonical, ".git"), { recursive: true });
-// its central board, with one slice seeded
+// its central thinking space, with one slice seeded
 mkdirSync(path.join(central, "specs", "SP-1"), { recursive: true });
 writeFileSync(
   path.join(central, "specs", "SP-1", "spec.md"),
@@ -41,9 +41,9 @@ writeFileSync(
 );
 writeFileSync(
   path.join(central, "specs", "SP-1", "SL-1.md"),
-  `---\nuid: canon-seed\nparent: SP-1\nstatus: ready\n---\n\n# Canon seed\n\nLives in the canonical Spec's sidecar board.\n`,
+  `---\nuid: canon-seed\nparent: SP-1\nstatus: ready\n---\n\n# Canon seed\n\nLives in the canonical Spec's sidecar thinking space.\n`,
 );
-// the worktree: a `.git` FILE pointing at the canonical (no board of its own)
+// the worktree: a `.git` FILE pointing at the canonical (no thinking space of its own)
 mkdirSync(worktree, { recursive: true });
 writeFileSync(
   path.join(worktree, ".git"),
@@ -57,7 +57,7 @@ const child = spawn(process.execPath, [SERVER], {
     THINKUBE_ALLOW_AI_WRITES: "true",
     THINKUBE_ROOTS: [wsFolder, wtBase].join(path.delimiter),
     THINKUBE_FOLDERS: JSON.stringify([{ name: "Platform", path: wsFolder }]),
-    THINKUBE_BOARD_ROOT: boardRoot,
+    THINKUBE_THINKING_SPACE_ROOT: thinkingSpaceRoot,
   },
   stdio: ["pipe", "pipe", "inherit"],
 });
@@ -104,16 +104,16 @@ try {
   await rpc("initialize", {
     protocolVersion: "2024-11-05",
     capabilities: {},
-    clientInfo: { name: "wt-board", version: "0" },
+    clientInfo: { name: "wt-thinking space", version: "0" },
   });
   child.stdin.write(
     JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) +
       "\n",
   );
 
-  console.log("\nharness — SP-9_SL-1 worktree shares canonical board\n");
+  console.log("\nharness — SP-9_SL-1 worktree shares canonical thinking space\n");
 
-  const r = await rpc("tools/call", { name: "list_board", arguments: {} });
+  const r = await rpc("tools/call", { name: "list_thinking_space", arguments: {} });
   const text = r.result?.content?.[0]?.text ?? "";
   let ready = [];
   try {
@@ -125,7 +125,7 @@ try {
     /* empty */
   }
   record(
-    "a worktree session's default board IS the canonical Spec's sidecar board",
+    "a worktree session's default thinking space IS the canonical Spec's sidecar thinking space",
     ready.includes("SP-1_SL-1"),
     `ready=[${ready.join(", ")}]`,
   );

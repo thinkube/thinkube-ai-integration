@@ -3,7 +3,7 @@
  * Harness for SP-9_SL-3 — retiring a worktree is a pure code operation.
  *
  * With a real git repo + worktree, proves WorktreeService.remove: removes a
- * clean worktree while a separate sidecar board is left untouched (no stranded
+ * clean worktree while a separate sidecar thinking space is left untouched (no stranded
  * card), and refuses to remove a worktree with uncommitted work (AC #4).
  *
  * Build first: `npm run compile`. Run: `node scripts/worktree-retire-harness.mjs`.
@@ -33,7 +33,7 @@ const repo = path.join(tmp, "repo");
 const wtBase = path.join(tmp, "repo-worktrees");
 const sidecarMarker = path.join(
   tmp,
-  "board",
+  "thinking space",
   "Platform",
   "repo",
   "specs",
@@ -49,9 +49,9 @@ git("config", "user.name", "h");
 writeFileSync(path.join(repo, "README.md"), "x\n");
 git("add", ".");
 git("commit", "-qm", "init");
-// a separate sidecar board (the worktree carries no board of its own)
+// a separate sidecar thinking space (the worktree carries no thinking space of its own)
 mkdirSync(path.dirname(sidecarMarker), { recursive: true });
-writeFileSync(sidecarMarker, "the board\n");
+writeFileSync(sidecarMarker, "the thinking space\n");
 
 const svc = new WorktreeService();
 const checks = [];
@@ -63,7 +63,7 @@ const record = (label, pass, detail) => {
 
 console.log("\nharness — SP-9_SL-3 retire is pure code\n");
 
-// 1. clean worktree → removed; sidecar board untouched.
+// 1. clean worktree → removed; sidecar thinking space untouched.
 const cleanWt = path.join(wtBase, "SP-1");
 execFileSync(
   "git",
@@ -84,7 +84,7 @@ record(
   `removed=${removed} gone=${!existsSync(cleanWt)}`,
 );
 record(
-  "the sidecar board is untouched after retire (no stranded card)",
+  "the sidecar thinking space is untouched after retire (no stranded card)",
   existsSync(sidecarMarker),
   `marker exists=${existsSync(sidecarMarker)}`,
 );

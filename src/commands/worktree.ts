@@ -1,7 +1,7 @@
 /**
  * Worktree commands — "Start Spec in Worktree" (SP-5).
  *
- * The board's "New Spec" action (commands/boards.ts) opens a session rooted in
+ * The thinking space's "New Spec" action (commands/thinkingSpaces.ts) opens a session rooted in
  * the repo with `/spec-prepare N` prefilled. This is its sibling for *working*
  * an already-numbered Spec: create the Spec's git worktree and open a session
  * rooted there with `/pair-start N`, so parallel Specs never share a tree.
@@ -10,7 +10,7 @@ import * as vscode from "vscode";
 
 import { LauncherService } from "../services/LauncherService";
 import { WorktreeService } from "../services/WorktreeService";
-import type { SpecNode } from "../views/boards/SpecsProvider";
+import type { SpecNode } from "../views/thinkingSpaces/SpecsProvider";
 
 export interface WorktreeDeps {
   launcher: LauncherService;
@@ -36,8 +36,8 @@ export function registerWorktreeCommands(
         }
         const n = node.specNumber;
         // Cut the worktree from the Thinking Space's CODE repo (SP-9). Under
-        // central boards the spec file lives in the sidecar, so node.file's dir
-        // is the board repo, not the code repo — use node.repoPath. canonicalRepo
+        // central thinkingSpaces the spec file lives in the sidecar, so node.file's dir
+        // is the thinking space repo, not the code repo — use node.repoPath. canonicalRepo
         // resolves main even if repoPath is itself a linked worktree.
         try {
           const canonical =
@@ -47,21 +47,21 @@ export function registerWorktreeCommands(
               .getConfiguration("thinkube")
               .get<string>("worktree.baseDir")
               ?.trim() || undefined;
-          // Board-connect the new worktree (SP-tgpwbm): pass the configured board
+          // Thinking Space-connect the new worktree (SP-tgpwbm): pass the configured thinking space
           // root so its .mcp.json kanban server points at the central sidecar.
-          const boardRoot =
+          const thinkingSpaceRoot =
             vscode.workspace
-              .getConfiguration("thinkube.boards")
+              .getConfiguration("thinkube.thinkingSpace")
               .get<string>("root")
               ?.trim() || undefined;
           const worktreePath = await worktrees.create(
             canonical,
             n,
             baseDir,
-            boardRoot,
+            thinkingSpaceRoot,
           );
           // Open a plain session rooted in the worktree; advancing the Spec's
-          // slices is board-driven (the Orchestrate command), not a chat skill.
+          // slices is thinking space-driven (the Orchestrate command), not a chat skill.
           await deps.launcher.openHere(vscode.Uri.file(worktreePath));
         } catch (err) {
           vscode.window.showErrorMessage(

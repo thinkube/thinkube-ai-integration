@@ -8,11 +8,11 @@ import { resolveServerConfig } from "./serverConfig";
 
 test("env wins over the machine-level file", () => {
   const cfg = resolveServerConfig(
-    { THINKUBE_BOARD_ROOT: "/env/board", THINKUBE_ROOTS: "/a:/b" },
-    { boardRoot: "/file/board", roots: ["/c"] },
+    { THINKUBE_THINKING_SPACE_ROOT: "/env/thinking space", THINKUBE_ROOTS: "/a:/b" },
+    { thinkingSpaceRoot: "/file/thinking space", roots: ["/c"] },
     ":",
   );
-  assert.equal(cfg.boardRoot, "/env/board");
+  assert.equal(cfg.thinkingSpaceRoot, "/env/thinking space");
   assert.deepEqual(cfg.roots, ["/a", "/b"]);
 });
 
@@ -20,20 +20,20 @@ test("falls back to the file when env is absent", () => {
   const cfg = resolveServerConfig(
     {},
     {
-      boardRoot: "/file/board",
+      thinkingSpaceRoot: "/file/thinking space",
       roots: ["/c", "/d"],
       folders: [{ name: "Platform", path: "/home/u/thinkube-platform" }],
     },
     ":",
   );
-  assert.equal(cfg.boardRoot, "/file/board");
+  assert.equal(cfg.thinkingSpaceRoot, "/file/thinking space");
   assert.deepEqual(cfg.roots, ["/c", "/d"]);
   assert.deepEqual(cfg.folders, [{ name: "Platform", path: "/home/u/thinkube-platform" }]);
 });
 
 test("no env, no file → safe defaults (writes on, advisory, empty)", () => {
   const cfg = resolveServerConfig({}, null, ":");
-  assert.equal(cfg.boardRoot, undefined);
+  assert.equal(cfg.thinkingSpaceRoot, undefined);
   assert.deepEqual(cfg.roots, []);
   assert.deepEqual(cfg.folders, []);
   assert.equal(cfg.allowAIWrites, true);

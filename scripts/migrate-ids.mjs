@@ -3,14 +3,14 @@
  * migrate-ids — ONE-SHOT, THROWAWAY migration from the base36-epoch id scheme
  * to org-scoped sequential ids in a nested tree (SP-th8m5b / TEP-th8lzj).
  *
- * It rewrites a sidecar board root in place:
+ * It rewrites a sidecar thinking space root in place:
  *
  *   OLD (flat, base36-epoch):                NEW (nested, sequential):
  *     <ns>/teps/TEP-<base36>.md                <ns>/<org>/teps/TEP-n/tep.md
  *     <ns>/specs/SP-<base36>/spec.md           <ns>/<org>/teps/TEP-n/SP-m/spec.md
  *     <ns>/specs/SP-<base36>/SL-k.md           <ns>/<org>/teps/TEP-n/SP-m/SL-k.md
  *
- * What it does, per (board, org):
+ * What it does, per (thinking space, org):
  *   1. Recover creation order: base36-epoch ids decode to epoch-seconds
  *      (`parseInt(id, 36)`), so sorting them ascending recovers when each TEP /
  *      spec was minted.
@@ -19,7 +19,7 @@
  *      file's frontmatter (`id:`) so a later delete never renumbers a survivor.
  *   3. Move every directory into the nested tree, inserting the `<org>` segment.
  *      A spec is co-located under the TEP it `implements:` — including across
- *      boards (a promoted project-umbrella TEP), so member specs nest under the
+ *      thinkingSpaces (a promoted project-umbrella TEP), so member specs nest under the
  *      project's tree (their code-repo identity stays in frontmatter `repo:`).
  *   4. Rewrite cross-refs so they still resolve: `implements:` (bare →
  *      `TEP-n`; qualified → `<ns>/<org>:TEP-n`), `implemented_by:` (→ `SP-m`),
@@ -34,10 +34,10 @@
  * The `<org>` is derived from git `user.name` (sanitized) unless `--org` is
  * given; there is NO default — an unset/empty `user.name` fails fast.
  *
- *   node scripts/migrate-ids.mjs --board <boardRoot> [--org <org>] \
+ *   node scripts/migrate-ids.mjs --thinking-space <thinkingSpaceRoot> [--org <org>] \
  *        [--repo <codeRepo>]... [--dry-run]
  *
- * Throwaway: delete once the live board is converted.
+ * Throwaway: delete once the live thinking space is converted.
  */
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -46,20 +46,20 @@ import { parse as yamlParse, stringify as yamlStringify } from "yaml";
 
 // ── argument parsing ──────────────────────────────────────────────────────
 function parseArgs(argv) {
-  const out = { board: undefined, org: undefined, repos: [], dryRun: false };
+  const out = { thinkingSpace: undefined, org: undefined, repos: [], dryRun: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--board") out.board = argv[++i];
+    if (a === "--thinking-space") out.thinkingSpace = argv[++i];
     else if (a === "--org") out.org = argv[++i];
     else if (a === "--repo") out.repos.push(argv[++i]);
     else if (a === "--dry-run") out.dryRun = true;
     else throw new Error(`Unknown argument: ${a}`);
   }
-  if (!out.board) throw new Error("--board <boardRoot> is required");
+  if (!out.thinkingSpace) throw new Error("--thinking-space <thinkingSpaceRoot> is required");
   return out;
 }
 
-// ── org resolution (mirror of boardNamespace.containerSegment + fail-fast) ──
+// ── org resolution (mirror of thinkingSpaceNamespace.containerSegment + fail-fast) ──
 /** Sanitize a git user.name into a filesystem-safe org segment. */
 export function sanitizeOrg(name) {
   return (name ?? "")
@@ -69,7 +69,7 @@ export function sanitizeOrg(name) {
 }
 
 /** Resolve the org, failing fast (no default) when it can't be derived. */
-function resolveOrg(explicit, boardRoot) {
+function resolveOrg(explicit, thinkingSpaceRoot) {
   if (explicit !== undefined) {
     const seg = sanitizeOrg(explicit);
     if (!seg) throw new Error("--org was given but empty after sanitizing");
@@ -78,7 +78,7 @@ function resolveOrg(explicit, boardRoot) {
   let userName = "";
   try {
     userName = execFileSync("git", ["config", "user.name"], {
-      cwd: boardRoot,
+      cwd: thinkingSpaceRoot,
       encoding: "utf8",
     }).trim();
   } catch {
@@ -184,7 +184,7 @@ function oldSpecDirs(nsDir) {
  * The org-agnostic `TEP-TEMPLATE.md` scaffold, if this namespace carries one.
  * It is NOT a maintainer's TEP: it must never be parsed as a numbered/epoch id
  * (the `oldTepFiles` scan already skips it) and must never be renumbered. The
- * migration relocates it to the FIXED board-level path `<ns>/teps/TEP-TEMPLATE.md`
+ * migration relocates it to the FIXED thinking space-level path `<ns>/teps/TEP-TEMPLATE.md`
  * (NOT under `<org>/`), content untouched — its `TEP-NNNN` placeholder stays
  * intact so `write_tep` can keep scaffolding new TEPs after the cutover.
  */
@@ -196,8 +196,8 @@ function templateFile(nsDir) {
 
 const SKIP_DIRS = new Set([".git", "node_modules"]);
 
-/** Discover every old-shaped namespace (board / project) under the board root. */
-function discoverNamespaces(boardRoot) {
+/** Discover every old-shaped namespace (thinking space / project) under the thinking space root. */
+function discoverNamespaces(thinkingSpaceRoot) {
   const out = [];
   const walk = (dir, rel, depth) => {
     const hasTeps = oldTepFiles(dir).length > 0;
@@ -217,18 +217,18 @@ function discoverNamespaces(boardRoot) {
       );
     }
   };
-  walk(boardRoot, "", 0);
+  walk(thinkingSpaceRoot, "", 0);
   return out.sort((a, b) => a.rel.localeCompare(b.rel));
 }
 
 // ── the migration ──────────────────────────────────────────────────────────
 export function migrate(opts) {
-  const boardRoot = path.resolve(opts.board);
-  const org = resolveOrg(opts.org, boardRoot);
+  const thinkingSpaceRoot = path.resolve(opts.thinkingSpace);
+  const org = resolveOrg(opts.org, thinkingSpaceRoot);
   const dryRun = !!opts.dryRun;
   const log = (...a) => console.log(...a);
 
-  const namespaces = discoverNamespaces(boardRoot);
+  const namespaces = discoverNamespaces(thinkingSpaceRoot);
   if (namespaces.length === 0) {
     log("migrate-ids: nothing to migrate (no flat base36-epoch layout found).");
     return {
@@ -384,10 +384,10 @@ export function migrate(opts) {
   }
 
   // ── Body cross-reference rewrite ──────────────────────────────────────────
-  // Old ids are globally unique (one cross-board dup — SP-th4wqi — resolved by the
+  // Old ids are globally unique (one cross-thinking space dup — SP-th4wqi — resolved by the
   // referencing file's namespace below), so prose references remap deterministically.
   // A reference to an entity in the SAME namespace as the file becomes the new
-  // board-local handle; a cross-namespace one is namespace-qualified so it stays
+  // thinking space-local handle; a cross-namespace one is namespace-qualified so it stays
   // unambiguous. Applied as a post-pass over every `.md` write (Pass 3 builds them).
   const tepRefByOldId = new Map(); // oldTepId → { ns, num }
   for (const { nsRel, oldId, newNum } of tepMap.values())
@@ -398,7 +398,7 @@ export function migrate(opts) {
     arr.push(s);
     specsByOldId.set(s.oldId, arr);
   }
-  const refLog = []; // { file, from, to } — samples + the cross-board dup mentions
+  const refLog = []; // { file, from, to } — samples + the cross-thinking space dup mentions
   let bodyRefsRewritten = 0;
 
   const qualTep = (ns, num, fileNs) =>
@@ -473,7 +473,7 @@ export function migrate(opts) {
       if (nfm.implemented_by)
         nfm.implemented_by = rewriteImplementedBy(nfm.implemented_by);
       const target = path.join(
-        boardRoot,
+        thinkingSpaceRoot,
         ...ns.rel.split("/").filter(Boolean),
         org,
         "teps",
@@ -502,7 +502,7 @@ export function migrate(opts) {
         `the TEP→Spec hierarchy (they had no \`implements:\`). Not a real proposal.\n`;
       writes.push({
         path: path.join(
-          boardRoot,
+          thinkingSpaceRoot,
           ...ns.rel.split("/").filter(Boolean),
           org,
           "teps",
@@ -520,7 +520,7 @@ export function migrate(opts) {
   for (const s of specs) {
     const ownerSegs = s.ownerNsRel.split("/").filter(Boolean);
     const newSpecDirAbs = path.join(
-      boardRoot,
+      thinkingSpaceRoot,
       ...ownerSegs,
       org,
       "teps",
@@ -534,10 +534,10 @@ export function migrate(opts) {
     if (s.refNamespace === undefined) {
       sfm.implements = `TEP-${s.tepNewNum}`; // bare, local
     } else {
-      // Qualified, cross-board — deepen the namespace with the <org> segment.
+      // Qualified, cross-thinking space — deepen the namespace with the <org> segment.
       sfm.implements = `${s.refNamespace}/${org}:TEP-${s.tepNewNum}`;
     }
-    // Cross-board member (nested under another namespace's TEP — e.g. a project
+    // Cross-thinking space member (nested under another namespace's TEP — e.g. a project
     // umbrella): preserve its home code-repo identity in `repo:`, since the path now
     // encodes the project, not the repo. Realizes the contract this migration documents.
     if (s.homeNsRel !== s.ownerNsRel) sfm.repo = s.homeNsRel;
@@ -583,7 +583,7 @@ export function migrate(opts) {
       for (const e of readdirSafe(srcDir)) {
         if (!e.isFile()) continue;
         const target = path.join(
-          boardRoot,
+          thinkingSpaceRoot,
           ...ns.rel.split("/").filter(Boolean),
           org,
           sub,
@@ -598,7 +598,7 @@ export function migrate(opts) {
     }
   }
 
-  // The org-agnostic TEP template — relocated to the FIXED board-level path
+  // The org-agnostic TEP template — relocated to the FIXED thinking space-level path
   // (`<ns>/teps/TEP-TEMPLATE.md`, NOT under `<org>/`), bytes untouched. Applied
   // AFTER `removes` (which wipes the old `<ns>/teps`) so it survives the sweep,
   // and read as raw bytes so the `TEP-NNNN` placeholder is never reserialized.
@@ -608,7 +608,7 @@ export function migrate(opts) {
     if (!tf) continue;
     templateWrites.push({
       path: path.join(
-        boardRoot,
+        thinkingSpaceRoot,
         ...ns.rel.split("/").filter(Boolean),
         "teps",
         TEMPLATE_FILE,
@@ -622,14 +622,14 @@ export function migrate(opts) {
   // (`<ns>/teps/TEP-TEMPLATE.md`, no `<org>`) has no id refs and is skipped.
   for (const w of writes) {
     if (!w.path.endsWith(".md")) continue;
-    const segs = path.relative(boardRoot, w.path).split(path.sep);
+    const segs = path.relative(thinkingSpaceRoot, w.path).split(path.sep);
     const oi = segs.indexOf(org);
     if (oi <= 0) continue;
     const fileNs = segs.slice(0, oi).join("/");
     const text = Buffer.isBuffer(w.content)
       ? w.content.toString("utf8")
       : w.content;
-    w.content = rewriteBody(text, fileNs, path.relative(boardRoot, w.path));
+    w.content = rewriteBody(text, fileNs, path.relative(thinkingSpaceRoot, w.path));
   }
 
   // ── apply ──
@@ -638,10 +638,10 @@ export function migrate(opts) {
       `migrate-ids (dry run): org=${org}, ${namespaces.length} namespace(s), ` +
         `${tepMap.size} TEP(s), ${specs.length} spec(s), ${sliceHandleMap.size} slice(s).`,
     );
-    for (const w of writes) log(`  write  ${path.relative(boardRoot, w.path)}`);
-    for (const r of removes) log(`  remove ${path.relative(boardRoot, r)}`);
+    for (const w of writes) log(`  write  ${path.relative(thinkingSpaceRoot, w.path)}`);
+    for (const r of removes) log(`  remove ${path.relative(thinkingSpaceRoot, r)}`);
     for (const w of templateWrites)
-      log(`  keep   ${path.relative(boardRoot, w.path)} (template, unchanged)`);
+      log(`  keep   ${path.relative(thinkingSpaceRoot, w.path)} (template, unchanged)`);
     log(`  body-refs rewritten: ${bodyRefsRewritten}`);
     for (const r of refLog.slice(0, 20))
       log(`    ${r.file}: ${r.from} -> ${r.to}`);

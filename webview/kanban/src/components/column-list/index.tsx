@@ -4,12 +4,12 @@
  */
 import styles from "./column-list.module.scss";
 import { Column } from "./column";
-import { BoardColumn } from "../../types";
+import { ThinkingSpaceColumn } from "../../types";
 
 export function ColumnList({
   columns,
 }: {
-  columns: BoardColumn[];
+  columns: ThinkingSpaceColumn[];
 }): JSX.Element {
   return (
     <div className={styles.columnList}>

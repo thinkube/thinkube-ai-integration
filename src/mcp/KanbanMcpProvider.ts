@@ -8,10 +8,10 @@
  * `McpServerDefinitionProvider`, and VS Code launches the resulting
  * subprocesses on demand when an LLM session wants to use them.
  *
- * Board-independent (ADR-0007 Phase 6): ONE definition serves every board —
- * the server takes the board as a per-call tool parameter and discovers
- * boards under THINKUBE_ROOTS (the workspace folders). No single configured
- * methodology root, no per-board definitions.
+ * Thinking Space-independent (ADR-0007 Phase 6): ONE definition serves every thinking space —
+ * the server takes the thinking space as a per-call tool parameter and discovers
+ * thinkingSpaces under THINKUBE_ROOTS (the workspace folders). No single configured
+ * methodology root, no per-thinking space definitions.
  *
  * Two-phase resolution. `provideMcpServerDefinitions` returns a bare
  * definition (no env) — it runs at registration time.
@@ -21,7 +21,7 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
 
-import { discoverRepos } from "../views/boards/BoardNavigatorProvider";
+import { discoverRepos } from "../views/thinkingSpaces/ThinkingSpaceNavigatorProvider";
 import { stableServerScriptPath } from "./stableServerPath";
 
 const SERVER_LABEL = "Thinkube Kanban";
@@ -82,7 +82,7 @@ export class KanbanMcpProvider implements vscode.McpServerDefinitionProvider<vsc
     vscode.McpStdioServerDefinition[]
   > {
     // Files-first launch gate: only provide the server when at least one
-    // board (repo with a committed `.thinkube/`) exists in the workspace.
+    // thinking space (repo with a committed `.thinkube/`) exists in the workspace.
     if (!discoverRepos().some((r) => r.enabled)) return [];
     // env starts empty; `resolveMcpServerDefinition` fills it in just
     // before VS Code launches the subprocess.
@@ -114,9 +114,9 @@ export class KanbanMcpProvider implements vscode.McpServerDefinitionProvider<vsc
       path: f.uri.fsPath,
     }));
     const roots = folders.map((f) => f.path).join(path.delimiter);
-    // The central board root (SP-8): boards live at <root>/<container>/<rel>.
-    const boardRoot = vscode.workspace
-      .getConfiguration("thinkube.boards")
+    // The central thinking space root (SP-8): thinkingSpaces live at <root>/<container>/<rel>.
+    const thinkingSpaceRoot = vscode.workspace
+      .getConfiguration("thinkube.thinkingSpace")
       .get<string>("root")
       ?.trim();
     // → Done docs gate mode (TEP-tgh6iy): advisory (default) warns, blocking
@@ -132,10 +132,10 @@ export class KanbanMcpProvider implements vscode.McpServerDefinitionProvider<vsc
     // Folder names carry the namespace container (Apps/Platform/…), so pass the
     // full {name,path} list — not just paths.
     if (folders.length) env.THINKUBE_FOLDERS = JSON.stringify(folders);
-    if (boardRoot) env.THINKUBE_BOARD_ROOT = boardRoot;
+    if (thinkingSpaceRoot) env.THINKUBE_THINKING_SPACE_ROOT = thinkingSpaceRoot;
 
     this.log(
-      `launching board-independent server (boardRoot=${boardRoot || "(none)"} roots=${roots || "(none)"} writes=${allowWrites})`,
+      `launching thinking space-independent server (thinkingSpaceRoot=${thinkingSpaceRoot || "(none)"} roots=${roots || "(none)"} writes=${allowWrites})`,
     );
     return new vscode.McpStdioServerDefinition(
       server.label,

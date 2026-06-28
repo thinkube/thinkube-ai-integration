@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { resolveOrg, containerSegment } from "./boardNamespace";
+import { resolveOrg, containerSegment } from "./thinkingSpaceNamespace";
 
 test("resolveOrg sanitizes git user.name into a filesystem-safe segment", () => {
   // A plain name → spaces collapse to dashes (the containerSegment convention).

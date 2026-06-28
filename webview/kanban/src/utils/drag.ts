@@ -1,16 +1,16 @@
 /**
  * Drag handling — task moves only (the methodology columns are fixed, so no
  * column reordering). Moving a card between columns changes its Status; moving
- * within a column reorders it. Either way we hand the new board to `setState`,
+ * within a column reorders it. Either way we hand the new thinking space to `setState`,
  * which the host persists (status sync today; priority order later).
  */
 import type { DropResult } from "@hello-pangea/dnd";
-import type { Board } from "../types";
+import type { ThinkingSpace } from "../types";
 
 export function handleDragEnd(
   result: DropResult,
-  state: Board,
-  setState: (state: Board) => void,
+  state: ThinkingSpace,
+  setState: (state: ThinkingSpace) => void,
 ): void {
   const { source, destination } = result;
   if (!destination) return;

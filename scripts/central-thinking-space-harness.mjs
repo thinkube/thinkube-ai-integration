@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * stdio harness for SP-8_SL-1 — reading/writing a board from a central root.
+ * stdio harness for SP-8_SL-1 — reading/writing a thinking space from a central root.
  *
- * Spawns the real kanban MCP server with a central board root (no co-located
+ * Spawns the real kanban MCP server with a central thinking space root (no co-located
  * `.thinkube/` in the code repo) and proves, end-to-end:
  *
- *   1. the server DISCOVERS the board at `<board-root>/<container>/<rel>` and
- *      list_board reads its seeded slice (AC #1, #3)
+ *   1. the server DISCOVERS the thinking space at `<thinking-space-root>/<container>/<rel>` and
+ *      list_thinking_space reads its seeded slice (AC #1, #3)
  *   2. create_slice WRITES under that central namespace, and the code repo
  *      stays clean — no `.thinkube/` appears in it (AC #2)
  *
- * Build first: `npm run compile`. Run: `node scripts/central-board-harness.mjs`.
+ * Build first: `npm run compile`. Run: `node scripts/central-thinking-space-harness.mjs`.
  * Exit 0 = all behaviours held.
  */
 import { spawn, execFileSync } from "node:child_process";
@@ -31,32 +31,32 @@ const REPO = path.resolve(HERE, "..");
 const SERVER = path.join(REPO, "dist", "mcp", "kanbanMcpServer.js");
 
 // ── temp layout: a "Platform" workspace folder holding a code repo with a
-//    .git but NO .thinkube; a separate central board root holding its board ──
-const tmp = mkdtempSync(path.join(tmpdir(), "central-board-"));
+//    .git but NO .thinkube; a separate central thinking space root holding its thinking space ──
+const tmp = mkdtempSync(path.join(tmpdir(), "central-thinking-space-"));
 const wsFolder = path.join(tmp, "ws"); // the "Platform" workspace folder
 const repo = path.join(wsFolder, "extensions", "foo"); // the code repo
-const boardRoot = path.join(tmp, "board"); // the central sidecar root
+const thinkingSpaceRoot = path.join(tmp, "thinking space"); // the central sidecar root
 const ns = path.join("Platform", "extensions", "foo"); // <container>/<rel>
-const boardDir = path.join(boardRoot, ns);
-const specDir = path.join(boardDir, "specs", "SP-1");
+const thinkingSpaceDir = path.join(thinkingSpaceRoot, ns);
+const specDir = path.join(thinkingSpaceDir, "specs", "SP-1");
 
 mkdirSync(path.join(repo, ".git"), { recursive: true }); // repo, no .thinkube
 mkdirSync(specDir, { recursive: true });
 writeFileSync(
   path.join(specDir, "spec.md"),
-  `# Foo spec\n\nA seeded central board.\n\n## Acceptance Criteria\n\n- [ ] something\n\n## Constraints\n\n- none\n\n## Design\n\n- n/a\n\n## File Structure Plan\n\n- n/a\n`,
+  `# Foo spec\n\nA seeded central thinking space.\n\n## Acceptance Criteria\n\n- [ ] something\n\n## Constraints\n\n- none\n\n## Design\n\n- n/a\n\n## File Structure Plan\n\n- n/a\n`,
 );
 writeFileSync(
   path.join(specDir, "SL-1.md"),
-  `---\nuid: seed-slice\nparent: SP-1\nstatus: ready\n---\n\n# Seed slice\n\nSeeded directly in the central board dir.\n`,
+  `---\nuid: seed-slice\nparent: SP-1\nstatus: ready\n---\n\n# Seed slice\n\nSeeded directly in the central thinking space dir.\n`,
 );
 
 // A SECOND Thinking Space under a different container ("Apps") — proves two
-// spaces are discovered together from the one board root (AC #3), and that the
+// spaces are discovered together from the one thinking space root (AC #3), and that the
 // container is host-agnostic (Apps would be a Gitea repo in thinkube).
 const appsFolder = path.join(tmp, "apps");
 const repo2 = path.join(appsFolder, "bar");
-const specDir2 = path.join(boardRoot, "Apps", "bar", "specs", "SP-1");
+const specDir2 = path.join(thinkingSpaceRoot, "Apps", "bar", "specs", "SP-1");
 mkdirSync(path.join(repo2, ".git"), { recursive: true });
 mkdirSync(specDir2, { recursive: true });
 writeFileSync(
@@ -65,15 +65,15 @@ writeFileSync(
 );
 writeFileSync(
   path.join(specDir2, "SL-1.md"),
-  `---\nuid: bar-seed\nparent: SP-1\nstatus: ready\n---\n\n# Bar seed\n\nSeeded in the Apps/bar central board.\n`,
+  `---\nuid: bar-seed\nparent: SP-1\nstatus: ready\n---\n\n# Bar seed\n\nSeeded in the Apps/bar central thinking space.\n`,
 );
 
 // A THIRD space that is a REAL git repo with a commit — proves move→Done writes
-// status to the central board while stamping provenance from the CODE repo, and
-// leaves the code repo's working tree clean (the git-vs-board split, SL-2).
+// status to the central thinking space while stamping provenance from the CODE repo, and
+// leaves the code repo's working tree clean (the git-vs-thinking space split, SL-2).
 const bazRepo = path.join(wsFolder, "extensions", "baz");
 const bazSpecDir = path.join(
-  boardRoot,
+  thinkingSpaceRoot,
   "Platform",
   "extensions",
   "baz",
@@ -103,7 +103,7 @@ writeFileSync(
 );
 
 const child = spawn(process.execPath, [SERVER], {
-  cwd: repo, // session cwd = the code repo → default board resolves to it
+  cwd: repo, // session cwd = the code repo → default thinking space resolves to it
   env: {
     ...process.env,
     THINKUBE_ALLOW_AI_WRITES: "true",
@@ -112,7 +112,7 @@ const child = spawn(process.execPath, [SERVER], {
       { name: "Platform", path: wsFolder },
       { name: "Apps", path: appsFolder },
     ]),
-    THINKUBE_BOARD_ROOT: boardRoot,
+    THINKUBE_THINKING_SPACE_ROOT: thinkingSpaceRoot,
   },
   stdio: ["pipe", "pipe", "inherit"],
 });
@@ -174,15 +174,15 @@ try {
   await rpc("initialize", {
     protocolVersion: "2024-11-05",
     capabilities: {},
-    clientInfo: { name: "central-board-harness", version: "0" },
+    clientInfo: { name: "central-thinking-space-harness", version: "0" },
   });
   notify("notifications/initialized", {});
 
-  console.log("\nstdio harness — SP-8_SL-1 central-root board\n");
+  console.log("\nstdio harness — SP-8_SL-1 central-root thinking space\n");
 
-  // 1. list_board (default = the cwd repo) reads the slice seeded in the
+  // 1. list_thinking_space (default = the cwd repo) reads the slice seeded in the
   //    central namespace dir — proving discovery + read come from the root.
-  const lb = await callTool("list_board", {});
+  const lb = await callTool("list_thinking_space", {});
   let ready = [];
   try {
     ready =
@@ -193,7 +193,7 @@ try {
     /* leave empty → fails below */
   }
   record(
-    "list_board reads the seeded slice from <board-root>/Platform/extensions/foo",
+    "list_thinking_space reads the seeded slice from <thinking-space-root>/Platform/extensions/foo",
     !lb.isError && ready.includes("SP-1_SL-1"),
     `ready=[${ready.join(", ")}]`,
   );
@@ -203,13 +203,13 @@ try {
   const cs = await callTool("create_slice", {
     spec: 1,
     title: "Written to the central namespace",
-    body: "Should land under the board root, not the code repo.",
+    body: "Should land under the thinking space root, not the code repo.",
   });
   const handle = cs.isError ? "" : JSON.parse(cs.text).slice;
   const wroteCentral = existsSync(path.join(specDir, "SL-2.md"));
   const repoClean = !existsSync(path.join(repo, ".thinkube"));
   record(
-    "create_slice writes to the central namespace (SL-2.md under board root)",
+    "create_slice writes to the central namespace (SL-2.md under thinking space root)",
     !cs.isError && handle === "SP-1_SL-2" && wroteCentral,
     `handle=${handle} wroteCentral=${wroteCentral}`,
   );
@@ -219,24 +219,24 @@ try {
     `repo=${repo}`,
   );
 
-  // 4. both Thinking Spaces are discovered from the single board root (AC #3).
-  const lbs = await callTool("list_boards", {});
+  // 4. both Thinking Spaces are discovered from the single thinking space root (AC #3).
+  const lbs = await callTool("list_thinking_spaces", {});
   const bothFound =
     !lbs.isError &&
     lbs.text.includes(path.resolve(repo)) &&
     lbs.text.includes(path.resolve(repo2));
   record(
-    "list_boards finds both spaces (Platform/extensions/foo + Apps/bar) from one root (AC #3)",
+    "list_thinking_spaces finds both spaces (Platform/extensions/foo + Apps/bar) from one root (AC #3)",
     bothFound,
     lbs.text.replace(/\s+/g, " ").slice(0, 200),
   );
 
-  // 5. move→Done under central: status writes to the central board, provenance
+  // 5. move→Done under central: status writes to the central thinking space, provenance
   //    is stamped from the CODE repo, and the code repo's tree stays clean.
   const mv = await callTool("move_slice", {
     slice: "SP-2_SL-1",
     status: "Done",
-    board: bazRepo,
+    thinkingSpace: bazRepo,
   });
   const bazSl = path.join(bazSpecDir, "SL-1.md");
   const slText = existsSync(bazSl) ? readFileSync(bazSl, "utf8") : "";

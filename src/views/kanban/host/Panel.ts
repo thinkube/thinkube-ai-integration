@@ -23,7 +23,7 @@ import * as vscode from "vscode";
 
 import { StorageAdapter } from "./StorageAdapter";
 import {
-  Board,
+  ThinkingSpace,
   HostMessage,
   ModeFlag,
   TaskCard,
@@ -134,10 +134,10 @@ export class KanbanPanel implements vscode.Disposable {
     );
     if (this.adapter.onExternalChange) {
       this.disposables.push(
-        this.adapter.onExternalChange((board) =>
+        this.adapter.onExternalChange((thinkingSpace) =>
           this.post({
             kind: "external-change",
-            board,
+            thinkingSpace,
             mode: readMode(),
           }),
         ),
@@ -149,8 +149,8 @@ export class KanbanPanel implements vscode.Disposable {
       vscode.workspace.onDidChangeConfiguration(async (e) => {
         if (e.affectsConfiguration("thinkube.kanban.mode")) {
           try {
-            const board = await this.adapter.load();
-            this.post({ kind: "state", board, mode: readMode() });
+            const thinkingSpace = await this.adapter.load();
+            this.post({ kind: "state", thinkingSpace, mode: readMode() });
           } catch (err) {
             this.log(`mode-change reload failed: ${(err as Error).message}`);
           }
@@ -162,16 +162,16 @@ export class KanbanPanel implements vscode.Disposable {
   private async handle(message: WebviewMessage): Promise<void> {
     switch (message.kind) {
       case "load": {
-        const board = await this.adapter.load();
-        this.post({ kind: "state", board, mode: readMode() });
+        const thinkingSpace = await this.adapter.load();
+        this.post({ kind: "state", thinkingSpace, mode: readMode() });
         break;
       }
       case "save":
-        await this.adapter.save(message.board);
+        await this.adapter.save(message.thinkingSpace);
         break;
       case "update-task": {
         if (!this.adapter.updateIssue) {
-          this.notify("warn", "This board doesn't support editing.");
+          this.notify("warn", "This thinking space doesn't support editing.");
           break;
         }
         try {
@@ -180,8 +180,8 @@ export class KanbanPanel implements vscode.Disposable {
             body: message.body,
           });
           // Reflect the edit: reload from the backing store and re-render.
-          const board = await this.adapter.load();
-          this.post({ kind: "state", board, mode: readMode() });
+          const thinkingSpace = await this.adapter.load();
+          this.post({ kind: "state", thinkingSpace, mode: readMode() });
         } catch (err) {
           this.log(
             `update-task #${message.id} failed: ${(err as Error).message}`,
@@ -195,13 +195,13 @@ export class KanbanPanel implements vscode.Disposable {
       }
       case "set-due": {
         if (!this.adapter.setDueDate) {
-          this.notify("warn", "This board doesn't support due dates.");
+          this.notify("warn", "This thinking space doesn't support due dates.");
           break;
         }
         try {
           await this.adapter.setDueDate(message.id, message.date);
-          const board = await this.adapter.load();
-          this.post({ kind: "state", board, mode: readMode() });
+          const thinkingSpace = await this.adapter.load();
+          this.post({ kind: "state", thinkingSpace, mode: readMode() });
         } catch (err) {
           this.log(`set-due #${message.id} failed: ${(err as Error).message}`);
           this.notify(
@@ -233,7 +233,7 @@ export class KanbanPanel implements vscode.Disposable {
         if (!this.onAcceptSpec) {
           this.notify(
             "info",
-            "Accepting a Spec isn't available on this board.",
+            "Accepting a Spec isn't available on this thinking space.",
           );
           break;
         }
@@ -241,8 +241,8 @@ export class KanbanPanel implements vscode.Disposable {
           await this.onAcceptSpec(message.spec);
           // Reflect the accept: the Spec doc now carries `accepted:`, so the
           // acceptance card derives into Done on reload.
-          const board = await this.adapter.load();
-          this.post({ kind: "state", board, mode: readMode() });
+          const thinkingSpace = await this.adapter.load();
+          this.post({ kind: "state", thinkingSpace, mode: readMode() });
         } catch (err) {
           this.log(
             `accept-spec SP-${message.spec} failed: ${(err as Error).message}`,
@@ -271,7 +271,7 @@ export class KanbanPanel implements vscode.Disposable {
           await vscode.commands.executeCommand(
             "thinkube.attend",
             message.handle,
-            this.adapter.boardContext?.(),
+            this.adapter.thinkingSpaceContext?.(),
           );
         } catch (err) {
           this.log(
@@ -281,12 +281,12 @@ export class KanbanPanel implements vscode.Disposable {
         break;
       case "orchestrate":
         try {
-          // Pass THIS panel's board so the command orchestrates the board the button is on,
+          // Pass THIS panel's thinking space so the command orchestrates the thinking space the button is on,
           // not whatever space the sidebar happens to be scoped to.
           await vscode.commands.executeCommand(
             "thinkube.orchestrate",
             message.spec,
-            this.adapter.boardContext?.(),
+            this.adapter.thinkingSpaceContext?.(),
           );
         } catch (err) {
           this.log(
@@ -296,12 +296,12 @@ export class KanbanPanel implements vscode.Disposable {
         break;
       case "accept":
         // The delivery report's Accept exit (SP-tgzyfy_SL-2): forward to the gated-merge
-        // command, carrying THIS panel's board (same shape as orchestrate/attend).
+        // command, carrying THIS panel's thinking space (same shape as orchestrate/attend).
         try {
           await vscode.commands.executeCommand(
             "thinkube.accept",
             message.spec,
-            this.adapter.boardContext?.(),
+            this.adapter.thinkingSpaceContext?.(),
           );
         } catch (err) {
           this.log(`accept ${message.spec} failed: ${(err as Error).message}`);
@@ -314,7 +314,7 @@ export class KanbanPanel implements vscode.Disposable {
           await vscode.commands.executeCommand(
             "thinkube.reject",
             message.spec,
-            this.adapter.boardContext?.(),
+            this.adapter.thinkingSpaceContext?.(),
           );
         } catch (err) {
           this.log(`reject ${message.spec} failed: ${(err as Error).message}`);
@@ -331,19 +331,19 @@ export class KanbanPanel implements vscode.Disposable {
   private post(message: HostMessage): void {
     // Overlay live-worker flags so the control-center graph can tag running slices.
     const out =
-      "board" in message
-        ? { ...message, board: this.withRunning(message.board) }
+      "thinkingSpace" in message
+        ? { ...message, thinkingSpace: this.withRunning(message.thinkingSpace) }
         : message;
     this.panel.webview.postMessage(out);
   }
 
   /** Flag tasks whose slice has a live Agent SDK worker (SP-tgs8nz SL-4). */
-  private withRunning(board: Board): Board {
+  private withRunning(thinkingSpace: ThinkingSpace): ThinkingSpace {
     const live = runningSessions();
     const park = parkedWorkers();
     const done = doneWorkers();
     if (live.length === 0 && park.length === 0 && done.length === 0)
-      return board;
+      return thinkingSpace;
     // Sessions are keyed per WORKER (execution unit, e.g. `SP-3_SL-2#eu-0`); group them under
     // their slice so the control-center graph shows a node per worker (SP-tgs8nz_SL-4): green
     // while running, amber while parked (needs-input), lime once it has completed.
@@ -364,7 +364,7 @@ export class KanbanPanel implements vscode.Disposable {
       ).push(p.id);
     }
     const tasks: Record<string, TaskCard> = {};
-    for (const [id, t] of Object.entries(board.tasks)) {
+    for (const [id, t] of Object.entries(thinkingSpace.tasks)) {
       const workers = runBySlice.get(id);
       const parkedIds = parkBySlice.get(id);
       const doneIds = doneBySlice.get(id);
@@ -378,14 +378,14 @@ export class KanbanPanel implements vscode.Disposable {
             }
           : t;
     }
-    return { ...board, tasks };
+    return { ...thinkingSpace, tasks };
   }
 
-  /** Re-post the board when the running set changes, so graph tags appear/clear live. */
+  /** Re-post the thinking space when the running set changes, so graph tags appear/clear live. */
   private async refreshRunning(): Promise<void> {
     try {
-      const board = await this.adapter.load();
-      this.post({ kind: "state", board, mode: readMode() });
+      const thinkingSpace = await this.adapter.load();
+      this.post({ kind: "state", thinkingSpace, mode: readMode() });
     } catch (err) {
       this.log(`running refresh failed: ${(err as Error).message}`);
     }

@@ -119,7 +119,7 @@ export class LauncherService implements vscode.Disposable {
    * `prefill` overrides the text seeded into the chat input (the second
    * argument of `claude-vscode.editor.open` lands in the input box — see
    * docs/claude-code-internals.md, F6). Default: the `[repo/sub]` prefix.
-   * Used by the board's "New Spec" button to seed `/spec-prepare <n> `.
+   * Used by the thinking space's "New Spec" button to seed `/spec-prepare <n> `.
    */
   async openHere(uri?: vscode.Uri, prefill?: string): Promise<void> {
     if (!uri) {

@@ -43,10 +43,17 @@ const runTracked =
 
 interface FakeFile {
   status?: string;
-  depends_on?: string[];
   files?: string[];
   satisfies?: number[];
-  work_units?: { footprint: string[]; execution: string; note?: string }[];
+  work_units?: {
+    footprint: string[];
+    execution: string;
+    note?: string;
+    /** Files a sibling unit produces that this one reads — the SOLE authored edge language
+     *  (SP-5/1): `buildUnitDag` resolves it (global footprint map) into a real producer edge.
+     *  The retired `depends_on` forms are no longer accepted. */
+    consumes?: string[];
+  }[];
 }
 type FakeFiles = Record<string, FakeFile>;
 
@@ -100,17 +107,17 @@ function makeDeps(
     defaultVerifs[String(n)] = { run: `verify-AC-${n}` };
   const specVerifs = opts.verifs === undefined ? defaultVerifs : opts.verifs;
 
-  // A real (throwaway) board dir so the closing run's `writeDeliverySummary` can land
+  // A real (throwaway) thinking space dir so the closing run's `writeDeliverySummary` can land
   // `teps/TEP-1/SP-1/DELIVERY.md` — the finalization watchdog (SP-th4wqc_SL-2) treats a missing
   // report as a wedge, so the integration fake must let the report write.
-  const boardDir = fs.mkdtempSync(path.join(os.tmpdir(), "tk-orch-test-"));
-  fs.mkdirSync(path.join(boardDir, path.dirname(SPEC_DOC)), {
+  const thinkingSpaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "tk-orch-test-"));
+  fs.mkdirSync(path.join(thinkingSpaceDir, path.dirname(SPEC_DOC)), {
     recursive: true,
   });
 
   const deps: OrchestratorDeps = {
     store: {
-      thinkubeDir: boardDir,
+      thinkubeDir: thinkingSpaceDir,
       listSlices: async () =>
         Object.keys(files).filter((k) => /\/SL-\d+\.md$/.test(k)),
       getFile: async (rel: string) =>
@@ -195,7 +202,6 @@ test("dispatchSpec: a legacy (unit-less) ready slice runs, lands, the gate advan
     "teps/TEP-1/SP-1/SL-1.md": { status: "done" },
     "teps/TEP-1/SP-1/SL-2.md": {
       status: "ready",
-      depends_on: ["TEP-1_SP-1_SL-1"],
       files: ["src/a.ts"],
     },
   });
@@ -262,11 +268,18 @@ test("dispatchSpec: units pool ACROSS slices — both slices' units co-schedule,
 test("dispatchSpec: a dependent slice waits until its dep is Done", async () => {
   const order: string[] = [];
   const { deps } = makeDeps({
+    // SL-1 produces src/a.ts; SL-2 CONSUMES it → a grounded producer edge SL-2#eu-0 → SL-1
+    // (the retired `depends_on` re-expressed as `consumes`, SP-5/1).
     "teps/TEP-1/SP-1/SL-1.md": { status: "ready", files: ["src/a.ts"] },
     "teps/TEP-1/SP-1/SL-2.md": {
       status: "ready",
-      depends_on: ["TEP-1_SP-1_SL-1"],
-      files: ["src/b.ts"],
+      work_units: [
+        {
+          footprint: ["src/b.ts"],
+          execution: "serial",
+          consumes: ["src/a.ts"],
+        },
+      ],
     },
   });
   const realAdvance = deps.advance!;
@@ -393,15 +406,19 @@ test("dispatchSpec: all-green per-AC plan → satisfied ordinals checked, all sl
 
 test("dispatchSpec: a malformed DAG (cycle) is rejected — nothing dispatched", async () => {
   const { deps, calls } = makeDeps({
+    // The cycle is now expressed through `consumes`: each unit reads the file the other
+    // produces, so the resolved producer edges form SL-1#eu-0 ↔ SL-2#eu-0 (SP-5/1).
     "teps/TEP-1/SP-1/SL-1.md": {
       status: "ready",
-      depends_on: ["TEP-1_SP-1_SL-2"],
-      files: ["a.ts"],
+      work_units: [
+        { footprint: ["a.ts"], execution: "serial", consumes: ["b.ts"] },
+      ],
     },
     "teps/TEP-1/SP-1/SL-2.md": {
       status: "ready",
-      depends_on: ["TEP-1_SP-1_SL-1"],
-      files: ["b.ts"],
+      work_units: [
+        { footprint: ["b.ts"], execution: "serial", consumes: ["a.ts"] },
+      ],
     },
   });
   const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
@@ -413,10 +430,18 @@ test("dispatchSpec: a malformed DAG (cycle) is rejected — nothing dispatched",
 
 test("dispatchSpec: nothing ready → no worktree, no commit", async () => {
   const { deps, calls } = makeDeps({
-    "teps/TEP-1/SP-1/SL-1.md": { status: "doing" },
+    // SL-1 is in-flight (`doing`) and produces src/a.ts; SL-2 CONSUMES it, so SL-2#eu-0's
+    // producer edge lands on the not-yet-done SL-1 and SL-2 stays un-dispatchable (SP-5/1).
+    "teps/TEP-1/SP-1/SL-1.md": { status: "doing", files: ["src/a.ts"] },
     "teps/TEP-1/SP-1/SL-2.md": {
       status: "ready",
-      depends_on: ["TEP-1_SP-1_SL-1"],
+      work_units: [
+        {
+          footprint: ["src/b.ts"],
+          execution: "serial",
+          consumes: ["src/a.ts"],
+        },
+      ],
     },
   });
   const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);

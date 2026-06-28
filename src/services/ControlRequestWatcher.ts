@@ -5,7 +5,7 @@
  * The standalone (Claude-Code-spawned) Kanban MCP server can't open a VS Code
  * session itself, so `start_spec_worktree` writes a one-shot JSON request into
  * the shared control dir. This watcher — the same `vscode.FileSystemWatcher`
- * pattern the board uses for MCP-side slice writes — reacts to that file, runs
+ * pattern the thinking space uses for MCP-side slice writes — reacts to that file, runs
  * the matching command (`thinkube.specs.startWorktree`, the button's machinery),
  * and deletes the request (fire-once). Always-on: deliberately NOT gated on the
  * agent-teams feature, since opening a worktree session has nothing to do with

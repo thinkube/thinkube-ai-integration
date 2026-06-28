@@ -1,6 +1,6 @@
 /**
  * Unit tests for Project discovery from the sidecar tree (SP-tgvkmt_SL-1).
- * fs via a tmp board root; no vscode.
+ * fs via a tmp thinking space root; no vscode.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -64,6 +64,6 @@ test("malformed manifest falls back to all defaults (never throws)", () => {
   assert.equal(p.tag, "bad");
 });
 
-test("a missing board root yields an empty list", () => {
+test("a missing thinking space root yields an empty list", () => {
   assert.deepEqual(discoverProjects("/no/such/root/xyz"), []);
 });

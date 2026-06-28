@@ -10,7 +10,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 export interface SelectedRepo {
-  /** Absolute repo root (the code repo, not the sidecar board dir). */
+  /** Absolute repo root (the code repo, not the sidecar thinking space dir). */
   path: string;
   /** Display name. */
   name: string;

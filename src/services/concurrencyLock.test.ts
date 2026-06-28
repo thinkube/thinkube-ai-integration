@@ -1,10 +1,10 @@
 /**
- * Unit tests for the per-handle board-write lock (SP-th4wqe_SL-2 / TEP-th3i18, #20).
+ * Unit tests for the per-handle thinking space-write lock (SP-th4wqe_SL-2 / TEP-th3i18, #20).
  * node:test + node:assert; run via `npm test`.
  *
  * Background. The kanban MCP server's mutating tools (`move_slice`, `accept_spec`) each do a
- * read-modify-write of a board's JSON: read the current state, apply a mutation, write it back.
- * Two such ops interleaving on the SAME board (handle) race that RMW — the second reads the
+ * read-modify-write of a thinking space's JSON: read the current state, apply a mutation, write it back.
+ * Two such ops interleaving on the SAME thinking space (handle) race that RMW — the second reads the
  * same stale snapshot the first did and its write clobbers the first's ("last write wins"),
  * silently dropping a move or an accept. `ConcurrencyLock` (owned by the implementation unit)
  * serializes writes *per handle* so concurrent callers either queue behind the in-flight write
@@ -52,7 +52,7 @@ function flush(): Promise<void> {
 }
 
 /**
- * A board-write modelled as a read-modify-write over `cell`. It snapshots the current op list
+ * A thinking space-write modelled as a read-modify-write over `cell`. It snapshots the current op list
  * (the "read"), optionally `await`s `park` (suspended mid-write, exactly where the real clobber
  * window is), then writes `snapshot + op` back. Run two of these concurrently on one cell and,
  * unserialized, the late writer clobbers the early one.
@@ -73,7 +73,7 @@ function rmwWrite(
 
 test("runExclusive: a parked write on a handle queues a second op on the same handle (no clobber)", async () => {
   const lock = new ConcurrencyLock();
-  const handle = "board-A";
+  const handle = "thinking space-A";
   const cell = { ops: [] as string[] };
   const gate = deferred();
 
@@ -140,7 +140,7 @@ test("contrast: the SAME interleave without the lock loses an op to last-write-w
 
 test("tryAcquire: compare-and-set refuses a second op on a held handle, then succeeds once freed", async () => {
   const lock = new ConcurrencyLock();
-  const handle = "board-A";
+  const handle = "thinking space-A";
 
   const r1: LockRelease | null = lock.tryAcquire(handle);
   assert.ok(r1, "first acquire on a free handle succeeds");
@@ -189,7 +189,7 @@ test("per-handle independence: a parked write on handle A does not block handle 
 
 test("runExclusive: a rejecting fn still frees the handle (no deadlock) and propagates the error", async () => {
   const lock = new ConcurrencyLock();
-  const handle = "board-A";
+  const handle = "thinking space-A";
 
   await assert.rejects(
     lock.runExclusive(handle, async () => {

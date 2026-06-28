@@ -1,6 +1,6 @@
 /**
  * Unit tests for the Product/Project manifest writers (SP-tgvl81_SL-3).
- * fs via a tmp board root; no vscode. Round-trips through the discovery cores.
+ * fs via a tmp thinking space root; no vscode. Round-trips through the discovery cores.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -27,7 +27,7 @@ test("slugifyId lowercases + dash-joins", () => {
 
 test("writeProductManifest creates a product.yaml discoverable by discoverProducts", async () => {
   const root = tmpRoot();
-  // a board namespace so the product has a member and surfaces.
+  // a thinking space namespace so the product has a member and surfaces.
   fs.mkdirSync(path.join(root, "thinkube", "core", "x", "specs"), {
     recursive: true,
   });

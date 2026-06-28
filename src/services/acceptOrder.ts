@@ -2,7 +2,7 @@
  * The merge → stamp → retire ordering of an accept-land, extracted into one pure,
  * injectable place (SP-th4wqe / TEP-th3i18, #10-residual).
  *
- * Before this, `boards.ts` (`onAcceptSpec`) and `orchestrate.ts` (`thinkube.accept`)
+ * Before this, `thinkingSpaces.ts` (`onAcceptSpec`) and `orchestrate.ts` (`thinkube.accept`)
  * each inlined the same three-step dance — merge the Spec's PR, stamp `accepted:`
  * on the doc, then retire the worktree — and each had to re-derive the subtle
  * ordering/idempotence rules:

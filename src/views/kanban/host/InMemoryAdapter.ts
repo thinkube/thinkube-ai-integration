@@ -11,7 +11,7 @@
  * (drag-and-drop reorders persist within the session). A page reload
  * snaps back to the seed, which is what we want for a smoke fixture.
  */
-import { Board, BoardColumn } from "./types";
+import { ThinkingSpace, ThinkingSpaceColumn } from "./types";
 import { StorageAdapter } from "./StorageAdapter";
 
 const COLUMN_DEFS: ReadonlyArray<{ id: string; title: string }> = [
@@ -31,7 +31,7 @@ interface SeedTask {
   description: string;
 }
 
-// Three demo epics across the board. Epic numbers are stable so the
+// Three demo epics across the thinking space. Epic numbers are stable so the
 // palette mapping (see webview's paletteForEpic) returns the same color
 // across reloads.
 const SEED_TASKS: ReadonlyArray<SeedTask> = [
@@ -109,7 +109,7 @@ function paletteForEpic(epicNumber: number): string {
   return PALETTE_SLUGS[Math.floor(epicNumber) % PALETTE_SLUGS.length];
 }
 
-function buildSeed(): Board {
+function buildSeed(): ThinkingSpace {
   const tasks: Record<string, import("./types").TaskCard> = {};
   const tasksByColumn = new Map<string, string[]>();
   for (const def of COLUMN_DEFS) tasksByColumn.set(def.id, []);
@@ -125,7 +125,7 @@ function buildSeed(): Board {
     tasksByColumn.get(t.columnId)?.push(t.id);
   }
 
-  const columns: BoardColumn[] = COLUMN_DEFS.map((def) => ({
+  const columns: ThinkingSpaceColumn[] = COLUMN_DEFS.map((def) => ({
     id: def.id,
     title: def.title,
     tasksIds: tasksByColumn.get(def.id) ?? [],
@@ -136,15 +136,15 @@ function buildSeed(): Board {
 
 export class InMemoryAdapter implements StorageAdapter {
   readonly scope = "In-memory demo";
-  private board: Board = buildSeed();
+  private thinkingSpace: ThinkingSpace = buildSeed();
 
-  async load(): Promise<Board> {
+  async load(): Promise<ThinkingSpace> {
     // Return a deep-ish clone so the webview can mutate without
     // aliasing back into our cache.
-    return JSON.parse(JSON.stringify(this.board)) as Board;
+    return JSON.parse(JSON.stringify(this.thinkingSpace)) as ThinkingSpace;
   }
 
-  async save(board: Board): Promise<void> {
-    this.board = board;
+  async save(thinkingSpace: ThinkingSpace): Promise<void> {
+    this.thinkingSpace = thinkingSpace;
   }
 }

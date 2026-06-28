@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Harness for SP-8_SL-4 — graceful "board repo not available".
+ * Harness for SP-8_SL-4 — graceful "thinking space repo not available".
  *
- * Boots the real server with `thinkube.boards.root` pointing at a MISSING path
+ * Boots the real server with `thinkube.thinkingSpace.root` pointing at a MISSING path
  * and asserts a tool call fails with a CLEAR error (not silent emptiness).
  *
- * Build first: `npm run compile`. Run: `node scripts/board-unavailable-harness.mjs`.
+ * Build first: `npm run compile`. Run: `node scripts/thinking-space-unavailable-harness.mjs`.
  */
 import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
@@ -21,7 +21,7 @@ const SERVER = path.join(
   "kanbanMcpServer.js",
 );
 
-const tmp = mkdtempSync(path.join(tmpdir(), "board-unavail-"));
+const tmp = mkdtempSync(path.join(tmpdir(), "thinking-space-unavail-"));
 const wsFolder = path.join(tmp, "ws");
 const repo = path.join(wsFolder, "extensions", "foo");
 mkdirSync(path.join(repo, ".git"), { recursive: true });
@@ -33,7 +33,7 @@ const child = spawn(process.execPath, [SERVER], {
     THINKUBE_ALLOW_AI_WRITES: "true",
     THINKUBE_ROOTS: wsFolder,
     THINKUBE_FOLDERS: JSON.stringify([{ name: "Platform", path: wsFolder }]),
-    THINKUBE_BOARD_ROOT: path.join(tmp, "does-not-exist"), // configured, absent
+    THINKUBE_THINKING_SPACE_ROOT: path.join(tmp, "does-not-exist"), // configured, absent
   },
   stdio: ["pipe", "pipe", "inherit"],
 });
@@ -82,7 +82,7 @@ try {
     JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) +
       "\n",
   );
-  const r = await rpc("tools/call", { name: "list_board", arguments: {} });
+  const r = await rpc("tools/call", { name: "list_thinking_space", arguments: {} });
   const result = r.result ?? {};
   const text = (result.content?.[0]?.text ?? "").toString();
   pass = !!result.isError && /not available/i.test(text);
@@ -91,9 +91,9 @@ try {
   detail = e.message;
 }
 
-console.log("\nharness — SP-8_SL-4 board-root-unavailable\n");
+console.log("\nharness — SP-8_SL-4 thinking-space-root-unavailable\n");
 console.log(
-  `${pass ? "  ✅" : "  ❌"} a tool call fails CLEARLY when the board root is missing (not silent)`,
+  `${pass ? "  ✅" : "  ❌"} a tool call fails CLEARLY when the thinking space root is missing (not silent)`,
 );
 console.log(`        ${detail}`);
 child.kill();

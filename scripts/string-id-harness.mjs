@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Harness for SP-7_SL-1 — the board handles opaque string Spec ids.
+ * Harness for SP-7_SL-1 — the thinking space handles opaque string Spec ids.
  *
- * Boots the real server against a board holding BOTH a base36-style string-id
+ * Boots the real server against a thinking space holding BOTH a base36-style string-id
  * Spec (`SP-tw7n0g`) and a legacy integer Spec (`SP-1`), and proves the server
  * reads, addresses, moves, and creates against string ids while the integer
  * Spec still works (AC #4, #5, #6).
@@ -28,23 +28,23 @@ const SPEC = (title) =>
 const SLICE = (uid, parent) =>
   `---\nuid: ${uid}\nparent: SP-${parent}\nstatus: ready\n---\n\n# ${uid}\n\nSeed slice.\n`;
 
-const board = mkdtempSync(path.join(tmpdir(), "string-id-"));
+const thinkingSpace = mkdtempSync(path.join(tmpdir(), "string-id-"));
 for (const [id, uid] of [
   ["tw7n0g", "string-seed"],
   ["1", "legacy-seed"],
 ]) {
-  const d = path.join(board, ".thinkube", "specs", `SP-${id}`);
+  const d = path.join(thinkingSpace, ".thinkube", "specs", `SP-${id}`);
   mkdirSync(d, { recursive: true });
   writeFileSync(path.join(d, "spec.md"), SPEC(`Spec ${id}`));
   writeFileSync(path.join(d, "SL-1.md"), SLICE(uid, id));
 }
 
 const child = spawn(process.execPath, [SERVER], {
-  cwd: board,
+  cwd: thinkingSpace,
   env: {
     ...process.env,
     THINKUBE_ALLOW_AI_WRITES: "true",
-    THINKUBE_ROOTS: board,
+    THINKUBE_ROOTS: thinkingSpace,
   },
   stdio: ["pipe", "pipe", "inherit"],
 });
@@ -108,7 +108,7 @@ try {
 
   console.log("\nharness — SP-7_SL-1 string Spec ids\n");
 
-  const lb = await callTool("list_board", {});
+  const lb = await callTool("list_thinking_space", {});
   let ready = [];
   try {
     ready =
@@ -119,7 +119,7 @@ try {
     /* empty */
   }
   record(
-    "list_board reads BOTH a string-id Spec and a legacy integer Spec",
+    "list_thinking_space reads BOTH a string-id Spec and a legacy integer Spec",
     ready.includes("SP-tw7n0g_SL-1") && ready.includes("SP-1_SL-1"),
     `ready=[${ready.join(", ")}]`,
   );
@@ -149,11 +149,11 @@ try {
   const passed = checks.filter((c) => c.pass).length;
   console.log(`\n${passed}/${checks.length} behaviours held\n`);
   child.kill();
-  rmSync(board, { recursive: true, force: true });
+  rmSync(thinkingSpace, { recursive: true, force: true });
   process.exit(passed === checks.length ? 0 : 1);
 } catch (err) {
   console.error(`harness error: ${err.message}`);
   child.kill();
-  rmSync(board, { recursive: true, force: true });
+  rmSync(thinkingSpace, { recursive: true, force: true });
   process.exit(2);
 }

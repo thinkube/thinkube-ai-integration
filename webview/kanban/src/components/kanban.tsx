@@ -1,24 +1,25 @@
 /**
- * Board shell — vendored from the upstream (DragDropContext + header + column
+ * Kanban shell — vendored from the upstream (DragDropContext + header + column
  * list), minus the drawer / theme switcher / fork-me / toasts. Columns are the
- * fixed methodology workflow, so only tasks drag.
+ * fixed methodology workflow, so only tasks drag. This is the kanban view of a
+ * thinking space; the header toggles it against the control-center graph view.
  */
 import { useState } from "react";
 import { DragDropContext, DropResult } from "@hello-pangea/dnd";
-import styles from "./board.module.scss";
+import styles from "./kanban.module.scss";
 import { ColumnList } from "./column-list";
 import { GraphView } from "./graph";
 import { useGlobalState } from "../utils/context";
 import { handleDragEnd } from "../utils/drag";
 import { ModeFlag } from "../types";
 
-export function Board({ mode }: { mode: ModeFlag }): JSX.Element {
+export function KanbanView({ mode }: { mode: ModeFlag }): JSX.Element {
   const { state, setState } = useGlobalState();
-  const [view, setView] = useState<"board" | "graph">("board");
+  const [view, setView] = useState<"kanban" | "graph">("kanban");
   const onDragEnd = (result: DropResult) =>
     handleDragEnd(result, state, setState);
   const inner = (
-    <div className={styles.board}>
+    <div className={styles.kanban}>
       <header className={styles.header}>
         <div>
           <h1 style={{ margin: 0 }}>
@@ -40,11 +41,11 @@ export function Board({ mode }: { mode: ModeFlag }): JSX.Element {
         <span className="grow" />
         <button
           type="button"
-          onClick={() => setView(view === "board" ? "graph" : "board")}
+          onClick={() => setView(view === "kanban" ? "graph" : "kanban")}
           style={{ marginRight: 12, cursor: "pointer" }}
-          title="Toggle the board / control-center graph"
+          title="Toggle the kanban / control-center graph"
         >
-          {view === "board" ? "Graph" : "Board"}
+          {view === "kanban" ? "Graph" : "Kanban"}
         </button>
         <ModeBadge mode={mode} />
       </header>
@@ -57,7 +58,7 @@ export function Board({ mode }: { mode: ModeFlag }): JSX.Element {
       </main>
     </div>
   );
-  // The graph is static; only the board's columns need the drag context.
+  // The graph is static; only the kanban columns need the drag context.
   return view === "graph" ? (
     inner
   ) : (
@@ -68,7 +69,7 @@ export function Board({ mode }: { mode: ModeFlag }): JSX.Element {
 function ModeBadge({ mode }: { mode: ModeFlag }): JSX.Element {
   const tip =
     mode === "navigator"
-      ? "Navigator — AI reads & proposes, can't write the board."
+      ? "Navigator — AI reads & proposes, can't write the thinking space."
       : mode === "driver"
         ? "Driver — AI is driving; both can write."
         : "Both — either party can write (default).";

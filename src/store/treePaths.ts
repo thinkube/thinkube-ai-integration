@@ -1,27 +1,27 @@
 /**
- * treePaths — pure, vscode-free builders for the nested board tree
+ * treePaths — pure, vscode-free builders for the nested thinking space tree
  * (SP-th8m5b / TEP-th8lzj).
  *
  * The org-scoped sequential-id layout stores every artifact as a tree rooted at
- * a board, namespaced by a per-maintainer organization segment:
+ * a thinking space, namespaced by a per-maintainer organization segment:
  *
  *   <org>/teps/TEP-n/tep.md            the TEP document
  *   <org>/teps/TEP-n/SP-m/spec.md      a spec under that TEP
  *   <org>/teps/TEP-n/SP-m/SL-k.md      a slice under that spec
  *
- * These builders return the board-RELATIVE path (the `<org>/teps/…` part); the
- * caller (`ThinkubeStore`, via `boardDirForNamespace`) joins it onto the board
- * root to get `<board>/<org>/teps/…`. The path logic is kept out of
+ * These builders return the thinking space-RELATIVE path (the `<org>/teps/…` part); the
+ * caller (`ThinkubeStore`, via `thinkingSpaceDirForNamespace`) joins it onto the thinking space
+ * root to get `<thinking space>/<org>/teps/…`. The path logic is kept out of
  * `ThinkubeStore.ts` (which imports `vscode`) so it runs under `node --test`,
  * and the `<org>` segment is an argument — the builders don't know or care
  * where the org comes from (its resolver lives beside `containerSegment`).
  *
- * Pure (string-only, no `vscode`/`fs`): board-relative keys are always
+ * Pure (string-only, no `vscode`/`fs`): thinking space-relative keys are always
  * forward-slashed so they stay stable across platforms (modeled on
- * `boardDirForNamespace`).
+ * `thinkingSpaceDirForNamespace`).
  */
 
-/** `<org>/teps` — the TEP root for an org under a board. */
+/** `<org>/teps` — the TEP root for an org under a thinking space. */
 export function tepsRoot(org: string): string {
   return `${org}/teps`;
 }
@@ -59,7 +59,7 @@ export function slicePath(
 /**
  * The canonical tep-qualified slice handle, e.g. `TEP-1_SP-1_SL-1`. With bare
  * scope-local ids the `SP-m` number alone repeats across TEPs, so the handle
- * leads with the `TEP-n` segment to stay globally unique within a board — that
+ * leads with the `TEP-n` segment to stay globally unique within a thinking space — that
  * uniqueness is what lets cross-spec `depends_on`, git branches, and worktrees
  * key off the handle without collisions.
  */

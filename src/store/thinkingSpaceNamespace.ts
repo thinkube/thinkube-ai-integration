@@ -1,8 +1,8 @@
 /**
- * boardNamespace — map a Thinking Space (a repo under a workspace folder) to
- * its namespace under the central board root, and back (SP-8 / ADR-0008).
+ * thinkingSpaceNamespace — map a Thinking Space (a repo under a workspace folder) to
+ * its namespace under the central thinking space root, and back (SP-8 / ADR-0008).
  *
- * A board namespace is `<container>/<rel>`:
+ * A thinking space namespace is `<container>/<rel>`:
  *   - **container**: the workspace folder the repo lives under, filesystem-safe
  *     (e.g. "Apps", "User-Templates", "Platform"). It carries semantic meaning
  *     (what kind of Thinking Space, and implicitly which host) and is
@@ -40,8 +40,8 @@ export function containerSegment(folderName: string): string {
 
 /**
  * The per-maintainer **organization segment** (SP-th8m5b / TEP-th8lzj) — the
- * directory that namespaces the sequential ids (`<board>/<org>/teps/TEP-n/…`) so
- * concurrent maintainers on one board never collide. It is DERIVED from git
+ * directory that namespaces the sequential ids (`<thinking space>/<org>/teps/TEP-n/…`) so
+ * concurrent maintainers on one thinking space never collide. It is DERIVED from git
  * `user.name`, sanitized into a filesystem-safe segment with the same
  * `containerSegment` convention (single source of sanitization).
  *
@@ -134,12 +134,12 @@ export function namespaceForRepo(
   return rel === "" ? container : `${container}/${rel}`;
 }
 
-/** Absolute board dir for a namespace under the board root. */
-export function boardDirForNamespace(
-  boardRoot: string,
+/** Absolute thinking space dir for a namespace under the thinking space root. */
+export function thinkingSpaceDirForNamespace(
+  thinkingSpaceRoot: string,
   namespace: string,
 ): string {
-  return path.join(boardRoot, ...namespace.split("/"));
+  return path.join(thinkingSpaceRoot, ...namespace.split("/"));
 }
 
 /**

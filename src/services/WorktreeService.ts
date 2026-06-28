@@ -166,19 +166,19 @@ export function planWorktree(
   return { path: path.join(root, specWtName(specNumber)), reuse: false };
 }
 
-/** The MCP server key whose env carries the board location for Claude Code. */
+/** The MCP server key whose env carries the thinking space location for Claude Code. */
 const KANBAN_SERVER = "thinkube-kanban";
 
 /**
- * Inject `THINKUBE_BOARD_ROOT` into the kanban server's env in a parsed
+ * Inject `THINKUBE_THINKING_SPACE_ROOT` into the kanban server's env in a parsed
  * `.mcp.json` (SP-tgpwbm AC7), so a freshly-created worktree's Claude-Code-spawned
- * kanban MCP finds the central sidecar board. Pure: takes the parsed config,
+ * kanban MCP finds the central sidecar thinking space. Pure: takes the parsed config,
  * returns a new config with the value set (other env preserved). A no-op when
  * the kanban server isn't present. The value is machine-specific and stays an
  * uncommitted local edit — never committed (like THINKUBE_FOLDERS). */
-export function mcpWithBoardRoot(
+export function mcpWithThinkingSpaceRoot(
   config: unknown,
-  boardRoot: string,
+  thinkingSpaceRoot: string,
 ): Record<string, unknown> {
   const cfg =
     config && typeof config === "object" ? { ...(config as object) } : {};
@@ -193,7 +193,7 @@ export function mcpWithBoardRoot(
     const s = server as { env?: Record<string, unknown>; [k: string]: unknown };
     nextServers[KANBAN_SERVER] = {
       ...s,
-      env: { ...(s.env ?? {}), THINKUBE_BOARD_ROOT: boardRoot },
+      env: { ...(s.env ?? {}), THINKUBE_THINKING_SPACE_ROOT: thinkingSpaceRoot },
     };
   }
   (cfg as { mcpServers?: unknown }).mcpServers = nextServers;
@@ -202,7 +202,7 @@ export function mcpWithBoardRoot(
 
 /**
  * Retire-safe iff the worktree is clean except for its machine-local `.mcp.json`
- * (the per-worktree board-env injection, SP-tgpwbm SL-7) — never committed, so it
+ * (the per-worktree thinking space-env injection, SP-tgpwbm SL-7) — never committed, so it
  * must not block retirement. Any other porcelain entry → not retirable. Pure.
  * Input is `git status --porcelain` text (`XY <path>` per line).
  */
@@ -343,14 +343,14 @@ export class WorktreeService {
   /**
    * Create (or reuse) the worktree for a Spec on branch `spec/SP-{n}`, rooted
    * under `baseDir` (default: a sibling `<repo>-worktrees/` dir, kept outside
-   * the repo tree so board discovery doesn't pick it up as a nested board).
+   * the repo tree so thinking space discovery doesn't pick it up as a nested thinking space).
    * Returns the worktree's absolute path.
    */
   async create(
     canonicalRepo: string,
     specNumber: string,
     baseDir?: string,
-    boardRoot?: string,
+    thinkingSpaceRoot?: string,
   ): Promise<string> {
     const branch = specBranchName(specNumber);
     // Reuse an existing worktree for this Spec rather than failing on "already
@@ -387,9 +387,9 @@ export class WorktreeService {
       }
     }
 
-    // Board-connect the worktree: inject THINKUBE_BOARD_ROOT into its .mcp.json so
-    // the Claude-Code-spawned kanban MCP finds the central sidecar board (AC7).
-    if (boardRoot) await this.injectBoardRoot(worktreePath, boardRoot);
+    // Thinking Space-connect the worktree: inject THINKUBE_THINKING_SPACE_ROOT into its .mcp.json so
+    // the Claude-Code-spawned kanban MCP finds the central sidecar thinking space (AC7).
+    if (thinkingSpaceRoot) await this.injectThinkingSpaceRoot(worktreePath, thinkingSpaceRoot);
     // Provision the fresh worktree by running the repo's declared "Worktree setup"
     // recipe (repo-conventions) via runBounded, so a fresh checkout — which has no
     // gitignored deps — can run its tooling. Language-agnostic: this replaces the old
@@ -400,22 +400,22 @@ export class WorktreeService {
   }
 
   /**
-   * Set `THINKUBE_BOARD_ROOT` in the worktree's `.mcp.json` kanban-server env.
+   * Set `THINKUBE_THINKING_SPACE_ROOT` in the worktree's `.mcp.json` kanban-server env.
    * Best-effort and machine-local — the edit stays uncommitted (never committed,
    * like THINKUBE_FOLDERS). A missing `.mcp.json` is left untouched.
    */
-  private async injectBoardRoot(
+  private async injectThinkingSpaceRoot(
     worktreePath: string,
-    boardRoot: string,
+    thinkingSpaceRoot: string,
   ): Promise<void> {
     const mcpPath = path.join(worktreePath, ".mcp.json");
     let parsed: unknown;
     try {
       parsed = JSON.parse(await fs.readFile(mcpPath, "utf8"));
     } catch {
-      return; // no .mcp.json to board-connect
+      return; // no .mcp.json to thinking space-connect
     }
-    const next = mcpWithBoardRoot(parsed, boardRoot);
+    const next = mcpWithThinkingSpaceRoot(parsed, thinkingSpaceRoot);
     await fs.writeFile(mcpPath, JSON.stringify(next, null, 2) + "\n", "utf8");
   }
 

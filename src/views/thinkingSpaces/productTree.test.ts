@@ -71,10 +71,10 @@ test("specsImplementing: umbrella TEP → cross-repo set; repo TEP → same-repo
   const PROJ = "Platform/projects/rebrand";
   const REPO = "Platform/core/thinkube";
   const specs = [
-    { board: "thinkube", namespace: REPO, handle: "SP-a", implements: `${PROJ}:TEP-reb` },
-    { board: "control", namespace: "Platform/core/control", handle: "SP-b", implements: `${PROJ}:TEP-reb` },
-    { board: "thinkube", namespace: REPO, handle: "SP-c", implements: "TEP-local" }, // bare, repo-local
-    { board: "control", namespace: "Platform/core/control", handle: "SP-d", implements: "TEP-other" },
+    { thinkingSpace: "thinkube", namespace: REPO, handle: "SP-a", implements: `${PROJ}:TEP-reb` },
+    { thinkingSpace: "control", namespace: "Platform/core/control", handle: "SP-b", implements: `${PROJ}:TEP-reb` },
+    { thinkingSpace: "thinkube", namespace: REPO, handle: "SP-c", implements: "TEP-local" }, // bare, repo-local
+    { thinkingSpace: "control", namespace: "Platform/core/control", handle: "SP-d", implements: "TEP-other" },
   ];
   // umbrella TEP → the two qualified implementers across repos
   assert.deepEqual(
@@ -91,10 +91,10 @@ test("specsImplementing: umbrella TEP → cross-repo set; repo TEP → same-repo
 test("projectTepGroups groups implementing specs under each umbrella TEP (SP-tgvpbm)", () => {
   const PROJ = "Platform/projects/rebrand";
   const specs = [
-    { board: "thinkube", namespace: "Platform/core/thinkube", handle: "SP-a", implements: `${PROJ}:TEP-reb` },
-    { board: "control", namespace: "Platform/core/control", handle: "SP-b", implements: `${PROJ}:TEP-reb` },
-    { board: "control", namespace: "Platform/core/control", handle: "SP-c", implements: "TEP-other" }, // non-member
-    { board: "thinkube", namespace: "Platform/core/thinkube", handle: "SP-d", implements: `${PROJ}:TEP-two` },
+    { thinkingSpace: "thinkube", namespace: "Platform/core/thinkube", handle: "SP-a", implements: `${PROJ}:TEP-reb` },
+    { thinkingSpace: "control", namespace: "Platform/core/control", handle: "SP-b", implements: `${PROJ}:TEP-reb` },
+    { thinkingSpace: "control", namespace: "Platform/core/control", handle: "SP-c", implements: "TEP-other" }, // non-member
+    { thinkingSpace: "thinkube", namespace: "Platform/core/thinkube", handle: "SP-d", implements: `${PROJ}:TEP-two` },
   ];
   const groups = projectTepGroups(PROJ, ["reb", "two"], specs);
   assert.deepEqual(
@@ -109,16 +109,16 @@ test("projectTepGroups groups implementing specs under each umbrella TEP (SP-tgv
 
 test("projectMembers keeps only items carrying the project tag (SL-2)", () => {
   const items = [
-    { board: "A", handle: "SP-1", kind: "spec", tags: ["rebrand", "x"] },
-    { board: "B", handle: "SP-2_SL-1", kind: "slice", tags: ["rebrand"] },
-    { board: "A", handle: "TEP-z", kind: "tep", tags: ["other"] },
-    { board: "B", handle: "SP-9", kind: "spec", tags: [] },
+    { thinkingSpace: "A", handle: "SP-1", kind: "spec", tags: ["rebrand", "x"] },
+    { thinkingSpace: "B", handle: "SP-2_SL-1", kind: "slice", tags: ["rebrand"] },
+    { thinkingSpace: "A", handle: "TEP-z", kind: "tep", tags: ["other"] },
+    { thinkingSpace: "B", handle: "SP-9", kind: "spec", tags: [] },
   ];
   const members = projectMembers("rebrand", items);
   assert.deepEqual(
     members.map((m) => m.handle),
     ["SP-1", "SP-2_SL-1"],
   );
-  // descriptor carries board + kind, drops tags
-  assert.deepEqual(members[0], { board: "A", handle: "SP-1", kind: "spec" });
+  // descriptor carries thinking space + kind, drops tags
+  assert.deepEqual(members[0], { thinkingSpace: "A", handle: "SP-1", kind: "spec" });
 });

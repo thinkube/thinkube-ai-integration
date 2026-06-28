@@ -5,11 +5,11 @@
  * A Spec normally runs on one branch `spec/SP-<id>` and produces exactly one PR;
  * when the human accepts the Spec (gate green + `accept_spec` stamp), that one PR
  * merges and the Spec is done. The merge keeps the slice commits — each slice is
- * a commit on the branch, and that per-slice trail is the board's history (we use
+ * a commit on the branch, and that per-slice trail is the thinking space's history (we use
  * `--merge`, not `--squash`), and deletes the branch so the Space's branch list
  * stays one-branch-per-active-Spec.
  *
- * But the PR-ceremony rule lets docs / TEPs / board moves / trivial fixes go
+ * But the PR-ceremony rule lets docs / TEPs / thinking space moves / trivial fixes go
  * straight to `main`. Those Specs have no branch (or one with nothing ahead of
  * `main`), so acceptance must NOT depend on a PR existing (TEP-tg8dsa).
  *

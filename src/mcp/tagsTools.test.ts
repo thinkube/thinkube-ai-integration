@@ -1,7 +1,7 @@
 /**
- * Handler-level tests for tags through the board tools (SP-tgvil2_SL-2).
+ * Handler-level tests for tags through the thinking space tools (SP-tgvil2_SL-2).
  *
- * These exercise the REAL MCP handlers (`createSlice`/`updateSlice`/`listBoard`/
+ * These exercise the REAL MCP handlers (`createSlice`/`updateSlice`/`listThinkingSpace`/
  * `writeTep`) against a real `ThinkubeStore` on a tmp sidecar — the
  * installVscodeStub pattern: importing the stub FIRST redirects `require('vscode')`
  * so `ThinkubeStore` (and the server module) load outside the extension host.
@@ -20,19 +20,21 @@ import { ThinkubeStore } from "../store/ThinkubeStore";
 import {
   createSlice,
   updateSlice,
-  listBoard,
+  listThinkingSpace,
   writeTep,
-  aggregateTagsAcrossBoards,
+  aggregateTagsAcrossThinkingSpaces,
 } from "./kanbanMcpServer";
 
 /**
- * A tmp board dir seeded with one Spec that has acceptance criteria. The spec id
+ * A tmp thinking space dir seeded with one Spec that has acceptance criteria. The spec id
  * is the org-scoped composite `<tep>/<spec>` (numeric, so the slice handle/path
  * regexes resolve); defaults to `"1/1"`.
  */
 async function seededStore(spec = "1/1"): Promise<ThinkubeStore> {
-  const board = fs.mkdtempSync(path.join(os.tmpdir(), "tk-tags-board-"));
-  const store = new ThinkubeStore(board, board);
+  const thinkingSpace = fs.mkdtempSync(
+    path.join(os.tmpdir(), "tk-tags-thinking space-"),
+  );
+  const store = new ThinkubeStore(thinkingSpace, thinkingSpace);
   await store.writeFile(
     store.pathForSpecDoc(spec),
     { implements: "TEP-x", ac_verifications: { "1": { run: "npm test" } } },
@@ -51,13 +53,13 @@ async function sliceFm(store: ThinkubeStore, handle: string) {
   return parsed?.frontmatter;
 }
 
-/** Find a slice card in a list_board projection. */
+/** Find a slice card in a list_thinking_space projection. */
 function cardFor(
-  board: unknown,
+  thinkingSpace: unknown,
   handle: string,
 ): { tags?: string[] } | undefined {
   const cols = (
-    board as { columns: { cards: { id: string; tags?: string[] }[] }[] }
+    thinkingSpace as { columns: { cards: { id: string; tags?: string[] }[] }[] }
   ).columns;
   for (const col of cols) {
     const hit = col.cards.find((c) => c.id === handle);
@@ -66,7 +68,7 @@ function cardFor(
   return undefined;
 }
 
-test("create_slice persists tags; they appear in get_slice and on the list_board card", async () => {
+test("create_slice persists tags; they appear in get_slice and on the list_thinking_space card", async () => {
   const store = await seededStore();
   const res = (await createSlice(store, {
     spec: "1/1",
@@ -81,8 +83,8 @@ test("create_slice persists tags; they appear in get_slice and on the list_board
     "inference",
   ]);
 
-  // list_board card carries the (effective) tags.
-  const card = cardFor(await listBoard(store), res.slice);
+  // list_thinking_space card carries the (effective) tags.
+  const card = cardFor(await listThinkingSpace(store), res.slice);
   assert.deepEqual(card?.tags, ["security", "inference"]);
 });
 
@@ -107,7 +109,7 @@ test("update_slice replaces tags; omitting them leaves tags unchanged", async ()
   assert.deepEqual((await sliceFm(store, res.slice))?.tags, ["new", "fresh"]);
 });
 
-test("list_board card folds a legacy `theme` into the card tags (back-compat)", async () => {
+test("list_thinking_space card folds a legacy `theme` into the card tags (back-compat)", async () => {
   const store = await seededStore();
   const res = (await createSlice(store, {
     spec: "1/1",
@@ -124,7 +126,7 @@ test("list_board card folds a legacy `theme` into the card tags (back-compat)", 
     parsed!.body,
   );
 
-  const card = cardFor(await listBoard(store), res.slice);
+  const card = cardFor(await listThinkingSpace(store), res.slice);
   assert.deepEqual(card?.tags, ["legacy"]);
 });
 
@@ -140,7 +142,7 @@ test("write_tep persists tags on the TEP frontmatter", async () => {
   assert.deepEqual(parsed?.frontmatter?.tags, ["platform"]);
 });
 
-test("list_tags aggregates tagged items across boards (SL-3, AC3+AC4)", async () => {
+test("list_tags aggregates tagged items across thinkingSpaces (SL-3, AC3+AC4)", async () => {
   const a = await seededStore("1/1");
   const b = await seededStore("2/1");
   await createSlice(a, {
@@ -157,16 +159,19 @@ test("list_tags aggregates tagged items across boards (SL-3, AC3+AC4)", async ()
   });
   await writeTep(a, { tep: "atep", tags: ["security"] });
 
-  const agg = await aggregateTagsAcrossBoards([
-    { boardId: "board-a", store: a },
-    { boardId: "board-b", store: b },
+  const agg = await aggregateTagsAcrossThinkingSpaces([
+    { thinkingSpaceId: "thinking-space-a", store: a },
+    { thinkingSpaceId: "thinking-space-b", store: b },
   ]);
 
   const security = agg.find((t) => t.tag === "security");
   assert.equal(security?.count, 3); // 2 slices + 1 tep
-  // cross-board: items come from both boards
-  const boards = new Set(security?.items.map((i) => i.board));
-  assert.ok(boards.has("board-a") && boards.has("board-b"));
+  // cross-thinking space: items come from both thinkingSpaces
+  const thinkingSpaces = new Set(security?.items.map((i) => i.thinking_space));
+  assert.ok(
+    thinkingSpaces.has("thinking-space-a") &&
+      thinkingSpaces.has("thinking-space-b"),
+  );
   // an item with N tags appears under all N
   assert.equal(agg.find((t) => t.tag === "auth")?.count, 1);
   // tags are sorted

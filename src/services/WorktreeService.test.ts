@@ -10,7 +10,7 @@ import {
   findSpecWorktree,
   parseGitdir,
   planWorktree,
-  mcpWithBoardRoot,
+  mcpWithThinkingSpaceRoot,
   worktreeRetirable,
   retirePlan,
 } from "./WorktreeService";
@@ -113,7 +113,7 @@ test("parseGitdir returns undefined for non-worktree .git pointers", () => {
   assert.equal(parseGitdir(""), undefined);
 });
 
-// ── Start Spec in Worktree: create-or-reuse + board-root inject (SP-tgpwbm AC7) ──
+// ── Start Spec in Worktree: create-or-reuse + thinking space-root inject (SP-tgpwbm AC7) ──
 
 test("planWorktree REUSES an existing worktree for the Spec (no re-add → no throw)", () => {
   const existing = parseWorktreeList(
@@ -146,7 +146,7 @@ test("planWorktree honours an explicit baseDir for a fresh worktree", () => {
   assert.equal(plan.path, "/tmp/wts/TEP-1_SP-9");
 });
 
-test("mcpWithBoardRoot injects THINKUBE_BOARD_ROOT into the kanban server env", () => {
+test("mcpWithThinkingSpaceRoot injects THINKUBE_THINKING_SPACE_ROOT into the kanban server env", () => {
   const mcp = {
     mcpServers: {
       "thinkube-kanban": {
@@ -156,33 +156,33 @@ test("mcpWithBoardRoot injects THINKUBE_BOARD_ROOT into the kanban server env", 
       },
     },
   };
-  const out = mcpWithBoardRoot(mcp, "/home/u/thinkube-tandem") as {
+  const out = mcpWithThinkingSpaceRoot(mcp, "/home/u/thinkube-tandem") as {
     mcpServers: { "thinkube-kanban": { env: Record<string, string> } };
   };
   const env = out.mcpServers["thinkube-kanban"].env;
-  assert.equal(env.THINKUBE_BOARD_ROOT, "/home/u/thinkube-tandem");
+  assert.equal(env.THINKUBE_THINKING_SPACE_ROOT, "/home/u/thinkube-tandem");
   // Existing env is preserved, and the input is not mutated.
   assert.equal(env.THINKUBE_ROOTS, "/a:/b");
   assert.equal(
     (mcp.mcpServers["thinkube-kanban"].env as Record<string, string>)
-      .THINKUBE_BOARD_ROOT,
+      .THINKUBE_THINKING_SPACE_ROOT,
     undefined,
   );
 });
 
-test("mcpWithBoardRoot creates the env object when the server has none", () => {
-  const out = mcpWithBoardRoot(
+test("mcpWithThinkingSpaceRoot creates the env object when the server has none", () => {
+  const out = mcpWithThinkingSpaceRoot(
     { mcpServers: { "thinkube-kanban": { command: "node" } } },
-    "/board",
+    "/thinking space",
   ) as { mcpServers: { "thinkube-kanban": { env: Record<string, string> } } };
   assert.equal(
-    out.mcpServers["thinkube-kanban"].env.THINKUBE_BOARD_ROOT,
-    "/board",
+    out.mcpServers["thinkube-kanban"].env.THINKUBE_THINKING_SPACE_ROOT,
+    "/thinking space",
   );
 });
 
-test("mcpWithBoardRoot is a no-op when the kanban server is absent", () => {
-  const out = mcpWithBoardRoot({ mcpServers: { other: {} } }, "/board") as {
+test("mcpWithThinkingSpaceRoot is a no-op when the kanban server is absent", () => {
+  const out = mcpWithThinkingSpaceRoot({ mcpServers: { other: {} } }, "/thinking space") as {
     mcpServers: Record<string, unknown>;
   };
   assert.deepEqual(out.mcpServers, { other: {} });

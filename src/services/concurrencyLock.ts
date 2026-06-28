@@ -1,7 +1,7 @@
-// Per-handle concurrency lock for board writes (TEP-th3i18 / SP-th4wqe, #20).
+// Per-handle concurrency lock for thinking space writes (TEP-th3i18 / SP-th4wqe, #20).
 //
-// The kanban MCP server's mutating tools (`move_slice`, `accept_spec`) read a board's JSON,
-// mutate it, and write it back. Two such operations interleaving on the SAME board (handle)
+// The kanban MCP server's mutating tools (`move_slice`, `accept_spec`) read a thinking space's JSON,
+// mutate it, and write it back. Two such operations interleaving on the SAME thinking space (handle)
 // race read-modify-write: the second write clobbers the first ("last write wins"), silently
 // dropping a move or an accept. This primitive serializes writes *per handle* so concurrent
 // callers either queue behind the in-flight write (mutex) or are refused outright
@@ -16,7 +16,7 @@
 //     or `null` if it is already held. This is the "rejected" side — a caller that won't queue
 //     can detect the conflict and bail.
 //
-// Different handles are fully independent: a parked write on board A never blocks board B.
+// Different handles are fully independent: a parked write on thinking space A never blocks thinking space B.
 //
 // The primitive is deterministic and scheduler-free: ordering is driven entirely by when the
 // holder's promise settles, so a test can "park" the first write on a controlled promise and
@@ -31,7 +31,7 @@ export type LockRelease = () => void;
 /**
  * A per-handle mutex. Each distinct `handle` string has its own independent lock slot; the
  * empty map means nothing is held. Construct one instance per shared resource domain (e.g. one
- * lock guarding all board writes) and key it by the board handle.
+ * lock guarding all thinking space writes) and key it by the thinking space handle.
  */
 export class ConcurrencyLock {
   /**

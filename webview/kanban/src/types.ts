@@ -6,7 +6,7 @@
  *
  * Data model (informed by the upstream trello-kanban repo — see UPSTREAM.md):
  *
- *   Board → ordered list of Columns; tasks live in a flat dict keyed by id.
+ *   Thinking Space → ordered list of Columns; tasks live in a flat dict keyed by id.
  *   Each Column owns an ordered `tasksIds` array referencing the dict.
  *
  * The flat-dict design lets a single task move between columns by just
@@ -51,9 +51,9 @@ export interface TaskCard {
   updatedAt?: string;
   /** Parent Spec changed after this task was last touched → review badge. */
   specStale?: boolean;
-  /** Board "Due" date (ISO yyyy-mm-dd), editable on the card. */
+  /** Thinking Space "Due" date (ISO yyyy-mm-dd), editable on the card. */
   dueDate?: string;
-  /** Board "Priority" single-select value (P0–P3) — shown as a chip. */
+  /** Thinking Space "Priority" single-select value (P0–P3) — shown as a chip. */
   priority?: string;
   /** How the parent Spec last changed relative to this task (SP-86). */
   specChange?: "none" | "metadata" | "requirements";
@@ -89,7 +89,7 @@ export interface TaskCard {
   workUnits?: WorkUnitNode[];
 }
 
-export interface BoardColumn {
+export interface ThinkingSpaceColumn {
   id: string;
   title: string;
   /** Whether the column is hidden from the main flow but kept for archive. */
@@ -98,14 +98,14 @@ export interface BoardColumn {
   tasksIds: string[];
 }
 
-export interface Board {
-  columns: BoardColumn[];
+export interface ThinkingSpace {
+  columns: ThinkingSpaceColumn[];
   tasks: Record<string, TaskCard>;
   /** Human label shown in the panel title — usually a repo/project name. */
   scope: string;
   /** Display title — the thinking space name (SP-tgs8nz). */
   title?: string;
-  /** Display subtitle — the Spec's description (spec-scoped board). */
+  /** Display subtitle — the Spec's description (spec-scoped thinking space). */
   subtitle?: string;
 }
 
@@ -116,7 +116,7 @@ export interface Board {
  */
 export type WebviewMessage =
   | { kind: "load" }
-  | { kind: "save"; board: Board }
+  | { kind: "save"; thinkingSpace: ThinkingSpace }
   | { kind: "notify"; level: "info" | "warn" | "error"; text: string }
   /** Inline card edit — write the issue title (and/or body) back to GitHub. */
   | { kind: "update-task"; id: string; title?: string; body?: string }
@@ -141,5 +141,5 @@ export type WebviewMessage =
 export type ModeFlag = "navigator" | "driver" | "both";
 
 export type HostMessage =
-  | { kind: "state"; board: Board; mode: ModeFlag }
-  | { kind: "external-change"; board: Board; mode: ModeFlag };
+  | { kind: "state"; thinkingSpace: ThinkingSpace; mode: ModeFlag }
+  | { kind: "external-change"; thinkingSpace: ThinkingSpace; mode: ModeFlag };

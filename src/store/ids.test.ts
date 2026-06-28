@@ -55,48 +55,48 @@ async function tree(root: string, dirs: string[]): Promise<string> {
   return root;
 }
 
-test("nextTepNumber is scan-max+1 per (board, org), restarting per scope", async () => {
-  const boardA = await fs.mkdtemp(path.join(os.tmpdir(), "ids-boardA-"));
-  const boardB = await fs.mkdtemp(path.join(os.tmpdir(), "ids-boardB-"));
+test("nextTepNumber is scan-max+1 per (thinking space, org), restarting per scope", async () => {
+  const thinkingSpaceA = await fs.mkdtemp(path.join(os.tmpdir(), "ids-thinkingSpaceA-"));
+  const thinkingSpaceB = await fs.mkdtemp(path.join(os.tmpdir(), "ids-thinkingSpaceB-"));
   try {
-    // Acme has TEP-1, TEP-2 under boardA → next is TEP-3.
-    await tree(boardA, ["Acme/teps/TEP-1", "Acme/teps/TEP-2"]);
-    assert.equal(await nextTepNumber(boardA, "Acme"), 3);
+    // Acme has TEP-1, TEP-2 under thinkingSpaceA → next is TEP-3.
+    await tree(thinkingSpaceA, ["Acme/teps/TEP-1", "Acme/teps/TEP-2"]);
+    assert.equal(await nextTepNumber(thinkingSpaceA, "Acme"), 3);
 
-    // A different org on the SAME board has its own (empty) teps dir → restarts at 1.
-    assert.equal(await nextTepNumber(boardA, "Globex"), 1);
+    // A different org on the SAME thinking space has its own (empty) teps dir → restarts at 1.
+    assert.equal(await nextTepNumber(thinkingSpaceA, "Globex"), 1);
 
-    // The SAME org on a DIFFERENT board is independent → restarts at 1.
-    assert.equal(await nextTepNumber(boardB, "Acme"), 1);
+    // The SAME org on a DIFFERENT thinking space is independent → restarts at 1.
+    assert.equal(await nextTepNumber(thinkingSpaceB, "Acme"), 1);
   } finally {
-    await fs.rm(boardA, { recursive: true, force: true });
-    await fs.rm(boardB, { recursive: true, force: true });
+    await fs.rm(thinkingSpaceA, { recursive: true, force: true });
+    await fs.rm(thinkingSpaceB, { recursive: true, force: true });
   }
 });
 
 test("nextSpecNumber is scoped to its TEP (restarting at 1 per TEP)", async () => {
-  const board = await fs.mkdtemp(path.join(os.tmpdir(), "ids-spec-"));
+  const thinkingSpace = await fs.mkdtemp(path.join(os.tmpdir(), "ids-spec-"));
   try {
-    await tree(board, [
+    await tree(thinkingSpace, [
       "Acme/teps/TEP-1/SP-1",
       "Acme/teps/TEP-1/SP-2",
       "Acme/teps/TEP-2", // no specs yet
     ]);
-    const tep1 = path.join(board, "Acme", "teps", "TEP-1");
-    const tep2 = path.join(board, "Acme", "teps", "TEP-2");
+    const tep1 = path.join(thinkingSpace, "Acme", "teps", "TEP-1");
+    const tep2 = path.join(thinkingSpace, "Acme", "teps", "TEP-2");
 
     assert.equal(await nextSpecNumber(tep1), 3); // SP-1, SP-2 → SP-3
     assert.equal(await nextSpecNumber(tep2), 1); // independent counter restarts
   } finally {
-    await fs.rm(board, { recursive: true, force: true });
+    await fs.rm(thinkingSpace, { recursive: true, force: true });
   }
 });
 
 test("nextSliceNumber is scoped to its spec and archive-aware", async () => {
-  const board = await fs.mkdtemp(path.join(os.tmpdir(), "ids-slice-"));
+  const thinkingSpace = await fs.mkdtemp(path.join(os.tmpdir(), "ids-slice-"));
   try {
-    const sp1 = path.join(board, "Acme", "teps", "TEP-1", "SP-1");
-    const sp2 = path.join(board, "Acme", "teps", "TEP-1", "SP-2");
+    const sp1 = path.join(thinkingSpace, "Acme", "teps", "TEP-1", "SP-1");
+    const sp2 = path.join(thinkingSpace, "Acme", "teps", "TEP-1", "SP-2");
     await fs.mkdir(sp1, { recursive: true });
     await fs.mkdir(sp2, { recursive: true });
 
@@ -114,6 +114,6 @@ test("nextSliceNumber is scoped to its spec and archive-aware", async () => {
     // A different spec under the same TEP has its own counter → restarts at 1.
     assert.equal(await nextSliceNumber(sp2), 1);
   } finally {
-    await fs.rm(board, { recursive: true, force: true });
+    await fs.rm(thinkingSpace, { recursive: true, force: true });
   }
 });

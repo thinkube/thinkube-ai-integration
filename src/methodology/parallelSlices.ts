@@ -9,7 +9,7 @@
  * Only slices sharing the *same non-empty* `parallel_group` are checked against
  * each other. An ungrouped slice (no `parallel_group`) and a singleton group
  * run sequentially and can never conflict — disjointness is a constraint on
- * *concurrency*, not on the whole board.
+ * *concurrency*, not on the whole thinking space.
  */
 
 export interface ParallelSliceInput {
@@ -482,7 +482,7 @@ export interface ReconcileResult {
  * Reconcile the durable map against the set of slices whose worktrees are still
  * live: any file owned by a slice **not** in `liveSlices` is reclaimed — its
  * holder was abandoned (e.g. its worktree was removed without releasing). This
- * is the board-wins recovery the arbiter runs after a reload (AC3, AC5).
+ * is the thinking space-wins recovery the arbiter runs after a reload (AC3, AC5).
  */
 export function reconcileOwnership(
   state: OwnershipState,

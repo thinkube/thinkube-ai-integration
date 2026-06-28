@@ -38,8 +38,8 @@ import { buildUnitDag, buildWorkerPrompt } from "../services/orchestratorCore";
 
 // ── tmp-store scaffolding (mirrors createSliceContractFirst.test.ts) ─────────
 async function seededStore(spec = "1/1"): Promise<ThinkubeStore> {
-  const board = fs.mkdtempSync(path.join(os.tmpdir(), "tk-consumes-board-"));
-  const store = new ThinkubeStore(board, board);
+  const thinkingSpace = fs.mkdtempSync(path.join(os.tmpdir(), "tk-consumes-thinking space-"));
+  const store = new ThinkubeStore(thinkingSpace, thinkingSpace);
   await store.writeFile(
     store.pathForSpecDoc(spec),
     { implements: "TEP-x", ac_verifications: { "1": { run: "npm test" } } },
@@ -50,7 +50,7 @@ async function seededStore(spec = "1/1"): Promise<ThinkubeStore> {
 
 const ctxFor = (store: ThinkubeStore) => ({
   env: {} as never,
-  boards: { resolve: () => store } as never,
+  thinkingSpaces: { resolve: () => store } as never,
 });
 
 const create = (store: ThinkubeStore, args: Record<string, unknown>) =>

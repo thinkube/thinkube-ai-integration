@@ -1,20 +1,20 @@
 /**
  * New Product / New Project / Promote-TEP commands (SP-tgvl81_SL-3, SP-tgvpbm_SL-4).
  * Thin vscode wrappers around the pure manifest writers + the implements ref
- * engine: prompt, write/move under the configured board root, refresh.
+ * engine: prompt, write/move under the configured thinking space root, refresh.
  */
 import * as vscode from "vscode";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 import {
-  BoardNavigatorProvider,
-  boardRootStatus,
+  ThinkingSpaceNavigatorProvider,
+  thinkingSpaceRootStatus,
   discoverRepos,
   type ProductNode,
-} from "../views/boards/BoardNavigatorProvider";
+} from "../views/thinkingSpaces/ThinkingSpaceNavigatorProvider";
 import { ThinkubeStore } from "../store/ThinkubeStore";
-import { namespaceForRepo } from "../store/boardNamespace";
+import { namespaceForRepo } from "../store/thinkingSpaceNamespace";
 import { discoverProjects } from "../store/projects";
 import {
   normalizeTepId,
@@ -28,14 +28,14 @@ import {
 
 export function registerProductCommands(
   context: vscode.ExtensionContext,
-  provider: BoardNavigatorProvider,
+  provider: ThinkingSpaceNavigatorProvider,
 ): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("thinkube.products.new", async () => {
-      const root = boardRootStatus().root;
+      const root = thinkingSpaceRootStatus().root;
       if (!root) {
         vscode.window.showErrorMessage(
-          "Set `thinkube.boards.root` (the sidecar board) before creating a Product.",
+          "Set `thinkube.thinkingSpace.root` (the sidecar thinking space) before creating a Product.",
         );
         return;
       }
@@ -57,10 +57,10 @@ export function registerProductCommands(
     vscode.commands.registerCommand(
       "thinkube.projects.new",
       async (node?: ProductNode) => {
-        const root = boardRootStatus().root;
+        const root = thinkingSpaceRootStatus().root;
         if (!root) {
           vscode.window.showErrorMessage(
-            "Set `thinkube.boards.root` (the sidecar board) before creating a Project.",
+            "Set `thinkube.thinkingSpace.root` (the sidecar thinking space) before creating a Project.",
           );
           return;
         }
@@ -97,10 +97,10 @@ export function registerProductCommands(
     vscode.commands.registerCommand(
       "thinkube.tep.promote",
       async (node?: { tepId?: string }) => {
-        const root = boardRootStatus().root;
+        const root = thinkingSpaceRootStatus().root;
         if (!root) {
           vscode.window.showErrorMessage(
-            "Set `thinkube.boards.root` before promoting a TEP.",
+            "Set `thinkube.thinkingSpace.root` before promoting a TEP.",
           );
           return;
         }
@@ -136,7 +136,7 @@ export function registerProductCommands(
           .filter((r) => r.enabled && !r.worktreeOf)
           .map((r) => ({
             ns: namespaceForRepo(r.path, folders),
-            store: new ThinkubeStore(r.path, r.boardDir),
+            store: new ThinkubeStore(r.path, r.thinkingSpaceDir),
           }))
           .filter((r): r is { ns: string; store: ThinkubeStore } => !!r.ns);
 

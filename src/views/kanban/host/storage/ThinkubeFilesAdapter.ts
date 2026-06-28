@@ -1,21 +1,21 @@
 /**
  * ThinkubeFilesAdapter — the files-first kanban storage (ADR-0001/0007).
  *
- * Renders the board *over* committed `.thinkube/specs/SP-{n}/SL-{m}.md` slice
+ * Renders the thinking space *over* committed `.thinkube/specs/SP-{n}/SL-{m}.md` slice
  * files via `ThinkubeStore`, behind the existing `StorageAdapter` interface.
  * The GitHub-only optional methods (`createTask`, `setParent`, `promoteToChain`,
  * `listParentSpecs`) are deliberately omitted — they encode the spine being
  * retired; proper slice creation arrives with the trimmed interface + `/slice`
  * (migration phases 5–7). Until then this adapter exists alongside the
- * GitHub-backed one (additive expand-contract); wiring it as the board's source
+ * GitHub-backed one (additive expand-contract); wiring it as the thinking space's source
  * is Phase 6.
  *
- * The pure projection (slice → Board, id synthesis, status↔column, staleness)
- * lives in `sliceBoard.ts` and is unit-tested; this file is the I/O wrapper.
+ * The pure projection (slice → Thinking Space, id synthesis, status↔column, staleness)
+ * lives in `sliceThinkingSpace.ts` and is unit-tested; this file is the I/O wrapper.
  */
 import * as vscode from "vscode";
 
-import { Board } from "../types";
+import { ThinkingSpace } from "../types";
 import { StorageAdapter } from "../StorageAdapter";
 import { ThinkubeStore } from "../../../../store/ThinkubeStore";
 import type { Frontmatter } from "../../../../store/frontmatter";
@@ -23,41 +23,41 @@ import { requirementHash } from "../../../../methodology/specChange";
 import { stampOnEnteringDone } from "../../../../github/sliceProvenance";
 import { buildCommitUrl, detectRepoCoords } from "../../../../github/gitRemote";
 import {
-  buildSliceBoard,
+  buildSliceThinkingSpace,
   columnIdToStatus,
   deriveSpecMeta,
   SliceInput,
   SpecMeta,
-} from "./sliceBoard";
+} from "./sliceThinkingSpace";
 
 // Org-scoped tree path: `<org>/teps/TEP-n/SP-m/SL-k.md` → [_, tep, spec, slice].
 const SLICE_PATH_RE = /teps\/TEP-(\d+)\/SP-(\d+)\/SL-(\d+)\.md$/;
 
 export class ThinkubeFilesAdapter implements StorageAdapter {
-  private readonly _onExternalChange = new vscode.EventEmitter<Board>();
+  private readonly _onExternalChange = new vscode.EventEmitter<ThinkingSpace>();
   readonly onExternalChange = this._onExternalChange.event;
   private storeSub: vscode.Disposable | undefined;
 
   constructor(
     private readonly store: ThinkubeStore,
     readonly scope: string,
-    /** When set, the board is scoped to a single Spec (its slices + meta only). */
+    /** When set, the thinking space is scoped to a single Spec (its slices + meta only). */
     private readonly specFilter?: string,
     /** Display title — the thinking space name (falls back to scope). */
     private readonly spaceName?: string,
   ) {}
 
-  /** This board's identity, so a command triggered from the panel (the ▶ orchestrate button)
-   *  acts on THIS board rather than the ambient sidebar selection. */
-  boardContext(): { root: string; boardDir: string; name: string } {
+  /** This thinking space's identity, so a command triggered from the panel (the ▶ orchestrate button)
+   *  acts on THIS thinking space rather than the ambient sidebar selection. */
+  thinkingSpaceContext(): { root: string; thinkingSpaceDir: string; name: string } {
     return {
       root: this.store.workspaceRoot,
-      boardDir: this.store.thinkubeDir,
+      thinkingSpaceDir: this.store.thinkubeDir,
       name: this.spaceName ?? this.scope,
     };
   }
 
-  /** Begin reflecting external `.thinkube/` edits into the board. Idempotent. */
+  /** Begin reflecting external `.thinkube/` edits into the thinking space. Idempotent. */
   watchExternal(): void {
     if (this.storeSub) return;
     this.storeSub = this.store.onChanged((c) => {
@@ -71,7 +71,7 @@ export class ThinkubeFilesAdapter implements StorageAdapter {
     this._onExternalChange.dispose();
   }
 
-  async load(): Promise<Board> {
+  async load(): Promise<ThinkingSpace> {
     // Per-Spec requirement-hash + acceptance-card readiness, computed once per
     // Spec (specs are few).
     const reqHashBySpec = new Map<string, string>();
@@ -135,16 +135,16 @@ export class ThinkubeFilesAdapter implements StorageAdapter {
         workUnits: Array.isArray(fm.work_units) ? fm.work_units : undefined,
       });
     }
-    const board = buildSliceBoard(inputs, this.scope, specMeta);
-    board.title = this.spaceName ?? this.scope;
-    board.subtitle = subtitle;
-    return board;
+    const thinkingSpace = buildSliceThinkingSpace(inputs, this.scope, specMeta);
+    thinkingSpace.title = this.spaceName ?? this.scope;
+    thinkingSpace.subtitle = subtitle;
+    return thinkingSpace;
   }
 
-  async save(board: Board): Promise<void> {
+  async save(thinkingSpace: ThinkingSpace): Promise<void> {
     // Write-through: persist each card's column as its slice `status:`. Only
     // files whose status actually changed are rewritten.
-    for (const card of Object.values(board.tasks)) {
+    for (const card of Object.values(thinkingSpace.tasks)) {
       const ref = this.refForCard(card.id);
       if (!ref) continue;
       const rel = this.store.pathForSlice(ref.specNumber, ref.sliceNumber);

@@ -15,8 +15,8 @@
  *     `implemented` status.
  *
  * Pure (no fs / no vscode), so it's unit-testable vscode-free. The actual
- * cross-board resolution of a Spec's `implements:` ref → its TEP's status is the
- * caller's job (`create_slice`'s →Ready path resolves it via board context, like
+ * cross-thinking space resolution of a Spec's `implements:` ref → its TEP's status is the
+ * caller's job (`create_slice`'s →Ready path resolves it via thinking space context, like
  * `promoteTep`, then hands the resolved status here). This module only decides
  * **given a ref and the status it resolved to**, may the slice go Ready?
  *
@@ -27,7 +27,7 @@
 import { parseImplements, formatImplements } from "../store/implementsRef";
 
 /**
- * The board column / lifecycle status a TEP can be in. Mirrors the TEP arm of
+ * The thinking space column / lifecycle status a TEP can be in. Mirrors the TEP arm of
  * `Frontmatter.status` (`src/store/frontmatter.ts`): `proposed` → `accepted`
  * (approved-to-build) → `implemented` (terminal, delivered). `superseded` is a
  * dead-end. Anything else (or an unresolved ref) is treated as *not accepted*.
@@ -64,7 +64,7 @@ export type TepApprovalResult =
  * - **TEP is `accepted`** → **ok**: approved-to-build.
  * - **Unresolved ref** (`tepStatus === undefined` — the ref names no TEP we can
  *   find) → **ok**: we can't classify it, so we accept rather than block on a
- *   ref we can't reason about (mirrors `makeBoardPromoteLocator`'s "can't
+ *   ref we can't reason about (mirrors `makeThinkingSpacePromoteLocator`'s "can't
  *   classify → accept"). A dangling `implements:` is a separate concern
  *   (`write_spec`'s promote check), not the approval gate's.
  * - **Any other RESOLVED status** (`proposed`, `superseded`, `implemented`) →
@@ -74,7 +74,7 @@ export type TepApprovalResult =
  * @param implementsRef the Spec's raw `implements:` value (or undefined).
  * @param tepStatus     the status that `implementsRef` resolved to (or
  *                      undefined when it resolved to no TEP). The caller does
- *                      the cross-board resolution.
+ *                      the cross-thinking space resolution.
  */
 export function tepApprovalGate(
   implementsRef: string | undefined,
@@ -112,14 +112,14 @@ export function tepApprovalGate(
  * and non-empty — mere existence of the Spec, or any other status, is *not*
  * acceptance.
  *
- * The caller (`get_project` / `writeTep`) does the cross-board resolution of a
+ * The caller (`get_project` / `writeTep`) does the cross-thinking space resolution of a
  * TEP's implementing Specs (via `implementsRef` / `projectTeps`) and projects
  * each resolved Spec down to this shape before calling {@link tepComplete}.
  */
 export interface ImplementingSpec {
   /** Stable Spec handle, e.g. `SP-tg7y99` — what `openSpecs` lists when a Spec
    *  is still unaccepted. The caller may qualify it (`<namespace>:SP-…`) for a
-   *  cross-board Spec; `tepComplete` treats it as an opaque label. */
+   *  cross-thinking space Spec; `tepComplete` treats it as an opaque label. */
   id: string;
   /** The Spec's `accepted:` stamp (ISO timestamp from `accept_spec`), or
    *  undefined/empty when the human hasn't accepted it yet. */
@@ -159,7 +159,7 @@ function isAccepted(spec: ImplementingSpec): boolean {
  * **not complete**, and `openSpecs` names the blockers.
  *
  * Pure (no fs / no vscode): the caller resolves the TEP's implementing Specs
- * across boards and hands them in already projected to {@link ImplementingSpec}.
+ * across thinkingSpaces and hands them in already projected to {@link ImplementingSpec}.
  *
  * @param tepId             the TEP's id (with or without a `TEP-` prefix), or a
  *                          qualified `<namespace>:TEP-id` ref; echoed canonical

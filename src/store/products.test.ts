@@ -1,6 +1,6 @@
 /**
  * Unit tests for Product discovery from the sidecar tree (SP-tgvjug_SL-1).
- * fs via a tmp board root; no vscode.
+ * fs via a tmp thinking space root; no vscode.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -10,40 +10,42 @@ import * as path from "node:path";
 
 import { discoverProducts } from "./products";
 
-/** Build a tmp board-root fixture and return its path. */
+/** Build a tmp thinking space-root fixture and return its path. */
 function fixture(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tk-products-"));
-  // A board namespaces its methodology under an `<org>/` segment (org-scoped
-  // tree, TEP-th8lzj): the marker (`teps`) sits one level below the board dir,
-  // so the board is the PARENT of the org segment.
-  const boardShaped = (rel: string) =>
+  // A thinking space namespaces its methodology under an `<org>/` segment (org-scoped
+  // tree, TEP-th8lzj): the marker (`teps`) sits one level below the thinking space dir,
+  // so the thinking space is the PARENT of the org segment.
+  const thinkingSpaceShaped = (rel: string) =>
     fs.mkdirSync(path.join(root, rel, "cmxela", "teps"), { recursive: true });
 
   // Product A: two members nested 2 deep + a product.yaml display name.
-  boardShaped("ProdA/core/thinkube");
-  boardShaped("ProdA/docs/site");
+  thinkingSpaceShaped("ProdA/core/thinkube");
+  thinkingSpaceShaped("ProdA/docs/site");
   fs.writeFileSync(
     path.join(root, "ProdA", "product.yaml"),
     "name: Product A\n",
   );
 
   // Product B: one member 1 deep, no manifest.
-  boardShaped("ProdB/app");
+  thinkingSpaceShaped("ProdB/app");
 
   // Malformed manifest → still a Product, name falls back to the dir id.
-  boardShaped("Mal/x");
+  thinkingSpaceShaped("Mal/x");
   fs.writeFileSync(
     path.join(root, "Mal", "product.yaml"),
     "name: [unterminated\n",
   );
 
-  // Not a product: a top dir with no board-shaped descendant.
-  fs.mkdirSync(path.join(root, "Empty", "notaboard"), { recursive: true });
+  // Not a product: a top dir with no thinking space-shaped descendant.
+  fs.mkdirSync(path.join(root, "Empty", "notathinkingspace"), {
+    recursive: true,
+  });
 
   return root;
 }
 
-test("discovers products + members from the sidecar tree (board-shaped descendants)", () => {
+test("discovers products + members from the sidecar tree (thinking space-shaped descendants)", () => {
   const products = discoverProducts(fixture());
   const byId = new Map(products.map((p) => [p.id, p]));
 
@@ -70,6 +72,6 @@ test("a malformed product.yaml falls back to the id (never throws)", () => {
   assert.deepEqual(byId.get("Mal")?.members, ["Mal/x"]);
 });
 
-test("a missing board root yields an empty list", () => {
-  assert.deepEqual(discoverProducts("/no/such/board/root/xyz"), []);
+test("a missing thinking space root yields an empty list", () => {
+  assert.deepEqual(discoverProducts("/no/such/thinking space/root/xyz"), []);
 });

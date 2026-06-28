@@ -3,7 +3,7 @@
  * pattern (import the stub FIRST) so importing the server module loads outside
  * the extension host; `main()` is guarded by `require.main === module`, so this
  * import does not boot the stdio server. `listProducts` only reads
- * `ctx.env.boardRoot` (pure fs), so a minimal ctx suffices.
+ * `ctx.env.thinkingSpaceRoot` (pure fs), so a minimal ctx suffices.
  */
 import "./installVscodeStub";
 
@@ -15,10 +15,10 @@ import * as path from "node:path";
 
 import { listProducts } from "./kanbanMcpServer";
 
-function boardRootFixture(): string {
+function thinkingSpaceRootFixture(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tk-prodtool-"));
-  // Org-scoped tree: the board dir holds its methodology under an `<org>/`
-  // segment, so the `teps` marker sits one level below the board (TEP-th8lzj).
+  // Org-scoped tree: the thinking space dir holds its methodology under an `<org>/`
+  // segment, so the `teps` marker sits one level below the thinking space (TEP-th8lzj).
   fs.mkdirSync(
     path.join(root, "Platform", "core", "thinkube", "cmxela", "teps"),
     {
@@ -35,9 +35,9 @@ function boardRootFixture(): string {
   return root;
 }
 
-test("list_products returns products + members for the configured board root", () => {
-  const root = boardRootFixture();
-  const res = listProducts({ env: { boardRoot: root } } as never) as {
+test("list_products returns products + members for the configured thinking space root", () => {
+  const root = thinkingSpaceRootFixture();
+  const res = listProducts({ env: { thinkingSpaceRoot: root } } as never) as {
     products: { id: string; name: string; members: string[] }[];
   };
   assert.deepEqual(
@@ -49,7 +49,7 @@ test("list_products returns products + members for the configured board root", (
   assert.deepEqual(platform?.members, ["Platform/core/thinkube"]);
 });
 
-test("list_products returns an empty list when no board root is configured", () => {
+test("list_products returns an empty list when no thinking space root is configured", () => {
   const res = listProducts({ env: {} } as never) as { products: unknown[] };
   assert.deepEqual(res.products, []);
 });
