@@ -129,6 +129,15 @@ fi
 
 if [ -n "$SESSION_CWD" ] && [ -d "$SESSION_CWD" ]; then
   cd "$SESSION_CWD"
+elif [ -n "$SESSION_CWD" ]; then
+  # The resumed session's ORIGINAL cwd is gone (e.g. a worktree removed when its spec
+  # was accepted). Don't silently land in the workspace's first folder: if it was a
+  # default-convention worktree (<repo>-worktrees/<spec>), recover to the canonical repo
+  # when it still exists. A SessionStart hook separately warns the user to close/reopen.
+  CANON="$(printf '%s' "$SESSION_CWD" | sed -E 's#-worktrees/[^/]+/?$##')"
+  if [ "$CANON" != "$SESSION_CWD" ] && [ -d "$CANON" ]; then
+    cd "$CANON"
+  fi
 elif [ -r "$TARGET_FILE" ]; then
   # Freshness: the launcher writes .target-cwd immediately before spawning, so a
   # live launch is always recent. Ignore a STALE leftover (a prior launch's target,
