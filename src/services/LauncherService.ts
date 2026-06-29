@@ -28,6 +28,10 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import { SessionLinkService } from "./SessionLinkService";
+import {
+  ensureStableServerLink,
+  stableExtensionSubpath,
+} from "../mcp/stableServerPath";
 
 const CFG_SECTION = "claudeCode";
 const CFG_KEY = "claudeProcessWrapper";
@@ -48,8 +52,16 @@ export class LauncherService implements vscode.Disposable {
       process.platform === "win32"
         ? "claude-cwd-wrapper.cmd"
         : "claude-cwd-wrapper.sh";
-    this.wrapperPath = this.context.asAbsolutePath(
-      path.join("dist", "wrapper", wrapperName),
+    // Resolve the wrapper through the version-stable `extension-current` symlink,
+    // NOT `context.asAbsolutePath` (which bakes the versioned install dir and gets
+    // orphaned on every update — the bug that left the setting pinned to an old
+    // version). Ensure the symlink exists first so the path resolves.
+    await ensureStableServerLink(this.context).catch(() => {});
+    this.wrapperPath = stableExtensionSubpath(
+      this.context,
+      "dist",
+      "wrapper",
+      wrapperName,
     );
 
     if (process.platform !== "win32") {

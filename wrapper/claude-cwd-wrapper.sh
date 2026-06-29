@@ -130,9 +130,25 @@ fi
 if [ -n "$SESSION_CWD" ] && [ -d "$SESSION_CWD" ]; then
   cd "$SESSION_CWD"
 elif [ -r "$TARGET_FILE" ]; then
-  TARGET="$(sed -n '1{s/[[:space:]]*$//;p;}' "$TARGET_FILE")"
-  if [ -n "$TARGET" ] && [ -d "$TARGET" ]; then
-    cd "$TARGET"
+  # Freshness: the launcher writes .target-cwd immediately before spawning, so a
+  # live launch is always recent. Ignore a STALE leftover (a prior launch's target,
+  # or an orphan from a session that never spawned) so it can't capture an unrelated
+  # later session — the bug where a session opened in the wrong cwd. If we can't read
+  # an mtime, treat as fresh (a stat quirk must never disable the proxy entirely).
+  TARGET_FRESH=1
+  TARGET_MTIME="$(stat -c %Y "$TARGET_FILE" 2>/dev/null || stat -f %m "$TARGET_FILE" 2>/dev/null || echo 0)"
+  if [ "$TARGET_MTIME" -gt 0 ] 2>/dev/null; then
+    [ $(( $(date +%s) - TARGET_MTIME )) -le 120 ] || TARGET_FRESH=0
+  fi
+  if [ "$TARGET_FRESH" = "1" ]; then
+    TARGET="$(sed -n '1{s/[[:space:]]*$//;p;}' "$TARGET_FILE")"
+    if [ -n "$TARGET" ] && [ -d "$TARGET" ]; then
+      cd "$TARGET"
+      # Consume-once: a real session claims the target so it never lingers to capture
+      # the NEXT launch (the single shared file's clobber/leftover hazard). Probes
+      # (auth/version/mcp/config) can precede the session, so they cd but don't consume.
+      [ "$INVOKE_TAG" != "probe" ] && rm -f "$TARGET_FILE"
+    fi
   fi
 fi
 
