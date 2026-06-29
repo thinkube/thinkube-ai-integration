@@ -74,6 +74,14 @@ export class LauncherService implements vscode.Disposable {
     // The wrapper reads .target-cwd / .target-prefix from this directory.
     process.env.CLAUDE_CWD_PROXY_DIR = this.stateDir;
 
+    // Provenance signing (TEP-6 SP-1): publish the signing-secret dir on the host
+    // env so every launched session's kanban MCP server inherits it
+    // (host → claude → MCP, the same inheritance CLAUDE_CWD_PROXY_DIR rides). Its
+    // presence turns on write_spec's verifiability audit + signing and readyGate's
+    // signature check. One stable globalStorage dir means all servers share one key;
+    // `??=` lets an explicit override (e.g. tests) win.
+    process.env.THINKUBE_SIGNING_KEY_DIR ??= path.join(this.stateDir, "signing");
+
     await this.ensureWrapperRegistered();
   }
 
