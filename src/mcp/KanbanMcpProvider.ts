@@ -133,6 +133,12 @@ export class KanbanMcpProvider implements vscode.McpServerDefinitionProvider<vsc
     // full {name,path} list — not just paths.
     if (folders.length) env.THINKUBE_FOLDERS = JSON.stringify(folders);
     if (thinkingSpaceRoot) env.THINKUBE_THINKING_SPACE_ROOT = thinkingSpaceRoot;
+    // Provenance signing (TEP-6 SP-1 activation): point the server at the extension's
+    // globalStorage so `loadOrCreateSecret` mints/reads the HMAC key there. Its presence
+    // turns on the verifiability audit + signing in `write_spec` and the signature check in
+    // `readyGate`. The headless audit the server then runs relies on the Claude credentials
+    // the subprocess inherits from the extension host (same as the orchestrator's `runViaSdk`).
+    env.THINKUBE_SIGNING_KEY_DIR = this.deps.context.globalStorageUri.fsPath;
 
     this.log(
       `launching thinking space-independent server (thinkingSpaceRoot=${thinkingSpaceRoot || "(none)"} roots=${roots || "(none)"} writes=${allowWrites})`,
