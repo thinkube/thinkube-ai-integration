@@ -1300,9 +1300,26 @@ export async function dispatchTool(
           return `${parentTep}/${await store.nextSpecNumber(parentTep)}`;
         },
       );
+      // A Spec doc lives at the composite `<tep>/<spec>` location (pathForSpecDoc).
+      // The mint path already returns that composite; a caller-PROVIDED id may be the
+      // bare SP NUMBER (`2`) — the shape `/spec-prepare` passes (`spec: {n}`) — which
+      // must be composed with its parent TEP (from `implements:`) to resolve
+      // `teps/TEP-<tep>/SP-<m>/spec.md`. Without this a bare numeric fell through to
+      // `pathForSpecDoc("2")` → `TEP-2/SP-undefined`, silently creating a stray,
+      // wrong-placed doc instead of updating the intended spec. A bare numeric with no
+      // `implements:` can't be located, so refuse rather than write a stray. Opaque
+      // ids and already-composite (`<tep>/<spec>`) ids are used verbatim.
+      let composedSpecId = specId;
+      if (!specId.includes("/") && /^\d+$/.test(specId)) {
+        if (!parentTep)
+          throw new Error(
+            `write_spec needs \`implements: TEP-<n>\` to resolve the bare spec id \`${specId}\` to its \`TEP-<n>/SP-${specId}\` location.`,
+          );
+        composedSpecId = `${parentTep}/${specId}`;
+      }
       return writeSpec(
         store,
-        specId,
+        composedSpecId,
         asString(args, "body"),
         implementsRaw,
         // The closing gate's per-AC declaration (SP-tgzyfy). Forwarded verbatim — writeSpec
