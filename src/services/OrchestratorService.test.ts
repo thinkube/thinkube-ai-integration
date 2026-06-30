@@ -1056,3 +1056,201 @@ test("runViaSdk AC4: a write outside this unit's footprint AND all running footp
 
   fs.rmSync(repo, { recursive: true, force: true });
 });
+
+test("runViaSdk AC4 (mirror): a unit on B is NOT aborted by a concurrent sibling's in-footprint change to A (the other direction)", async () => {
+  // The MIRROR of the test above (which ran the unit on orchestratorCore.ts with
+  // parallelSlices.ts as the sibling). Here the unit owns parallelSlices.ts and the
+  // CONCURRENT sibling has already changed orchestratorCore.ts in the shared tree.
+  // Both directions of the original SP-6 mutual-destruction pair must be exempt — a
+  // regression that broke only one direction would otherwise slip the suite.
+  const repo = initGitRepo({
+    "src/methodology/orchestratorCore.ts": "// core\n",
+    "src/methodology/parallelSlices.ts": "// slices\n",
+  });
+  // The concurrent sibling has already edited ITS in-footprint file (orchestratorCore.ts).
+  fs.writeFileSync(
+    path.join(repo, "src/methodology/orchestratorCore.ts"),
+    "// core — sibling in-progress\n",
+  );
+
+  const observed: { aborted?: boolean } = {};
+  const deps = makeDeps({}).deps;
+  // This unit only touches its OWN footprint file (parallelSlices.ts).
+  deps.sdkQuery = fakeSdkQueryRunningBashThen(
+    repo,
+    ["printf '// slices — edited\\n' > src/methodology/parallelSlices.ts"],
+    observed,
+  );
+
+  const unit = ac3Unit(["src/methodology/parallelSlices.ts"]);
+  const result = await svcRunViaSdk(deps)(
+    unit,
+    "1/1",
+    repo,
+    () => {},
+    // The running-units footprint union includes the concurrent sibling's file (A).
+    () => [
+      "src/methodology/orchestratorCore.ts",
+      "src/methodology/parallelSlices.ts",
+    ],
+    [], // nothing dirty at this unit's start
+  );
+
+  assert.equal(observed.aborted, false, "the query was not aborted (no breach)");
+  assert.equal(
+    result.outcome,
+    "success",
+    "a sibling's in-footprint change to A is not this unit's violation",
+  );
+  // The sibling's in-progress work on A in the shared tree was NEVER reverted.
+  assert.equal(
+    fs.readFileSync(
+      path.join(repo, "src/methodology/orchestratorCore.ts"),
+      "utf8",
+    ),
+    "// core — sibling in-progress\n",
+    "a concurrent sibling's change to A must never be reverted (mirror direction)",
+  );
+
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
+// ── End-to-end: the scheduler ITSELF builds the running-footprints union ──────
+//
+// The unit-level AC4 tests above hand `runViaSdk` a written `runningFootprints`
+// closure, so they prove the check HONOURS the union but never that the SCHEDULER
+// assembles it. This test drives the REAL `dispatchSpec` with two concurrently-
+// dispatched, disjoint-footprint units (cap 2) and the REAL `runViaSdk` (no `runUnit`
+// seam) against a REAL on-disk git worktree, so `state.running` is built BY THE
+// SCHEDULER's add-on-dispatch / remove-on-completion of each unit's footprint. A
+// barrier holds both units in-flight until BOTH have written their in-footprint file,
+// so each unit's PostToolUse containment check runs while the OTHER's change is already
+// in the shared tree AND the other unit is still in `state.running` — the exact SP-6
+// mutual-destruction shape. Both must land success; neither may be aborted or have its
+// file reverted. This is the test that would have caught the original bug: break the
+// scheduler's `state.running` add/remove and it FAILS (the units revert each other).
+test("dispatchSpec AC4 (end-to-end): two concurrent disjoint units — the SCHEDULER builds state.running so NEITHER reverts the other (no mutual destruction)", async () => {
+  const A = "src/methodology/orchestratorCore.ts";
+  const B = "src/methodology/parallelSlices.ts";
+  // The shared spec worktree, a real git repo seeding both units' files.
+  const repo = initGitRepo({ [A]: "// core\n", [B]: "// slices\n" });
+
+  // A two-party barrier: both unit workers write their own file, then wait here until
+  // BOTH have written, so each unit's PostToolUse check runs with the other's change
+  // already present in the shared tree (and the other unit still running).
+  let release!: () => void;
+  const bothWritten = new Promise<void>((r) => (release = r));
+  let arrived = 0;
+  const barrier = async () => {
+    if (++arrived === 2) release();
+    await bothWritten;
+  };
+
+  const { deps, calls } = makeDeps({
+    "teps/TEP-1/SP-1/SL-1.md": {
+      status: "ready",
+      satisfies: [1],
+      work_units: [{ footprint: [A], execution: "fan-out", note: "owns A" }],
+    },
+    "teps/TEP-1/SP-1/SL-2.md": {
+      status: "ready",
+      satisfies: [2],
+      work_units: [{ footprint: [B], execution: "fan-out", note: "owns B" }],
+    },
+  });
+
+  // Drive the REAL runViaSdk (NOT the runUnit seam, which would bypass the very
+  // PostToolUse/containment machinery AC4 is about). Remove the default runUnit so
+  // runWorker falls through to runViaSdk.
+  delete deps.runUnit;
+  // The shared worktree is a real git repo (runViaSdk's `git status --porcelain` and
+  // path-scoped revert run against it). worktrees.create returns it.
+  deps.worktrees = {
+    create: async () => repo,
+  } as unknown as OrchestratorDeps["worktrees"];
+
+  const aborted: Record<string, boolean> = {};
+  // Per-unit fake SDK: branch on the unit id embedded in the worker prompt; write THIS
+  // unit's in-footprint file as REAL Bash, sync on the barrier, then fire the real
+  // PostToolUse hooks, then (unless aborted) emit result:success.
+  deps.sdkQuery = ({ prompt, options }) => {
+    const opts = options as {
+      hooks: {
+        PostToolUse?: Array<{
+          hooks: Array<(i: unknown) => Promise<unknown>>;
+        }>;
+      };
+      abortController: AbortController;
+    };
+    async function* gen(): AsyncGenerator<unknown> {
+      // Read the first user message to learn which unit this is (its id + footprint).
+      let promptText = "";
+      for await (const m of prompt as AsyncIterable<unknown>) {
+        const content = (
+          m as { message?: { content?: unknown } }
+        )?.message?.content;
+        if (typeof content === "string") promptText = content;
+        break; // only the task message is needed to route
+      }
+      const ownsA = promptText.includes(A);
+      const file = ownsA ? A : B;
+      const tag = ownsA ? "A" : "B";
+      yield { type: "assistant", session_id: `e2e-${tag}` };
+      // This unit makes its OWN in-footprint change in the shared tree.
+      execFileSync("sh", ["-c", `printf '// ${tag} — edited\\n' > ${file}`], {
+        cwd: repo,
+        stdio: "pipe",
+      });
+      // Hold until BOTH units have written, so each check sees the other's change.
+      await barrier();
+      for (const grp of opts.hooks.PostToolUse ?? [])
+        for (const h of grp.hooks)
+          await h({ tool_name: "Bash", tool_input: {} });
+      aborted[tag] = opts.abortController.signal.aborted;
+      if (opts.abortController.signal.aborted) return;
+      yield {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        session_id: `e2e-${tag}`,
+      };
+    }
+    return gen();
+  };
+
+  // Cap 2 so both units dispatch concurrently — the scheduler holds both footprints
+  // in state.running at once.
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 2);
+
+  // Both units dispatched and BOTH landed success — neither was aborted by the other.
+  assert.equal(r.dispatched, 2, "two disjoint units dispatched concurrently");
+  assert.deepEqual(
+    r.results.map((x) => x.outcome).sort(),
+    ["success", "success"],
+    "both units landed success — neither aborted the other",
+  );
+  assert.equal(aborted.A, false, "unit A's query was not aborted");
+  assert.equal(aborted.B, false, "unit B's query was not aborted");
+  // No slice was flagged requires-attention by a misattributed containment breach.
+  assert.deepEqual(r.attention, [], "no slice flagged for a footprint breach");
+  // Crucially: NEITHER unit's in-footprint change was reverted by the other.
+  assert.equal(
+    fs.readFileSync(path.join(repo, A), "utf8"),
+    "// A — edited\n",
+    "unit A's change survived (B did not revert it)",
+  );
+  assert.equal(
+    fs.readFileSync(path.join(repo, B), "utf8"),
+    "// B — edited\n",
+    "unit B's change survived (A did not revert it)",
+  );
+  // Both slices advanced and the Spec committed (the green path completed end-to-end).
+  assert.deepEqual(
+    r.advanced.sort(),
+    ["TEP-1_SP-1_SL-1", "TEP-1_SP-1_SL-2"],
+    "both slices advanced",
+  );
+  assert.equal(calls.acquired.length, 2, "the scheduler dispatched both units");
+
+  fs.rmSync(repo, { recursive: true, force: true });
+});
