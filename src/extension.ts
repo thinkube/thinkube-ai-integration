@@ -14,7 +14,10 @@ import {
 import { AuthService } from "./github/AuthService";
 import { GitHubService } from "./github/GitHubService";
 import { ensureStableServerLink } from "./mcp/stableServerPath";
-import { writeMachineMcpConfig } from "./mcp/machineConfig";
+import {
+  ensureKanbanMcpRegistration,
+  writeMachineMcpConfig,
+} from "./mcp/machineConfig";
 import { AgentTeamsShimServer } from "./services/agentTeams/AgentTeamsShimServer";
 import {
   OwnershipArbiter,
@@ -177,6 +180,18 @@ export function activate(context: vscode.ExtensionContext) {
   writeMachineMcpConfig().catch((err) => {
     kanbanOutput.appendLine(
       `[thinkube] machine MCP config write failed: ${(err as Error).message}`,
+    );
+  });
+
+  // User-scope kanban server registration (TEP-th3i18 follow-up): the plugin no
+  // longer vendors the server and per-repo `.mcp.json` only reaches code repos, so a
+  // session rooted in a board thinking-space sidecar (no `.mcp.json`) lost
+  // `write_spec`. Register the server in Claude's user-scope `mcpServers` so EVERY
+  // session sees it, cwd-independent — the channel Claude Code reads (it ignores VS
+  // Code's MCP provider API the old KanbanMcpProvider used). Best-effort.
+  ensureKanbanMcpRegistration(context).catch((err) => {
+    kanbanOutput.appendLine(
+      `[thinkube] kanban MCP registration failed: ${(err as Error).message}`,
     );
   });
 
