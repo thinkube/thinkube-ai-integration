@@ -139,6 +139,14 @@ export interface OrchestratorDeps {
     cwd: string,
     footprint: string[],
   ) => Promise<ContainmentResult>;
+  /** The Agent SDK `query()` entry (tests): defaults to the lazy `import("@anthropic-ai/claude-agent-sdk")`.
+   *  Injected so a test can drive the REAL {@link OrchestratorService.runViaSdk} body — its PostToolUse
+   *  containment hook, the `AbortController` hard-stop, and the success-precedence — with only the SDK
+   *  boundary faked (no live `claude` subprocess). The default keeps production on the real lazy import. */
+  sdkQuery?: (args: {
+    prompt: AsyncIterable<unknown>;
+    options: Record<string, unknown>;
+  }) => AsyncIterable<unknown>;
 }
 
 /** What a worker run resolved to — the third outcome carries the escalated question + session id. */
@@ -858,7 +866,9 @@ export class OrchestratorService {
     })();
 
     try {
-      const { query } = await import("@anthropic-ai/claude-agent-sdk");
+      const query =
+        this.deps.sdkQuery ??
+        (await import("@anthropic-ai/claude-agent-sdk")).query;
       for await (const msg of query({
         prompt: input,
         options: {
