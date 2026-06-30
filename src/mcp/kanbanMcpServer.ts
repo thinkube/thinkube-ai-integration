@@ -163,6 +163,7 @@ import { ConcurrencyLock } from "../services/concurrencyLock";
 import {
   thinkingSpaceDirForNamespace,
   namespaceForRepo,
+  repoPathForNamespace,
   type WorkspaceFolderRef,
 } from "../store/thinkingSpaceNamespace";
 import {
@@ -1317,6 +1318,29 @@ export async function dispatchTool(
           );
         composedSpecId = `${parentTep}/${specId}`;
       }
+      // SP-6/1 provenance: when the server holds a signing secret AND an audit runner, the audit
+      // runs server-side. It must run where the CODE lives — the spec's WORKING repo (`repo:`),
+      // NOT store.workspaceRoot (the project-umbrella root has no package.json / repo-conventions,
+      // so the audit can neither read the code nor derive the real verification recipe — that's why
+      // it fabricated `npx vitest`). Resolve `repo:` (this call's arg, else the spec's existing
+      // frontmatter) to its path; fall back to the thinking space repo for a normal same-repo spec.
+      const auditOn =
+        ctx.auditRunner !== undefined && ctx.signingSecret !== undefined;
+      let auditCwd = store.workspaceRoot;
+      if (auditOn) {
+        const existingForRepo = await store.getFile(
+          store.pathForSpecDoc(composedSpecId),
+        );
+        const repoNs =
+          optString(args, "repo") ??
+          (typeof existingForRepo?.frontmatter?.repo === "string"
+            ? existingForRepo.frontmatter.repo.trim()
+            : undefined);
+        const resolved = repoNs
+          ? repoPathForNamespace(repoNs, ctx.env.folders)
+          : undefined;
+        if (resolved && fsSync.existsSync(resolved)) auditCwd = resolved;
+      }
       return writeSpec(
         store,
         composedSpecId,
@@ -1333,14 +1357,11 @@ export async function dispatchTool(
           ? (args.ac_verifications as Record<string, unknown>)
           : undefined,
         optString(args, "repo"),
-        // SP-6/1 provenance: when the server holds a signing secret AND an audit runner, hand them
-        // (plus the repo cwd the headless audit runs in) to `writeSpec` so it runs the audit, signs
-        // the result, and refuses an un-auditable Spec. Absent ⇒ legacy param path.
-        ctx.auditRunner !== undefined && ctx.signingSecret !== undefined
+        auditOn
           ? {
-              runner: ctx.auditRunner,
-              secret: ctx.signingSecret,
-              cwd: store.workspaceRoot,
+              runner: ctx.auditRunner!,
+              secret: ctx.signingSecret!,
+              cwd: auditCwd,
             }
           : undefined,
       );
