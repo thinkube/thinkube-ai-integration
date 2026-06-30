@@ -152,7 +152,18 @@ export interface OrchestratorDeps {
     prompt: AsyncIterable<unknown>;
     options: Record<string, unknown>;
   }) => AsyncIterable<unknown>;
+  /** Run-halt failure THRESHOLD (SP-2/TEP-6 AC5): once this many ordinary unit failures accrue across
+   *  the run, `dispatchSpec` HALTS — `fill()` stops pulling the ready frontier (no new dispatch), the
+   *  loop drains the in-flight units, writes the report, and returns. Defaults to {@link DEFAULT_FAIL_THRESHOLD}
+   *  (3). Overridable here (or via the `failThreshold` arg of `dispatchSpec`) so a test can set N=2.
+   *  A footprint VIOLATION is NOT counted here — it halts on its FIRST occurrence regardless. */
+  failThreshold?: number;
 }
+
+/** The default run-halt failure threshold (SP-2/TEP-6 AC5): a small N of ordinary unit failures across
+ *  a run after which no new units are dispatched. Kept low so a systemic failure can't burn a whole
+ *  doomed run before the human can interrupt it; overridable via the dep / the `dispatchSpec` arg. */
+export const DEFAULT_FAIL_THRESHOLD = 3;
 
 /** What a worker run resolved to — the third outcome carries the escalated question + session id. */
 export interface WorkerResult {
@@ -165,6 +176,11 @@ export interface WorkerResult {
    *  post-tool footprint-containment hard-stop (SP-6/2 AC3) so the flagged slice names the exact
    *  out-of-footprint path, rather than the generic "exited without success" failure message. */
   attention?: string;
+  /** True when this `failed` outcome is a **footprint VIOLATION** — the post-tool footprint-containment
+   *  hard-stop (AC3/AC4) aborted the unit — rather than an ordinary worker/test failure. Threaded as a
+   *  clean boolean (NOT a reason-string match) so `dispatchSpec`'s run-halt policy (SP-2/TEP-6 AC5) can
+   *  halt the run on the FIRST footprint violation, distinct from the per-failure threshold. */
+  containment?: boolean;
 }
 
 export type UnitOutcome = "success" | "needs-input" | "failed";
@@ -294,8 +310,22 @@ export class OrchestratorService {
    * all ran green (then those AC ordinals are ticked on the Spec); any red / un-runnable check
    * leaves its slice `requires-attention` (no skip). When the whole Spec is green it commits
    * **once**; the auditable per-AC report is written on every completion (pass or fail).
+   *
+   * **Run-halt policy (SP-2/TEP-6 AC5):** a systemic failure must not burn a whole doomed run.
+   * A footprint VIOLATION (a containment hard-stop, threaded as `containment: true`, NOT a
+   * reason-string match) halts on the FIRST one; an ordinary failure accrues a count and halts once
+   * it reaches `failThreshold` (the `failThreshold` arg, else the injected dep, else
+   * {@link DEFAULT_FAIL_THRESHOLD}). When halted, `fill()` stops pulling the ready frontier — NO new
+   * units dispatch — and the loop drains the already-running units, then finalizes (report written,
+   * Done slices committed/untouched) and returns. In-flight units are NOT killed; not-yet-dispatched
+   * units are simply left ready for a later re-orchestrate (which re-dispatches requires-attention +
+   * ready, skips Done).
    */
-  async dispatchSpec(specNumber: string, cap: number): Promise<SpecRunResult> {
+  async dispatchSpec(
+    specNumber: string,
+    cap: number,
+    failThreshold?: number,
+  ): Promise<SpecRunResult> {
     const { output } = this.deps;
     const result: SpecRunResult = {
       specNumber,
@@ -410,6 +440,16 @@ export class OrchestratorService {
     let wakeSignal = new Promise<void>((r) => (wake = r));
     const activeCount = () => running.size - parked.size;
 
+    // Run-halt policy (SP-2/TEP-6 AC5): a footprint VIOLATION halts on the first one; ordinary
+    // failures accrue and halt once they reach `threshold`. Once `halt` is set, `fill()` stops
+    // pulling the ready frontier (no new dispatch) — the loop only drains the in-flight units.
+    const threshold = Math.max(
+      1,
+      Math.floor(failThreshold ?? this.deps.failThreshold ?? DEFAULT_FAIL_THRESHOLD),
+    );
+    let failCount = 0;
+    let halt = false;
+
     // Resident needs-input park (SL-3): free the worker's slot + register its LIVE session so
     // `/attend` can push the answer in, but keep it alive (its promise resolves on the answered
     // continuation). Distinct from the exit-model `needs-input` outcome (a runUnit that RETURNS it)
@@ -427,6 +467,10 @@ export class OrchestratorService {
     };
 
     const fill = () => {
+      // Run halted (SP-2/TEP-6 AC5): stop pulling the ready frontier — dispatch NO new units. The
+      // already-running units drain in the loop below; the not-yet-dispatched ones stay ready for a
+      // later re-orchestrate. We never kill an in-flight unit.
+      if (halt) return;
       for (const u of readyFrontier(dag, state)) {
         if (activeCount() >= limit) break;
         if (running.has(u.id)) continue;
@@ -512,6 +556,24 @@ export class OrchestratorService {
             `Worker for ${d.id} exited without success — see the session JSON-log.`,
         );
         output.appendLine(`⚑ ${d.slice}: ${d.id} failed → requires-attention.`);
+        // Run-halt policy (SP-2/TEP-6 AC5). A footprint VIOLATION (the containment hard-stop, flagged
+        // by the clean `containment` boolean — NOT a reason-string match) halts on the FIRST one: a
+        // breach is systemic, not isolated. An ordinary failure accrues a count and halts once it
+        // reaches the threshold N. Once halted, `fill()` (below) stops dispatching new units; the loop
+        // drains the in-flight ones, then finalizes + returns. In-flight units are never killed.
+        if (!halt) {
+          if (d.containment) {
+            halt = true;
+            output.appendLine(
+              `■ SP-${specNumber}: footprint violation in ${d.id} → run halted (no new units dispatched; draining ${activeCount()} in-flight).`,
+            );
+          } else if (++failCount >= threshold) {
+            halt = true;
+            output.appendLine(
+              `■ SP-${specNumber}: ${failCount} unit failure(s) reached the halt threshold (${threshold}) → run halted (no new units dispatched; draining ${activeCount()} in-flight).`,
+            );
+          }
+        }
       } else {
         state.done.add(d.id);
         markUnitDone(d.id); // graph: show this worker's node done (lime) until re-dispatch
@@ -616,7 +678,10 @@ export class OrchestratorService {
       );
     }
 
-    if (landed.size > 0) {
+    // Write the delivery report whenever any unit landed OR the run was HALTED (SP-2/TEP-6 AC5):
+    // a halt must still leave the audit trail (the caught failures + the in-flight units it drained)
+    // even when nothing landed, so the human re-orchestrating sees why the run stopped.
+    if (landed.size > 0 || halt) {
       result.deliveryDoc = await this.writeDeliverySummary(
         specNumber,
         worktreePath,
@@ -818,6 +883,7 @@ export class OrchestratorService {
         question: wr.question,
         sessionId: wr.sessionId,
         attention: wr.attention,
+        containment: wr.containment,
       };
     } finally {
       endSession(unit.id);
@@ -1023,7 +1089,12 @@ export class OrchestratorService {
       // the EXPECTED terminal path, not an SDK failure: fail the unit with the offending-path
       // diagnosis so its slice is flagged requires-attention naming the breach.
       if (containmentReason)
-        return { outcome: "failed", sessionId, attention: containmentReason };
+        return {
+          outcome: "failed",
+          sessionId,
+          attention: containmentReason,
+          containment: true,
+        };
       this.deps.output.appendLine(
         `  ✗ ${unit.id} SDK worker error: ${(err as Error).message}`,
       );
@@ -1031,7 +1102,12 @@ export class OrchestratorService {
     }
     // A containment breach is terminal even if the abort raced a `result: success`.
     if (containmentReason)
-      return { outcome: "failed", sessionId, attention: containmentReason };
+      return {
+        outcome: "failed",
+        sessionId,
+        attention: containmentReason,
+        containment: true,
+      };
     return success
       ? { outcome: "success", sessionId }
       : { outcome: "failed", sessionId };
@@ -1426,4 +1502,7 @@ interface UnitDone {
   /** A requires-attention diagnosis to surface verbatim (failed only) — the footprint-containment
    *  hard-stop's offending-path message (SP-6/2 AC3). */
   attention?: string;
+  /** True when this `failed` outcome is a footprint VIOLATION (the containment hard-stop aborted the
+   *  unit), distinct from an ordinary failure — the run-halt policy halts on the first one (SP-2 AC5). */
+  containment?: boolean;
 }
