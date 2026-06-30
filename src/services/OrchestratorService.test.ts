@@ -16,13 +16,17 @@ import * as path from "node:path";
 
 import {
   OrchestratorService,
+  verificationIsWorkerAuthored,
   type OrchestratorDeps,
   type OnPark,
   type WorkerResult,
 } from "./OrchestratorService";
 import { answerParkedWorker } from "./orchestratorSessions";
 import type { SchedUnit } from "./orchestratorCore";
-import type { ContainmentResult } from "../methodology/parallelSlices";
+import {
+  resolveFootprint,
+  type ContainmentResult,
+} from "../methodology/parallelSlices";
 
 type RunUnit = NonNullable<OrchestratorDeps["runUnit"]>;
 
@@ -52,6 +56,50 @@ function svcRunViaSdk(
   };
   return (unit, specNumber, cwd, onPark, unionFootprint, baseline) =>
     svc.runViaSdk(unit, specNumber, cwd, onPark, unionFootprint, baseline);
+}
+
+/** Reach the orchestrator's private `loadPromptContext` + the `promptCtx` it populates — the
+ *  AC1 path under test (SP-6/6 "hold out the exam"). A focused cast onto the real instance, not a
+ *  reimplementation: the body (fetch the spec doc + each slice, reduce each to its intent view via
+ *  the core's `stripAcceptanceCriteria` / `stripSatisfies`) is the real production code. */
+function svcLoadPromptContext(deps: OrchestratorDeps): {
+  load: (specNumber: string) => Promise<void>;
+  ctx: () => { specBody: string; sliceBodies: Map<string, string> };
+} {
+  const svc = new OrchestratorService(deps) as unknown as {
+    loadPromptContext: (specNumber: string) => Promise<void>;
+    promptCtx: { specBody: string; sliceBodies: Map<string, string> };
+  };
+  return {
+    load: (specNumber) => svc.loadPromptContext(specNumber),
+    ctx: () => svc.promptCtx,
+  };
+}
+
+/** A store fake whose spec doc + slices carry REAL markdown bodies, so `loadPromptContext` is
+ *  exercised against actual content (the makeDeps store always returns an empty body). The spec
+ *  doc resolves at `SPEC_DOC`; each `slices` entry maps a `teps/.../SL-<n>.md` rel path to a body.
+ *  Everything else routes to the makeDeps defaults. */
+function makeBodyDeps(
+  specBody: string,
+  slices: Array<{ n: number; body: string }>,
+): OrchestratorDeps {
+  const deps = makeDeps({}).deps;
+  const sliceRel = (n: number) => `teps/TEP-1/SP-1/SL-${n}.md`;
+  const byRel = new Map(slices.map((s) => [sliceRel(s.n), s.body]));
+  deps.store = {
+    listSlices: async () => slices.map((s) => sliceRel(s.n)),
+    getFile: async (rel: string) =>
+      rel === SPEC_DOC
+        ? { frontmatter: {}, body: specBody, raw: specBody }
+        : { frontmatter: {}, body: byRel.get(rel) ?? "", raw: "" },
+    sliceHandle: (spec: string, n: number) => {
+      const [t, s] = spec.split("/");
+      return `TEP-${t}_SP-${s}_SL-${n}`;
+    },
+    pathForSpecDoc: () => SPEC_DOC,
+  } as unknown as OrchestratorDeps["store"];
+  return deps;
 }
 
 /** A runUnit that resolves to a fixed outcome (the default seam: success). */
@@ -579,6 +627,114 @@ test("dispatchSpec: a resident worker PARKS (frees its slot), then an external a
   );
   assert.equal(r.committed, true);
   assert.deepEqual(calls.needsInput, ["TEP-1_SP-1_SL-1"]); // flagged needs-input on park
+});
+
+// ── loadPromptContext supplies the INTENT view, not the raw AC block (SP-6/6 AC1) ──
+//
+// AC1: "When the orchestrator builds a worker's prompt for a slice, the prompt contains the
+// intent (goal / design / behavioural spec of what correct does) but NOT the Spec's
+// `## Acceptance Criteria` block nor the slice's `satisfies` ordinals — the implementer cannot
+// read the exam it is graded on." `loadPromptContext` is the source that fills `promptCtx`
+// (the spec/slice prose later embedded by `buildWorkerPrompt`). These tests drive the REAL
+// `loadPromptContext` against a store whose spec doc + slices carry real markdown bodies, then
+// assert what it stored: the intent (Summary / Design) survives, while the gradeable criteria
+// (the `## Acceptance Criteria` block + every `satisfies` embedding) is held out — at the source,
+// so `promptCtx.specBody` itself is already exam-free (defence in depth alongside the strip in
+// `buildWorkerPrompt`). The slice still keeps `satisfies` orchestrator-internally (frontmatter,
+// read in `buildSlices`) — what's withheld is only the PROSE the worker reads.
+
+const AC1_SPEC_BODY = [
+  "## Summary",
+  "",
+  "Build the dedupe gateway that drops repeated events before the sink.",
+  "",
+  "## Design",
+  "",
+  "The gateway hashes each event and consults a bounded LRU before forwarding.",
+  "",
+  "## Acceptance Criteria",
+  "",
+  "- [ ] **The gateway drops exact duplicates.** A repeated event id must emit EXACTLY ONCE.",
+  "- [ ] **The LRU evicts oldest-first.** After 1024 entries the coldest key is purged.",
+  "",
+  "satisfies: [1, 2]",
+  "",
+  "## Constraints",
+  "",
+  "Stay deterministic — no clock, no randomness.",
+].join("\n");
+
+test("loadPromptContext: the spec INTENT view keeps Summary/Design but strips the `## Acceptance Criteria` block + `satisfies` (the worker never reads the exam)", async () => {
+  const h = svcLoadPromptContext(makeBodyDeps(AC1_SPEC_BODY, []));
+  await h.load("1/1");
+  const { specBody } = h.ctx();
+
+  // Intent survives — the worker must build correctly from this alone.
+  assert.match(specBody, /## Summary/);
+  assert.match(specBody, /dedupe gateway/);
+  assert.match(specBody, /## Design/);
+  assert.match(specBody, /bounded LRU/);
+  // …and the section AFTER the AC block survives (the strip ends at the next same-level heading,
+  // it does not swallow the rest of the document).
+  assert.match(specBody, /## Constraints/);
+  assert.match(specBody, /no randomness/);
+
+  // The gradeable criteria are HELD OUT — heading, each criterion title, and the leaked
+  // gradeable detail the implementer would otherwise optimise toward.
+  assert.doesNotMatch(specBody, /## Acceptance Criteria/);
+  assert.doesNotMatch(specBody, /drops exact duplicates/i);
+  assert.doesNotMatch(specBody, /EXACTLY ONCE/);
+  assert.doesNotMatch(specBody, /evicts oldest-first/i);
+  // …and the `satisfies` embedding (which AC ordinals it is graded against) is stripped too.
+  assert.doesNotMatch(specBody, /^\s*satisfies\s*:/im);
+});
+
+test("loadPromptContext: each slice body is reduced to its intent view (AC block + `satisfies` stripped), keyed by slice handle", async () => {
+  const sliceBody = [
+    "satisfies: [3]",
+    "",
+    "## Task",
+    "",
+    "Wire the LRU into the gateway's forward path.",
+    "",
+    "## Acceptance Criteria",
+    "",
+    "- [ ] **Forwarding is single-pass.** Each event hits the LRU AT MOST ONCE.",
+  ].join("\n");
+  const h = svcLoadPromptContext(
+    makeBodyDeps(AC1_SPEC_BODY, [{ n: 1, body: sliceBody }]),
+  );
+  await h.load("1/1");
+  const { sliceBodies } = h.ctx();
+
+  const intent = sliceBodies.get("TEP-1_SP-1_SL-1");
+  assert.ok(
+    intent !== undefined,
+    "the slice's intent view is stored under its handle",
+  );
+  // Intent (the unit's task) survives…
+  assert.match(intent!, /## Task/);
+  assert.match(intent!, /forward path/);
+  // …while the slice's own AC block + `satisfies` embedding are held out.
+  assert.doesNotMatch(intent!, /## Acceptance Criteria/);
+  assert.doesNotMatch(intent!, /single-pass/i);
+  assert.doesNotMatch(intent!, /AT MOST ONCE/);
+  assert.doesNotMatch(intent!, /^\s*satisfies\s*:/im);
+});
+
+test("loadPromptContext: a store read error is best-effort — promptCtx falls back to empty, never leaks a raw body", async () => {
+  const deps = makeBodyDeps(AC1_SPEC_BODY, []);
+  (deps.store as unknown as { getFile: () => Promise<never> }).getFile =
+    async () => {
+      throw new Error("thinking space unreachable");
+    };
+  const h = svcLoadPromptContext(deps);
+  await h.load("1/1");
+  const { specBody, sliceBodies } = h.ctx();
+  // No partial/raw spec body is exposed when the read fails — the worker just falls back to its
+  // unit note, never to an un-stripped (exam-bearing) body.
+  assert.equal(specBody, "");
+  assert.equal(sliceBodies.size, 0);
 });
 
 // ── Post-tool footprint containment hard-stop (SP-6/2 AC3) ─────────────────
@@ -1657,4 +1813,286 @@ test("dispatchSpec AC5 (end-to-end): a REAL runViaSdk footprint breach sets cont
   );
 
   fs.rmSync(repo, { recursive: true, force: true });
+});
+
+// ── Held-out acceptance evidence: untouchable grader + independent grade (SP-6/6 AC2 + AC4) ──
+//
+// AC2: "The implementer cannot author or alter the grading evidence. The acceptance probes the
+// closing gate runs resolve to paths OUTSIDE every unit's declared footprint, and a worker
+// attempt to create/modify/delete an acceptance-evidence file is refused/hard-stopped (via SP-2's
+// fence) — the unit goes requires-attention rather than producing a green it authored."
+//
+// AC4: "The independent grader closes the loop; the worker cannot. The pass/fail that advances a
+// slice toward Done is produced by re-running the independently-authored acceptance evidence;
+// there is no path by which the implementing or fixing worker marks its own ACs green (no
+// self-tick, no worker-authored test counts as the grade)."
+//
+// The evidence convention (`acceptance/` path segment → never-in-footprint, via
+// `parallelSlices.resolveFootprint`) and the self-tick predicate
+// (`OrchestratorService.verificationIsWorkerAuthored`) are the seams this unit reuses — it does
+// NOT re-invent the rule, it drives the real wiring:
+//   • AC2 rides the SAME real `runViaSdk` → PostToolUse → `footprintContainment` → path-scoped
+//     revert → terminal requires-attention machinery the AC3/AC4 (SP-2) tests above exercise,
+//     but with the breach pointed at a held-out `acceptance/` path — which is a violation EVEN
+//     when the unit declared it (the resolver strips it from every exemption set);
+//   • AC4 drives the REAL closing gate in `dispatchSpec`: a verification whose `run` reaches a
+//     dispatched unit's own footprint is a self-tick that is DROPPED from the grade (the AC falls
+//     un-graded → the slice goes requires-attention, never advanced/committed/checked), while a
+//     verification that runs only the out-of-footprint acceptance evidence grades the slice green.
+
+test("runViaSdk AC2: a worker write to a held-out acceptance-evidence path hard-stops → abort + PATH-SCOPED revert + TERMINAL requires-attention naming it (the implementer cannot author the grader)", async () => {
+  // The shared worktree holds this unit's owned file plus the held-out acceptance evidence the
+  // independent grader runs. The worker tries to TAMPER with the grader (rewrite it so its own AC
+  // goes green) — the deterministic analog of "the student edits the answer key."
+  const repo = initGitRepo({
+    "src/owned.ts": "// owned\n",
+    "tests/acceptance/SP-6.test.ts":
+      "// the held-out grader — only the independent verifier may author this\n",
+  });
+
+  const observed: { aborted?: boolean } = {};
+  const deps = makeDeps({}).deps;
+  // A Bash MODIFY of the tracked acceptance file (no `file_path` for the PreToolUse guard to
+  // pre-screen — the stub-and-edit hole the post-tool containment closes).
+  deps.sdkQuery = fakeSdkQueryRunningBashThen(
+    repo,
+    ["printf '// tampered so my AC passes\\n' > tests/acceptance/SP-6.test.ts"],
+    observed,
+  );
+
+  // The unit is fenced to its own file; the acceptance path is in NO footprint.
+  const unit = ac3Unit(["src/owned.ts"]);
+  const result = await svcRunViaSdk(deps)(
+    unit,
+    "1/1",
+    repo,
+    () => {},
+    ["src/owned.ts"], // the run-level union — the acceptance evidence is outside it
+    [],
+  );
+
+  // The live query was aborted the instant containment fired (SP-2 fence).
+  assert.equal(
+    observed.aborted,
+    true,
+    "a write to the held-out acceptance evidence aborts the worker",
+  );
+  // TERMINAL requires-attention NAMING the acceptance path — never a recoverable deny.
+  assert.equal(
+    result.outcome,
+    "failed",
+    "tampering with the grader is a terminal containment breach",
+  );
+  assert.match(result.attention ?? "", /tests\/acceptance\/SP-6\.test\.ts/);
+  assert.match(result.attention ?? "", /requires-attention/);
+  assert.match(result.attention ?? "", /not a recoverable deny/i);
+  // The tamper was reverted (restored to HEAD): the independent grader is left intact, never
+  // a green the worker authored.
+  assert.equal(
+    fs.readFileSync(path.join(repo, "tests/acceptance/SP-6.test.ts"), "utf8"),
+    "// the held-out grader — only the independent verifier may author this\n",
+    "the held-out grader is restored — the worker's tamper never lands",
+  );
+
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
+test("runViaSdk AC2: even when a unit DECLARES the acceptance-evidence path in its footprint, a write there STILL hard-stops (the resolver makes it never-in-footprint — no claiming the grader)", async () => {
+  // The strongest form of AC2: a worker that brazenly LISTS the acceptance evidence in its own
+  // footprint still cannot author it. `resolveFootprint` strips the held-out path from owned, the
+  // running-union, AND baseline, so the create is a violation regardless of what the unit declared.
+  // `tests/acceptance/` is already tracked (a held-out grader lives there) so git reports the NEW
+  // file by its full path — otherwise git collapses a brand-new untracked dir to `tests/` and the
+  // breach would be caught generically rather than specifically via the resolver strip.
+  const repo = initGitRepo({
+    "src/owned.ts": "// owned\n",
+    "tests/acceptance/keep.test.ts": "// an existing held-out grader\n",
+  });
+
+  const observed: { aborted?: boolean } = {};
+  const deps = makeDeps({}).deps;
+  // A Bash CREATE of an acceptance-evidence file (untracked, `??`) the unit "owns" on paper.
+  deps.sdkQuery = fakeSdkQueryRunningBashThen(
+    repo,
+    [
+      "cat > tests/acceptance/sneak.test.ts <<'E'\n// a grader I wrote for myself\nE",
+    ],
+    observed,
+  );
+
+  // The unit DECLARES both its real file AND the acceptance path — the resolver must strip the
+  // latter from every exemption set (owned + union) so the write is still a breach.
+  const unit = ac3Unit(["src/owned.ts", "tests/acceptance/sneak.test.ts"]);
+  const result = await svcRunViaSdk(deps)(
+    unit,
+    "1/1",
+    repo,
+    () => {},
+    ["src/owned.ts", "tests/acceptance/sneak.test.ts"], // declared in the union too — still stripped
+    [],
+  );
+
+  assert.equal(
+    observed.aborted,
+    true,
+    "a declared acceptance-evidence write is still a breach (never-in-footprint)",
+  );
+  assert.equal(result.outcome, "failed");
+  assert.match(result.attention ?? "", /tests\/acceptance\/sneak\.test\.ts/);
+  assert.match(result.attention ?? "", /requires-attention/);
+  // The self-authored grader was cleaned away — it never lands as evidence.
+  assert.equal(
+    fs.existsSync(path.join(repo, "tests/acceptance/sneak.test.ts")),
+    false,
+    "a worker-authored grader is reverted — declaring it in footprint does not let it land",
+  );
+
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
+test("dispatchSpec AC4: a worker-authored verification (its `run` reaches the unit's OWN footprint) is EXCLUDED from the grade — the AC is un-graded → requires-attention, never advanced/committed/checked (no self-tick)", async () => {
+  // SL-1's worker owns (and authored) `src/feature.test.ts`. The Spec declares AC#1's verification
+  // as running THAT test (the compiled `out-test/feature.test.js`). Even though the runner reports
+  // it green, it is the worker's OWN evidence — it must NOT count as the grade. With AC#1 dropped,
+  // the slice falls un-graded and goes requires-attention; nothing advances or commits.
+  const { deps, calls } = makeDeps(
+    {
+      "teps/TEP-1/SP-1/SL-1.md": {
+        status: "ready",
+        files: ["src/feature.test.ts"], // the worker owns the test it would be graded on
+        satisfies: [1],
+      },
+    },
+    {
+      verifs: { "1": { run: "node --test out-test/feature.test.js" } },
+      acPass: { 1: true }, // the worker-authored test "passes" — it must STILL not count
+    },
+  );
+
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
+
+  // The unit landed (the worker succeeded) — the gate ran, so this is about the GRADE, not a crash.
+  assert.deepEqual(
+    r.results.map((x) => x.outcome),
+    ["success"],
+    "the unit landed — the gate ran",
+  );
+  // No self-tick path: the slice cannot advance off its own evidence.
+  assert.deepEqual(
+    r.advanced,
+    [],
+    "a self-ticked AC can never advance the slice",
+  );
+  assert.deepEqual(
+    r.attention,
+    ["TEP-1_SP-1_SL-1"],
+    "the AC is un-graded (self-tick dropped) → requires-attention",
+  );
+  assert.equal(r.committed, false, "no commit on a self-ticked grade");
+  assert.deepEqual(
+    calls.checked,
+    [],
+    "the AC ordinal is NEVER checked off the worker's own evidence",
+  );
+  // The full per-AC run still lands on the auditable result (the human sees WHY it didn't count)…
+  assert.deepEqual(
+    r.acResults.map((x) => [x.ac, x.pass] as [number, boolean]),
+    [[1, true]],
+    "the self-tick still appears in the audit trail (run, but not graded)",
+  );
+  // …but the grade excluded it, and that exclusion is logged.
+  assert.ok(
+    calls.log.some((l) => /self-tick/i.test(l)),
+    "the self-tick exclusion from the grade is logged",
+  );
+});
+
+test("dispatchSpec AC4: an INDEPENDENT verification (its `run` reaches only out-of-footprint acceptance evidence) grades — the slice advances, its ordinal is checked, the Spec commits", async () => {
+  // SL-1's worker owns the IMPLEMENTATION (`src/feature.ts`) only. AC#1 is proven by held-out
+  // acceptance evidence under `acceptance/` — never-in-footprint, so it is independent of the
+  // implementer. The independent green is the ONLY thing that ticks the ordinal and advances Done.
+  const { deps, calls } = makeDeps(
+    {
+      "teps/TEP-1/SP-1/SL-1.md": {
+        status: "ready",
+        files: ["src/feature.ts"], // the worker owns only the implementation
+        satisfies: [1],
+      },
+    },
+    {
+      verifs: { "1": { run: "node --test out-test/acceptance/sp6.test.js" } },
+      acPass: { 1: true },
+    },
+  );
+
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
+
+  assert.deepEqual(
+    r.advanced,
+    ["TEP-1_SP-1_SL-1"],
+    "an independently-graded green advances the slice",
+  );
+  assert.deepEqual(
+    calls.checked,
+    [1],
+    "the ordinal is checked off the INDEPENDENT evidence (the grader closed the loop)",
+  );
+  assert.equal(
+    r.committed,
+    true,
+    "the Spec commits on an independently-graded green",
+  );
+  assert.deepEqual(
+    r.attention,
+    [],
+    "nothing requires-attention — the independent grade passed",
+  );
+});
+
+test("verificationIsWorkerAuthored: a run reaching worker-owned footprint is a self-tick; a run reaching only (stripped) acceptance evidence is independent — empty footprint never self-ticks", () => {
+  // Build `workerOwned` exactly as the closing gate does: the union of dispatched footprints with
+  // held-out acceptance evidence stripped (`resolveFootprint` → never-in-footprint). This locks the
+  // contract the gate consumes — the predicate that decides "the worker could have authored this."
+  const owned = new Set(
+    resolveFootprint([
+      "src/feature.ts",
+      "src/feature.test.ts",
+      "tests/acceptance/sp6.test.ts", // held-out — must be stripped out of owned
+    ]),
+  );
+  assert.ok(
+    !owned.has("tests/acceptance/sp6.test.ts"),
+    "the acceptance evidence is stripped from the worker-owned set (never-in-footprint)",
+  );
+
+  // A run that executes the worker's OWN (compiled) test resolves back to its `src/` source → self-tick.
+  assert.equal(
+    verificationIsWorkerAuthored("node --test out-test/feature.test.js", owned),
+    true,
+    "running the worker's own compiled test is a self-tick",
+  );
+  // A plain in-footprint source path → self-tick.
+  assert.equal(
+    verificationIsWorkerAuthored("npx tsx src/feature.ts", owned),
+    true,
+    "a run reaching an in-footprint source is a self-tick",
+  );
+  // A run that executes ONLY the held-out acceptance evidence → independent (it grades).
+  assert.equal(
+    verificationIsWorkerAuthored(
+      "node --test out-test/acceptance/sp6.test.js",
+      owned,
+    ),
+    false,
+    "a run over only the out-of-footprint acceptance evidence is independent",
+  );
+  // No dispatched footprint at all → nothing can be a self-tick (vacuously independent).
+  assert.equal(
+    verificationIsWorkerAuthored(
+      "node --test out-test/feature.test.js",
+      new Set<string>(),
+    ),
+    false,
+    "with no worker-owned footprint nothing is a self-tick",
+  );
 });
