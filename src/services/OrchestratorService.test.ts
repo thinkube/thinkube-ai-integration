@@ -1254,3 +1254,136 @@ test("dispatchSpec AC4 (end-to-end): two concurrent disjoint units — the SCHED
 
   fs.rmSync(repo, { recursive: true, force: true });
 });
+
+// ── Run-halt policy (SP-2 / TEP-6 mechanism 4, AC5) ─────────────────────────
+//
+// Today the loop is per-UNIT isolated: a failed unit → requires-attention while the
+// run keeps dispatching the rest of the frontier to quiescence — so a systemic
+// failure (a footprint violation, or a cascade) burns tokens on a doomed run the
+// human can't interrupt until it ends. AC5 adds a run-halt:
+//   • a footprint VIOLATION (the AC3/AC4 containment hard-stop, carried as the clean
+//     `containment: true` outcome flag — NOT a reason-string match) halts on the FIRST;
+//   • N ordinary failures (N a small configurable default, here overridden via the
+//     dispatchSpec `failThreshold` arg) halt the run;
+//   • once halted, `fill()` stops pulling the ready frontier — NO new units dispatch —
+//     the loop drains the in-flight units, writes the report, and returns; already-Done
+//     units are untouched and not-yet-dispatched units stay ready for a re-orchestrate.
+//
+// cap 1 makes dispatch serial, so the halt takes effect (in the completing unit's loop
+// turn) BEFORE the next fill — the later ready units provably never dispatch.
+
+test("dispatchSpec AC5: a footprint VIOLATION halts the run on the FIRST one — no later unit dispatches, the report is still written, a Done unit is untouched", async () => {
+  // SL-1 is already Done (must stay untouched). SL-2 returns a footprint VIOLATION
+  // (containment: true). SL-3 is ready but must NEVER dispatch once the run halts.
+  const seen: string[] = [];
+  const { deps, calls } = makeDeps(
+    {
+      "teps/TEP-1/SP-1/SL-1.md": { status: "done", files: ["src/done.ts"] },
+      "teps/TEP-1/SP-1/SL-2.md": { status: "ready", files: ["src/a.ts"] },
+      "teps/TEP-1/SP-1/SL-3.md": { status: "ready", files: ["src/b.ts"] },
+    },
+    {
+      run: async (unit) => {
+        seen.push(unit.id);
+        // The breaching unit fails as a footprint violation; any other ready unit
+        // would succeed — but it must never get the chance to run.
+        return unit.slice === "TEP-1_SP-1_SL-2"
+          ? {
+              outcome: "failed" as const,
+              attention: "out-of-footprint write to src/evil.ts — not a recoverable deny",
+              containment: true,
+            }
+          : { outcome: "success" as const };
+      },
+    },
+  );
+
+  // cap 1 → serial dispatch, so the violation halts the run before SL-3 can be pulled.
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 1);
+
+  // Exactly one unit dispatched (the violating SL-2); SL-3 stayed ready (never run).
+  assert.equal(r.dispatched, 1, "only the violating unit dispatched — the run halted before SL-3");
+  assert.deepEqual(seen, ["TEP-1_SP-1_SL-2"], "no later unit ran after the violation");
+  assert.deepEqual(
+    r.results.map((x) => x.outcome),
+    ["failed"],
+    "the one dispatched unit failed (a footprint violation)",
+  );
+  assert.deepEqual(r.attention, ["TEP-1_SP-1_SL-2"], "the breaching slice → requires-attention");
+  // SL-1 was already Done before the run — it is untouched (never re-dispatched, never advanced).
+  assert.ok(!seen.includes("TEP-1_SP-1_SL-1"), "the already-Done unit was not re-dispatched");
+  assert.ok(
+    !calls.advanced.includes("TEP-1_SP-1_SL-1"),
+    "the already-Done slice is left untouched",
+  );
+  assert.equal(r.committed, false, "a halted run does not commit the Spec");
+  // The report is STILL written (durable work / audit trail preserved on a halt).
+  assert.ok(r.deliveryDoc, "the delivery report is written even on a halted run");
+});
+
+test("dispatchSpec AC5: N ordinary failures halt the run (N=2 via override) — the (N+1)th ready unit never dispatches", async () => {
+  // Three ready units, each an ordinary failure. With N=2 the run halts after the
+  // second failure, so the third unit is never pulled. cap 1 → serial dispatch.
+  const seen: string[] = [];
+  const { deps } = makeDeps(
+    {
+      "teps/TEP-1/SP-1/SL-1.md": { status: "ready", files: ["src/a.ts"] },
+      "teps/TEP-1/SP-1/SL-2.md": { status: "ready", files: ["src/b.ts"] },
+      "teps/TEP-1/SP-1/SL-3.md": { status: "ready", files: ["src/c.ts"] },
+    },
+    {
+      run: async (unit) => {
+        seen.push(unit.id);
+        return { outcome: "failed" as const }; // ordinary failure (no containment flag)
+      },
+    },
+  );
+
+  // Override N=2 via the dispatchSpec failThreshold arg.
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 1, 2);
+
+  assert.equal(r.dispatched, 2, "exactly N=2 units dispatched — the 3rd never ran");
+  assert.equal(seen.length, 2, "the (N+1)th ready unit was never dispatched");
+  assert.deepEqual(
+    r.results.map((x) => x.outcome),
+    ["failed", "failed"],
+    "both dispatched units failed",
+  );
+  assert.equal(r.attention.length, 2, "both failures flagged requires-attention");
+  assert.equal(r.committed, false);
+});
+
+test("dispatchSpec AC5: a SINGLE ordinary failure with N=3 does NOT halt — a healthy sibling still dispatches and lands (isolation below the threshold)", async () => {
+  // Two ready units: SL-1 fails (ordinary), SL-2 succeeds. Below the N=3 threshold the
+  // run does NOT halt — per-unit isolation holds and the healthy sibling still runs to
+  // a landed unit (its whole-Spec commit stays gated by the failure, as today: the
+  // closing gate only runs at a clean quiescence — the point here is dispatch continues).
+  const seen: string[] = [];
+  const { deps } = makeDeps(
+    {
+      "teps/TEP-1/SP-1/SL-1.md": { status: "ready", files: ["src/a.ts"], satisfies: [1] },
+      "teps/TEP-1/SP-1/SL-2.md": { status: "ready", files: ["src/b.ts"], satisfies: [2] },
+    },
+    {
+      run: async (unit) => {
+        seen.push(unit.id);
+        return unit.slice === "TEP-1_SP-1_SL-1"
+          ? { outcome: "failed" as const }
+          : { outcome: "success" as const };
+      },
+    },
+  );
+
+  // Threshold N=3 (one failure is below it) → no halt.
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 1, 3);
+
+  assert.equal(r.dispatched, 2, "both units dispatched — one failure below N=3 does not halt");
+  assert.equal(seen.length, 2, "the healthy sibling still ran despite the single failure");
+  assert.ok(seen.includes("TEP-1_SP-1_SL-2"), "the healthy sibling was dispatched (not halted)");
+  assert.deepEqual(
+    r.results.map((x) => x.outcome).sort(),
+    ["failed", "success"],
+    "the sibling landed success while the other failed — per-unit isolation preserved",
+  );
+  assert.deepEqual(r.attention, ["TEP-1_SP-1_SL-1"], "only the failed slice → requires-attention");
+});
