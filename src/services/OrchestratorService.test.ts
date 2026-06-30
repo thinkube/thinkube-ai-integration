@@ -696,16 +696,13 @@ test("containmentCheck: an out-of-footprint Bash create + delete are detected an
       containmentCheck: (
         cwd: string,
         footprint: string[],
-      ) => Promise<{
-        ok: boolean;
-        violations: { file: string; change: string }[];
-        reason: string;
-      }>;
+      ) => Promise<ContainmentResult>;
     }
   ).containmentCheck(repo, footprint);
 
   // Both out-of-footprint changes are surfaced (Bash-made, no `file_path` to pre-screen).
   assert.equal(verdict.ok, false);
+  if (verdict.ok) throw new Error("expected a containment violation");
   assert.deepEqual(verdict.violations.map((v) => v.file).sort(), [
     "src/evil.ts",
     "src/gone.ts",
