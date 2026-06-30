@@ -1387,3 +1387,150 @@ test("dispatchSpec AC5: a SINGLE ordinary failure with N=3 does NOT halt — a h
   );
   assert.deepEqual(r.attention, ["TEP-1_SP-1_SL-1"], "only the failed slice → requires-attention");
 });
+
+// ── AC5 durability: the REAL containment-threading drives the halt (not a hand-set flag) ──
+//
+// The three policy tests above inject the outcome through the `runUnit` seam and HAND-SET
+// `containment: true`, so they exercise the halt POLICY but NOT the wiring that produces the flag:
+// `runViaSdk` (the post-tool hard-stop) → `dispatchUnit` (threads `wr.containment` onto UnitDone) →
+// the completion loop's `d.containment` halt branch. This end-to-end test closes that gap: it runs
+// the REAL `runViaSdk` (only the SDK boundary faked via `sdkQuery`) against a REAL on-disk git repo
+// where a worker makes a GENUINE out-of-footprint Bash change (`cat >` a create, `rm` a delete), so
+// the real PostToolUse containment check fires, sets `containment: true`, and that flag — threaded
+// through the real loop — is what halts the run on the FIRST violation. A regression that stopped
+// `runViaSdk` emitting the flag, or dropped it in `dispatchUnit`, would let dispatch continue and
+// FAIL this test. cap 1 → serial dispatch, so the halt provably lands before the next unit is pulled.
+test("dispatchSpec AC5 (end-to-end): a REAL runViaSdk footprint breach sets containment:true AND halts the run on the FIRST violation — no further dispatch, report still written", async () => {
+  // The shared worktree: the breaching unit's owned file, plus a tracked file its out-of-footprint
+  // `rm` will illegally delete. A real git repo so the real containment check has a tree to diff.
+  const repo = initGitRepo({
+    "src/owned.ts": "// owned\n",
+    "src/gone.ts": "// only its owner may delete this\n",
+  });
+
+  // First, prove the THREADING link directly: the real runViaSdk, on a genuine breach, RETURNS a
+  // WorkerResult carrying containment:true (the flag the loop's halt branch keys on). This is the
+  // exact link the hand-set-`containment` policy tests skip.
+  {
+    const probeDeps = makeDeps({}).deps;
+    delete probeDeps.runUnit;
+    probeDeps.sdkQuery = fakeSdkQueryRunningBashThen(
+      repo,
+      [
+        "cat > src/evil.ts <<'E'\n// injected out-of-footprint\nE", // CREATE (untracked)
+        "rm src/gone.ts", // DELETE (the stub-and-rm hole)
+      ],
+      {},
+    );
+    const probeResult = await svcRunViaSdk(probeDeps)(
+      ac3Unit(["src/owned.ts"]),
+      "1/1",
+      repo,
+      () => {},
+      () => [],
+      [],
+    );
+    assert.equal(probeResult.outcome, "failed", "a real breach fails the unit");
+    assert.equal(
+      probeResult.containment,
+      true,
+      "runViaSdk PRODUCES containment:true on a genuine footprint breach (the threading source)",
+    );
+    // Restore the tree the probe's revert already cleaned, so the dispatchSpec run below starts fresh.
+    execFileSync("git", ["-C", repo, "checkout", "-q", "--", "."], {
+      stdio: "pipe",
+    });
+    execFileSync("git", ["-C", repo, "clean", "-fdq"], { stdio: "pipe" });
+  }
+
+  // Now the full loop: SL-1 (the breacher) + SL-2 (a healthy ready unit that must NEVER dispatch
+  // once the run halts on SL-1's violation). Drive the REAL runViaSdk for BOTH units — SL-1's fake
+  // SDK makes a real out-of-footprint change; SL-2's would succeed but must never get the chance.
+  const seen: string[] = [];
+  const { deps, calls } = makeDeps({
+    "teps/TEP-1/SP-1/SL-1.md": {
+      status: "ready",
+      satisfies: [1],
+      work_units: [
+        { footprint: ["src/owned.ts"], execution: "fan-out", note: "the breacher" },
+      ],
+    },
+    "teps/TEP-1/SP-1/SL-2.md": {
+      status: "ready",
+      satisfies: [2],
+      work_units: [
+        { footprint: ["src/healthy.ts"], execution: "fan-out", note: "healthy sibling" },
+      ],
+    },
+  });
+  delete deps.runUnit; // fall through to the REAL runViaSdk
+  deps.worktrees = {
+    create: async () => repo,
+  } as unknown as OrchestratorDeps["worktrees"];
+
+  // Per-unit fake SDK: route on the unit id in the prompt. SL-1 makes a GENUINE out-of-footprint
+  // Bash change → the real PostToolUse containment check aborts it (containment:true). SL-2 would
+  // edit its own file and succeed — but the halt must stop it being dispatched at all.
+  deps.sdkQuery = ({ prompt, options }) => {
+    const opts = options as {
+      hooks: {
+        PostToolUse?: Array<{ hooks: Array<(i: unknown) => Promise<unknown>> }>;
+      };
+      abortController: AbortController;
+    };
+    async function* gen(): AsyncGenerator<unknown> {
+      let promptText = "";
+      for await (const m of prompt as AsyncIterable<unknown>) {
+        const content = (m as { message?: { content?: unknown } })?.message?.content;
+        if (typeof content === "string") promptText = content;
+        break;
+      }
+      const isBreacher = promptText.includes("src/owned.ts");
+      seen.push(isBreacher ? "SL-1" : "SL-2");
+      yield { type: "assistant", session_id: isBreacher ? "e2e-breach" : "e2e-ok" };
+      if (isBreacher) {
+        // A genuine out-of-footprint create — real working-tree change the real check catches.
+        execFileSync("sh", ["-c", "printf '// evil\\n' > src/evil.ts"], {
+          cwd: repo,
+          stdio: "pipe",
+        });
+      } else {
+        execFileSync("sh", ["-c", "printf '// ok\\n' > src/healthy.ts"], {
+          cwd: repo,
+          stdio: "pipe",
+        });
+      }
+      for (const grp of opts.hooks.PostToolUse ?? [])
+        for (const h of grp.hooks) await h({ tool_name: "Bash", tool_input: {} });
+      if (opts.abortController.signal.aborted) return; // the breach aborted us
+      yield {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        session_id: isBreacher ? "e2e-breach" : "e2e-ok",
+      };
+    }
+    return gen();
+  };
+
+  // cap 1 → serial dispatch, so the violation halts the run BEFORE SL-2 can be pulled.
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 1);
+
+  // The run halted on the FIRST (and only) violation: exactly one unit dispatched, SL-2 never ran.
+  // This is ONLY reachable if containment:true threaded runViaSdk → dispatchUnit → the loop.
+  assert.equal(r.dispatched, 1, "only the breaching unit dispatched — the run halted before SL-2");
+  assert.deepEqual(seen, ["SL-1"], "no unit ran after the real footprint violation");
+  assert.deepEqual(
+    r.results.map((x) => x.outcome),
+    ["failed"],
+    "the one dispatched unit failed (a footprint violation)",
+  );
+  assert.deepEqual(r.attention, ["TEP-1_SP-1_SL-1"], "the breaching slice → requires-attention");
+  assert.equal(r.committed, false, "a halted run does not commit");
+  // The report is STILL written on a halt (the audit trail the human re-orchestrating needs).
+  assert.ok(r.deliveryDoc, "the delivery report is written even on a halted run");
+  // Only the breacher was ever claimed — SL-2's worker never started.
+  assert.deepEqual(calls.acquired, ["TEP-1_SP-1_SL-1#eu-0"], "SL-2's worker was never dispatched");
+
+  fs.rmSync(repo, { recursive: true, force: true });
+});
