@@ -42,6 +42,33 @@ test("resolve addresses a Project as a first-class thinking space (code-less, st
   );
 });
 
+test("resolve: a co-located thinking space by ABSOLUTE PATH lands where its namespace does (no container double-apply)", () => {
+  // Regression: the thinking-space root coincides with a workspace folder
+  // ("Tandem Board" → container `Tandem-Board`) at the SAME path. Addressing a
+  // thinking space under it by absolute path used to run namespaceForRepo (which
+  // prepends `Tandem-Board/…`) and re-root under the same dir, yielding a phantom
+  // `<root>/Tandem-Board/Platform/projects/plugin-delivery` with the `cmxela/teps`
+  // org tree lost. It must resolve to the co-located tree instead — the same dir
+  // the `<product>/projects/<id>` namespace resolves to.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tk-colocated-"));
+  const projAbs = path.join(root, "Platform", "projects", "plugin-delivery");
+  fs.mkdirSync(path.join(projAbs, "cmxela", "teps", "TEP-6"), {
+    recursive: true,
+  });
+  const reg = new ThinkingSpaceRegistry({
+    thinkingSpaceRoot: root,
+    folders: [{ name: "Tandem Board", path: root }],
+    roots: [],
+  } as never);
+
+  // Absolute path resolves to the co-located tree (org `cmxela` preserved)…
+  const byPath = reg.resolve(projAbs);
+  assert.equal(byPath.thinkubeDir, projAbs);
+  // …identical to the project-namespace resolution — one thinking space, one answer.
+  const byNs = reg.resolve("Platform/projects/plugin-delivery");
+  assert.equal(byNs.thinkubeDir, byPath.thinkubeDir);
+});
+
 test("resolve still rejects an unknown non-project id", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "tk-projthinkingSpace2-"));
   const reg = new ThinkingSpaceRegistry({

@@ -450,7 +450,23 @@ function thinkingSpaceDirOf(repoPath: string, env: ServerEnv): string {
     // a worktree session's default thinking space + addressing both resolve to the same
     // central thinking space as the canonical repo.
     const wt = linkedWorktreeInfo(repoPath);
-    const ns = namespaceForRepo(wt ? wt.canonicalRepo : repoPath, env.folders);
+    const effective = path.resolve(wt ? wt.canonicalRepo : repoPath);
+    // Co-located under the root: a thinking space that ALREADY lives inside the
+    // thinking-space root keeps its org tree in place — resolving it must NOT
+    // re-mirror it through a `<container>/<rel>` sidecar namespace. The sidecar
+    // mapping exists to mirror a thinking space that lives OUTSIDE the root into
+    // it; applying it to a path already inside the root double-applies the
+    // container segment whenever the root coincides with a workspace folder
+    // (here root == the "Tandem Board" folder, container `Tandem-Board`),
+    // yielding a phantom `<root>/Tandem-Board/…` dir with the `<org>/teps` tree
+    // lost. So a thinking space addressed by its absolute path resolves to the
+    // SAME dir its `<product>/projects/<id>` namespace does — the path itself.
+    const root = path.resolve(env.thinkingSpaceRoot);
+    const rel = path.relative(root, effective);
+    if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) {
+      return effective;
+    }
+    const ns = namespaceForRepo(effective, env.folders);
     if (ns) return thinkingSpaceDirForNamespace(env.thinkingSpaceRoot, ns);
   }
   return path.join(repoPath, ".thinkube");
