@@ -296,11 +296,11 @@ async function openThinkingSpaceFor(
       const retireNote = merge.merged
         ? await retireWorktreeNote(worktrees, wrp, spec)
         : "";
-      // Fast-forward local `main` to the just-merged remote (same gap acceptLandSpec
-      // closes) so the accepted work is present locally, not just on origin.
-      const syncNote = merge.merged
-        ? await fastForwardBaseNote(worktrees, wrp)
-        : "";
+      // Fast-forward local `main` to origin so the accepted work is present locally, not just on
+      // origin. Attempt it whenever the Spec landed on the remote — merged NOW *or* already merged by
+      // an earlier accept: gating on `merge.merged` skipped the sync for an already-merged PR and left
+      // the local checkout stale (the gap that bit us repeatedly). fastForwardBaseNote is best-effort.
+      const syncNote = await fastForwardBaseNote(worktrees, wrp);
       vscode.window.showInformationMessage(
         merge.merged
           ? `Accepted SP-${spec} — ${merge.opened ? "opened + merged" : "merged"} ${merge.branch}${merge.output ? `: ${merge.output}` : ""}.${retireNote}${syncNote}`

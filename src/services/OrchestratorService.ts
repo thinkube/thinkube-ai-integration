@@ -65,6 +65,7 @@ import {
   footprintGuard,
   footprintContainment,
   resolveFootprint,
+  resolveRoleFootprint,
   normalizeFilePath,
   type ContainmentResult,
 } from "../methodology/parallelSlices";
@@ -1678,7 +1679,10 @@ export class OrchestratorService {
                     const d = footprintGuard(
                       inp.tool_name ?? "",
                       inp.tool_input,
-                      unit.footprint,
+                      // Screen an Edit/Write against the unit's ROLE-effective footprint (SP-6/7): a
+                      // `test` unit may only touch its held-out `acceptance/` probe; a `code` unit can
+                      // never touch `acceptance/` — so the two hands can't reach into each other's work.
+                      resolveRoleFootprint(unit.role, unit.footprint),
                       cwd,
                     );
                     if (d.allow) return {};
