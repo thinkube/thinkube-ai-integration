@@ -643,21 +643,26 @@ export function footprintGuard(
   const fp = (toolInput as { file_path?: unknown })?.file_path;
   if (typeof fp !== "string" || !fp.trim()) return { allow: true };
   const target = relToRepo(fp, repoRoot);
-  // Held-out acceptance evidence is never-in-footprint (SP-6/6 AC2): even if the
-  // worker declared it, a write to it is denied — the implementer cannot author
-  // or alter the grader. The resolver also strips it from `owned`, so the generic
-  // check below would refuse it too; this names the specific reason.
+  // The caller passes the ROLE-EFFECTIVE footprint (`resolveRoleFootprint`, SP-6/7): a
+  // `test` unit's footprint IS its held-out `acceptance/` probe(s); a `code` unit's has every
+  // acceptance path stripped. Honor it directly — do NOT re-strip here — so the held-out
+  // verifier can author the very probe it owns, while a code-author (whose role footprint
+  // excludes acceptance) still cannot. (Pre-SP-6/7 this hard-denied ANY acceptance write,
+  // which also fenced out the legitimate test-author — the bug this fixes.)
+  const owned = footprint.map(normalizeFilePath);
+  if (owned.includes(target)) return { allow: true };
+  // Not owned. Name the specific reason: an acceptance-evidence target this unit does not own
+  // means an IMPLEMENTER is reaching into the held-out grader (its role footprint stripped
+  // acceptance) — only the slice's `role: test` verifier, whose footprint IS the probe, owns it.
   if (isAcceptanceEvidencePath(target, opts)) {
     return {
       allow: false,
       reason:
-        `Acceptance-evidence write: ${target} is held-out grading evidence and is ` +
-        `never part of any unit's footprint. The implementer cannot author or alter ` +
-        `the evidence it is graded on — leave it to the independent verifier.`,
+        `Acceptance-evidence write: ${target} is held-out grading evidence — only the slice's ` +
+        `independent verifier (its \`role: test\` unit, whose footprint IS this probe) may author ` +
+        `it, never the implementer. Leave it to the held-out verifier.`,
     };
   }
-  const owned = resolveFootprint(footprint, opts).map(normalizeFilePath);
-  if (owned.includes(target)) return { allow: true };
   return {
     allow: false,
     reason:
@@ -797,24 +802,17 @@ export function footprintContainment(
   ctx?: ContainmentContext,
   opts?: AcceptanceEvidenceOpts,
 ): ContainmentResult {
-  // Acceptance-evidence paths are never-in-footprint (SP-6/6 AC2): strip them from
-  // EVERY exemption set — owned, the running-union, and baseline — so a change a
-  // worker leaves there can never be excused as in-footprint, a sibling's work, or
-  // pre-existing. A write to the held-out grader always surfaces as a violation.
-  const owned = new Set(
-    resolveFootprint(footprint, opts).map(normalizeFilePath).filter(Boolean),
-  );
-  // A concurrent sibling's footprint (the running-units union) and the paths already
-  // dirty before this unit started both EXEMPT a path from being this unit's violation.
+  // Owned = THIS unit's declared (role-effective) footprint; running = the run-level union of every
+  // dispatched unit (finished + in-flight); baseline = paths already dirty at unit start. SP-6/7: a
+  // held-out `acceptance/` probe IS owned by its `role: test` unit — so DON'T strip acceptance here.
+  // It is exempt (below) ONLY via `owned` (the unit that authored it), never via a sibling (`running`)
+  // or `baseline`, so a code-author can't slip its own grader in through the shared-tree union.
+  const owned = new Set(footprint.map(normalizeFilePath).filter(Boolean));
   const running = new Set(
-    resolveFootprint(ctx?.running ?? [], opts)
-      .map(normalizeFilePath)
-      .filter(Boolean),
+    (ctx?.running ?? []).map(normalizeFilePath).filter(Boolean),
   );
   const baseline = new Set(
-    resolveFootprint(ctx?.baseline ?? [], opts)
-      .map(normalizeFilePath)
-      .filter(Boolean),
+    (ctx?.baseline ?? []).map(normalizeFilePath).filter(Boolean),
   );
   const violations: ContainmentViolation[] = [];
   const seen = new Set<string>();
@@ -849,13 +847,14 @@ export function footprintContainment(
     for (const e of entries) {
       const file = normalizeFilePath(unquotePorcelainPath(e.path));
       if (!file || seen.has(file)) continue;
-      // Held-out acceptance evidence is ALWAYS a violation when touched (SP-6/6 AC2)
-      // — no exemption (owned / running / baseline) can excuse a write to the grader.
-      // Otherwise: exempt this unit's own footprint, a concurrent sibling's footprint
-      // (running-union), or a path already dirty at unit start.
-      if (!isAcceptanceEvidencePath(file, opts)) {
-        if (owned.has(file) || running.has(file) || baseline.has(file))
-          continue;
+      // SP-6/7: a held-out acceptance probe is exempt ONLY for the `role: test` unit that OWNS it
+      // (in `owned`) — never via a sibling (`running`) or baseline, so the held-out grader can't be
+      // authored by a code-author through the shared tree. A non-acceptance path keeps the full
+      // owned / running / baseline exemption.
+      if (isAcceptanceEvidencePath(file, opts)) {
+        if (owned.has(file)) continue;
+      } else if (owned.has(file) || running.has(file) || baseline.has(file)) {
+        continue;
       }
       seen.add(file);
       violations.push({ file, change: e.change });

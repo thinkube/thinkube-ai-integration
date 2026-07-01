@@ -1719,10 +1719,17 @@ export class OrchestratorService {
                     // change to a unit, so a change is a violation only when it falls outside ALL
                     // declared territory. A sibling's in-footprint change — running OR finished — is in
                     // the union and exempt; `baseline` additionally exempts pre-existing dirt.
+                    // SP-6/7: pass THIS unit's own role-effective footprint as its territory, and the
+                    // run-level union as `running`. A non-acceptance sibling change stays exempt (union);
+                    // a held-out acceptance probe is exempt ONLY for the unit that owns it — so a
+                    // code-author can't slip its own grader in through the shared-tree union.
                     const verdict = await this.containmentCheck(
                       cwd,
-                      unionFootprint ?? unit.footprint,
-                      { baseline: baseline ?? [] },
+                      resolveRoleFootprint(unit.role, unit.footprint),
+                      {
+                        running: unionFootprint ?? unit.footprint,
+                        baseline: baseline ?? [],
+                      },
                     );
                     if (verdict.ok) return {};
                     containmentReason = verdict.reason;
@@ -1805,7 +1812,7 @@ export class OrchestratorService {
   private containmentCheck(
     cwd: string,
     footprint: string[],
-    ctx?: { baseline?: string[] },
+    ctx?: { baseline?: string[]; running?: string[] },
   ): Promise<ContainmentResult> {
     return (
       this.deps.containmentCheck ??
@@ -1826,7 +1833,7 @@ export class OrchestratorService {
   private async defaultContainmentCheck(
     cwd: string,
     footprint: string[],
-    ctx?: { baseline?: string[] },
+    ctx?: { baseline?: string[]; running?: string[] },
   ): Promise<ContainmentResult> {
     const porcelainRaw = await this.gitPorcelain(cwd);
     // Atomic-write scaffolding (`<file>.tmp.<pid>.<hash>`) is a transient artifact of editing an
@@ -1837,12 +1844,14 @@ export class OrchestratorService {
       .split("\n")
       .filter((line) => !/\.tmp\.\d+\.[0-9a-f]+$/.test(line))
       .join("\n");
-    // AC4: `footprint` is the run-level UNION of declared footprints, so a sibling's in-footprint
-    // change (running OR finished) is in-bounds; `baseline` (paths already dirty at this unit's
-    // start) exempts pre-existing dirt outside the union. The revert below only ever touches a
-    // true out-of-union change.
+    // SP-6/7: `footprint` is THIS unit's own (role-effective) territory; `running` is the run-level
+    // UNION (every dispatched unit, finished or in-flight). A non-acceptance sibling change is
+    // exempt via the union; a held-out `acceptance/` probe is exempt ONLY via `footprint` (its owner,
+    // the role: test unit) — so a code-author can't author the grader through the shared tree.
+    // `baseline` exempts pre-existing dirt. The revert below only touches a true out-of-bounds change.
     const verdict = footprintContainment(porcelain, footprint, {
       baseline: ctx?.baseline,
+      running: ctx?.running,
     });
     if (!verdict.ok)
       await this.revertPaths(
