@@ -2571,12 +2571,14 @@ export async function createSlice(
         }
       : {}),
   };
-  // `readyGate` only reads each entry's `run` (its structural check), so the `env: "assessment"`
-  // widening (SP-6/7) is irrelevant to it — narrow the type at the call. An assessment AC carries no
-  // runnable `run`, so it is graded by the closing gate's independent assessor, not this opening gate.
+  // `readyGate` (SP-6/7) accepts an `env: "assessment"` entry as certified even though it carries no
+  // runnable `run` — such an AC is graded by the closing gate's independent assessor, not this gate.
   const readyVerdict = readyGate(
     acs,
-    verifications as Record<string, { run: string; env?: "cluster" | "local" }>,
+    verifications as Record<
+      string,
+      { run?: string; env?: "cluster" | "local" | "assessment" }
+    >,
     certification,
   );
   if (!readyVerdict.ok) {
@@ -2996,15 +2998,11 @@ async function writeSpec(
       // Passed: emit the canonical map from the audit's verdicts and bind a server signature over
       // `(acRequirementHash, ac_verifications)` so `readyGate` can verify provenance — the agent
       // can reproduce the hash but never this signature (the secret never leaves the server).
-      // `assessment` verdicts (SP-6/7) are verifiable-by-assessment, not by a signed runnable
-      // command — the closing gate's independent assessor grades them at quiescence, not this map.
-      // Only `verifiable` verdicts contribute a signed `ac_verifications` entry (emitAcVerifications
-      // drops the rest); an assessment AC is graded via its `env: "assessment"` declaration instead.
-      const map = emitAcVerifications(
-        result.verdicts.filter(
-          (v): v is AcVerdict => v.verdict !== "assessment",
-        ),
-      );
+      // `verifiable` verdicts contribute a runnable `{ run, env }` entry; an `assessment` verdict
+      // (SP-6/7) contributes an `env: "assessment"` entry with **no** `run` — it must survive into the
+      // signed frontmatter so → Ready arms and the closing gate can dispatch its independent assessor
+      // (dropping it here was the arming-side gap that left an all-assessment spec un-Ready-able).
+      const map = emitAcVerifications(result.verdicts);
       const acHash = acRequirementHash(trimmed);
       fm.ac_verifications = map;
       fm[AC_CERT_HASH_KEY] = acHash;

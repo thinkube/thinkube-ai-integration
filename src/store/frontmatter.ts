@@ -96,7 +96,7 @@ export interface Frontmatter {
    *  rationale from the AC + intent + delivered artifact, so `run` is unused for it. */
   ac_verifications?: Record<
     string,
-    { run: string; env?: "cluster" | "local" | "assessment" }
+    { run?: string; env?: "cluster" | "local" | "assessment" }
   >;
   /** Execution-aware work units under this slice (SP-tgs8gb): each an atom with a
    *  file/object footprint + an execution shape. The slice stays the validation
