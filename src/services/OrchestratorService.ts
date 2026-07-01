@@ -1897,10 +1897,18 @@ export class OrchestratorService {
     return verdict;
   }
 
-  /** The worktree diff as `git status --porcelain` text; "" on any git error (degrades to no diff). */
+  /** The worktree diff as `git status --porcelain` text; "" on any git error (degrades to no diff).
+   *  `--untracked-files=all` lists each NEW file individually — without it git collapses a brand-new
+   *  untracked directory to just the dir (`?? src/acceptance/`), which the containment check can't
+   *  match to a file footprint (`src/acceptance/AC-1.test.ts`), so it wrongly reverts the first file
+   *  written into any new dir — e.g. every held-out `acceptance/` probe (SP-6/7). */
   private gitPorcelain(cwd: string): Promise<string> {
     return new Promise<string>((resolve) => {
-      const proc = spawn("git", ["status", "--porcelain"], { cwd });
+      const proc = spawn(
+        "git",
+        ["status", "--porcelain", "--untracked-files=all"],
+        { cwd },
+      );
       let out = "";
       proc.stdout?.on("data", (d: Buffer) => (out += d.toString()));
       proc.on("error", () => resolve(""));
