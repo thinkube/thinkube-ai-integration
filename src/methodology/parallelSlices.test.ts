@@ -11,6 +11,7 @@ import {
   validateParallelGroup,
   validateDag,
   footprintGuard,
+  testReadFence,
   acquireClaim,
   releaseClaim,
   reconcileOwnership,
@@ -906,7 +907,8 @@ test("resolveFootprint: a footprint with no evidence paths is returned unchanged
 
 test("footprintGuard: a CODE-author cannot write the held-out probe (acceptance stripped from its role footprint)", () => {
   // resolveRoleFootprint("code", …) strips acceptance, so a code unit never owns the probe:
-  // footprintGuard denies its write, naming it as held-out grading evidence.
+  // footprintGuard denies its write. The reason is TERSE/generic (out-of-footprint) — it must NOT
+  // name "grading evidence"/"independent verifier", so the worker isn't taught the fence to game it.
   const owned = resolveRoleFootprint("code", [
     "tests/acceptance/SP-6.test.ts",
     "src/a.ts",
@@ -920,7 +922,41 @@ test("footprintGuard: a CODE-author cannot write the held-out probe (acceptance 
   assert.equal(d.allow, false);
   if (d.allow) return;
   assert.match(d.reason, /tests\/acceptance\/SP-6\.test\.ts/);
-  assert.match(d.reason, /evidence/i);
+  assert.match(d.reason, /out-of-footprint/i);
+  assert.doesNotMatch(d.reason, /grading evidence|independent verifier|held-out/i);
+});
+
+test("testReadFence: a test worker reads the BASE directory but not the in-progress worktree", () => {
+  const base = "/home/u/repos/ext";
+  const wt = "/home/u/repos/ext-worktrees/SP-6_3"; // the cwd (repoRoot)
+  // A read under the base directory → allowed.
+  assert.equal(
+    testReadFence("Read", { file_path: `${base}/src/mcp/kanbanMcpServer.ts` }, base, wt).allow,
+    true,
+  );
+  // A relative read resolves against the worktree cwd → refused, pointing at the base.
+  const rel = testReadFence("Read", { file_path: "src/services/approvalToken.ts" }, base, wt);
+  assert.equal(rel.allow, false);
+  if (rel.allow) return;
+  assert.match(rel.reason, /base directory/i);
+  assert.match(rel.reason, new RegExp(base.replace(/\//g, "\\/")));
+  // An absolute read into the worktree (the in-progress impl) → refused.
+  assert.equal(
+    testReadFence("Read", { file_path: `${wt}/src/services/approvalToken.ts` }, base, wt).allow,
+    false,
+  );
+  // Its own acceptance/ probe is readable (it authors it).
+  assert.equal(
+    testReadFence("Read", { file_path: `${wt}/src/acceptance/SP-6_3_AC-1.test.ts` }, base, wt).allow,
+    true,
+  );
+  // Non-read tools are untouched by this fence (the write-fence handles Write/Edit).
+  assert.equal(testReadFence("Write", { file_path: `${wt}/x` }, base, wt).allow, true);
+  // The base dir is NOT a false prefix of the worktree ("…/ext" vs "…/ext-worktrees/…").
+  assert.equal(
+    testReadFence("Read", { file_path: `${wt}/README.md` }, base, wt).allow,
+    false,
+  );
 });
 
 test("footprintGuard: the HELD-OUT test-author MAY write its own probe (its role footprint IS the probe)", () => {

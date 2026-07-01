@@ -18,12 +18,14 @@ import * as fs from "fs";
 import * as path from "path";
 import type * as vscode from "vscode";
 import type { WorktreeService } from "./WorktreeService";
+import { linkedWorktreeInfo } from "./WorktreeService";
 import type { OwnershipArbiter } from "./OwnershipArbiter";
 import type { ThinkubeStore } from "../store/ThinkubeStore";
 import {
   buildUnitDag,
   readyFrontier,
   buildWorkerPrompt,
+  disallowedToolsForRole,
   stripAcceptanceCriteria,
   stripSatisfies,
   extractNeedsInput,
@@ -64,11 +66,13 @@ import {
   validateDag,
   footprintGuard,
   footprintContainment,
+  testReadFence,
   resolveFootprint,
   resolveRoleFootprint,
   normalizeFilePath,
   type ContainmentResult,
 } from "../methodology/parallelSlices";
+import { defaultAcceptanceRecipeResolver } from "./auditorRunner";
 import {
   startSession,
   appendSession,
@@ -1624,9 +1628,22 @@ export class OrchestratorService {
     unionFootprint?: string[],
     baseline?: string[],
   ): Promise<WorkerResult> {
+    const isTest = (unit.role ?? "code") === "test";
+    // A held-out `role: test` worker references the BASE directory (the original checkout — impl-free
+    // by construction), not this worktree's in-progress changes. Resolve it (the worktree's canonical
+    // repo) and (a) inject it into the prompt as the read/reference root, (b) fence its reads to it.
+    const baseDir = isTest
+      ? (linkedWorktreeInfo(cwd)?.canonicalRepo ?? cwd)
+      : cwd;
+    // It also has no Read/Bash into the repo conventions, so inject the test framework convention.
+    const testConvention = isTest
+      ? await this.resolveTestConvention(baseDir)
+      : undefined;
     const prompt = buildWorkerPrompt(unit, specNumber, {
       specBody: this.promptCtx.specBody,
       sliceBody: this.promptCtx.sliceBodies.get(unit.slice),
+      testConvention,
+      baseDir: isTest ? baseDir : undefined,
     });
     let success = false;
     let sessionId: string | undefined;
@@ -1665,6 +1682,11 @@ export class OrchestratorService {
         options: {
           cwd,
           permissionMode: "bypassPermissions",
+          // SP-6/7: scope the worker's tools by role. A held-out `role: test` worker loses
+          // Bash/Grep/Glob/Read/web/Task — it cannot see the implementation, other workers' session
+          // transcripts, or the fence source, and cannot route a write through Bash. The restriction
+          // is structural and never announced (the worker stays unaware of the independence boundary).
+          disallowedTools: disallowedToolsForRole(unit.role),
           // Aborting this stops the query the moment the post-tool containment check fires (AC3).
           abortController: abort,
           hooks: {
@@ -1679,24 +1701,38 @@ export class OrchestratorService {
                       tool_name?: string;
                       tool_input?: unknown;
                     };
+                    // Screen an Edit/Write against the unit's ROLE-effective footprint (SP-6/7): a
+                    // `test` unit may only touch its held-out `acceptance/` probe; a `code` unit can
+                    // never touch `acceptance/` — so the two hands can't reach into each other's work.
                     const d = footprintGuard(
                       inp.tool_name ?? "",
                       inp.tool_input,
-                      // Screen an Edit/Write against the unit's ROLE-effective footprint (SP-6/7): a
-                      // `test` unit may only touch its held-out `acceptance/` probe; a `code` unit can
-                      // never touch `acceptance/` — so the two hands can't reach into each other's work.
                       resolveRoleFootprint(unit.role, unit.footprint),
                       cwd,
                     );
-                    if (d.allow) return {};
+                    // A `role: test` worker additionally reads only the BASE directory (its stable
+                    // reference codebase), never the in-progress worktree (SP-6/7). This refusal is
+                    // explicit + reasoned (a legitimate read-here/write-there separation), unlike the
+                    // opaque write-fence.
+                    const r = isTest
+                      ? testReadFence(
+                          inp.tool_name ?? "",
+                          inp.tool_input,
+                          baseDir,
+                          cwd,
+                        )
+                      : ({ allow: true } as const);
+                    if (d.allow && r.allow) return {};
+                    const deny = !d.allow ? d : r;
+                    if (deny.allow) return {};
                     this.deps.output.appendLine(
-                      `  ⛔ [${unit.id}] denied: ${d.reason.split("\n")[0]}`,
+                      `  ⛔ [${unit.id}] denied: ${deny.reason.split("\n")[0]}`,
                     );
                     return {
                       hookSpecificOutput: {
                         hookEventName: "PreToolUse" as const,
                         permissionDecision: "deny" as const,
-                        permissionDecisionReason: d.reason,
+                        permissionDecisionReason: deny.reason,
                       },
                     };
                   },
@@ -1884,6 +1920,26 @@ export class OrchestratorService {
     const porcelain = await this.gitPorcelain(cwd);
     const verdict = footprintContainment(porcelain, []);
     return verdict.ok ? [] : verdict.violations.map((v) => v.file);
+  }
+
+  /**
+   * A concise test-framework hint for a held-out `role: test` worker — which has no Read/Bash to
+   * discover the repo's conventions — derived from the repo's acceptance-probe recipe
+   * (`.tandem/conventions.json`, via {@link defaultAcceptanceRecipeResolver}). Lets the worker author
+   * a runnable test purely from its prompt. Undefined when the repo declares no recipe (best-effort).
+   */
+  private async resolveTestConvention(cwd: string): Promise<string | undefined> {
+    try {
+      const recipe = await defaultAcceptanceRecipeResolver(cwd);
+      if (!recipe) return undefined;
+      return (
+        `author your test file to the \`${recipe.sourcePath}\` convention so this command runs it: ` +
+        `\`${recipe.run}\` (its {spec}/{ac} slots are already filled for your unit's path). Use the ` +
+        `test framework that command implies (e.g. \`node --test\` → node:test, \`pytest\` → pytest).`
+      );
+    } catch {
+      return undefined;
+    }
   }
 
   /**

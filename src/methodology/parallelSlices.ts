@@ -651,24 +651,66 @@ export function footprintGuard(
   // which also fenced out the legitimate test-author — the bug this fixes.)
   const owned = footprint.map(normalizeFilePath);
   if (owned.includes(target)) return { allow: true };
-  // Not owned. Name the specific reason: an acceptance-evidence target this unit does not own
-  // means an IMPLEMENTER is reaching into the held-out grader (its role footprint stripped
-  // acceptance) — only the slice's `role: test` verifier, whose footprint IS the probe, owns it.
-  if (isAcceptanceEvidencePath(target, opts)) {
-    return {
-      allow: false,
-      reason:
-        `Acceptance-evidence write: ${target} is held-out grading evidence — only the slice's ` +
-        `independent verifier (its \`role: test\` unit, whose footprint IS this probe) may author ` +
-        `it, never the implementer. Leave it to the held-out verifier.`,
-    };
-  }
+  // Not owned → a terse, generic refusal. Deliberately NOT naming "held-out grading evidence" or an
+  // "independent verifier" even for an acceptance/ target (SP-6/7): the deny must not teach the
+  // worker the independence mechanism it would then reason about or try to game — it just knocks its
+  // head on the footprint boundary and adjusts. (A code-author's role footprint already excludes
+  // acceptance/, so it lands here for a probe write, indistinguishable from any out-of-footprint one.)
   return {
     allow: false,
     reason:
       `Out-of-footprint write: ${target} is not in this unit's declared footprint ` +
       `[${owned.join(", ") || "(none)"}]. Edit only your footprint; if you genuinely ` +
       `need another file, stop and state the question rather than editing it.`,
+  };
+}
+
+/** Read/search tools scoped by {@link testReadFence}. */
+const TEST_READ_TOOLS = new Set(["Read", "Glob"]);
+
+/**
+ * Read scoping for a `role: test` worker (SP-6/7). Its **reference codebase is the base directory**
+ * (`baseDir` — the original checkout, which does NOT carry this run's in-progress changes); its
+ * **output** is its own probe in the worktree. So a Read/Glob is allowed when it targets `baseDir`
+ * (or the worker's own `acceptance/` area), and refused otherwise — the in-progress worktree, or
+ * paths outside both.
+ *
+ * Unlike the write-fence, this refusal is **explicit and reasoned** on purpose: it is a legitimate
+ * *workspace separation* (read stable base ↔ write your test here), NOT the grading mechanism — so
+ * telling the worker where to read doesn't leak the independence game, it just stops it flailing.
+ * The worker is told, plainly, to reference `baseDir`.
+ */
+export function testReadFence(
+  toolName: string,
+  toolInput: unknown,
+  baseDir: string,
+  repoRoot: string,
+): FootprintDecision {
+  if (!TEST_READ_TOOLS.has(toolName)) return { allow: true };
+  const inp = toolInput as { file_path?: unknown; path?: unknown };
+  const raw =
+    typeof inp?.file_path === "string"
+      ? inp.file_path
+      : typeof inp?.path === "string"
+        ? inp.path
+        : undefined;
+  const base = baseDir.replace(/\/+$/, "");
+  // A Read/Glob with no explicit path resolves against cwd (the worktree) — point it at the base.
+  if (!raw || !raw.trim()) {
+    return {
+      allow: false,
+      reason: `Read your references from the base directory: ${base} (pass an absolute path under it). This worktree holds in-progress changes; author your test against the stable base.`,
+    };
+  }
+  const t = raw.trim();
+  const abs = t.startsWith("/") ? t : `${repoRoot.replace(/\/+$/, "")}/${t}`;
+  const norm = abs.replace(/\/+$/, "");
+  const underBase = norm === base || norm.startsWith(base + "/");
+  const isOwnProbe = isAcceptanceEvidencePath(normalizeFilePath(t));
+  if (underBase || isOwnProbe) return { allow: true };
+  return {
+    allow: false,
+    reason: `Read your references from the base directory: ${base} (this is where the stable codebase lives). \`${t}\` is outside it — the worktree holds in-progress changes; read the base instead and write only your own test file.`,
   };
 }
 

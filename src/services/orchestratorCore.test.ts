@@ -23,6 +23,7 @@ import {
   readyFrontier,
   requiresSatisfied,
   buildWorkerPrompt,
+  disallowedToolsForRole,
   stripAcceptanceCriteria,
   stripSatisfies,
   extractNeedsInput,
@@ -1265,8 +1266,11 @@ test("SP-6/7 AC1: a test unit KEEPS the Acceptance Criteria + satisfies; a code 
   assert.match(tp, /Acceptance Criteria/);
   assert.match(tp, /foo must round-trip losslessly/);
   assert.match(tp, /satisfies/);
-  // …and it is framed as the held-out test-author.
-  assert.match(tp, /HELD-OUT TEST-AUTHOR/);
+  // …and it is framed NEUTRALLY (SP-6/7): asked to write tests against the interface, but NOT told it
+  // is a "held-out"/"independent verifier" or that a code-author exists — an unaware worker can't
+  // reason about or game the independence boundary (that is enforced structurally by tool-scoping).
+  assert.match(tp, /Write automated test/i);
+  assert.doesNotMatch(tp, /held-out|independent verifier/i);
 
   const codeUnit: SchedUnit = {
     ...testUnit,
@@ -1279,6 +1283,75 @@ test("SP-6/7 AC1: a test unit KEEPS the Acceptance Criteria + satisfies; a code 
   assert.doesNotMatch(cp, /foo must round-trip losslessly/);
   assert.doesNotMatch(cp, /satisfies/i);
   assert.doesNotMatch(cp, /HELD-OUT TEST-AUTHOR/);
+});
+
+test("SP-6/7: a test worker loses the roam/evasion tools but keeps Read/Glob (scoped to base by the read-fence)", () => {
+  // Secondary control (defense in depth): the held-out verifier keeps Read + Glob — it references the
+  // BASE codebase — but loses Bash/Grep (the roam + `cat >` evasion + pathless content-search) and
+  // Web/Task. A code worker keeps the full set.
+  const denied = disallowedToolsForRole("test");
+  for (const t of ["Bash", "Grep", "WebFetch", "WebSearch", "Task"])
+    assert.ok(denied.includes(t), `test worker denies ${t}`);
+  for (const t of ["Read", "Glob", "Write", "Edit", "MultiEdit"])
+    assert.ok(!denied.includes(t), `test worker keeps ${t}`);
+  assert.deepEqual(disallowedToolsForRole("code"), []);
+  assert.deepEqual(disallowedToolsForRole(undefined), []);
+});
+
+test("SP-6/7: a test worker's prompt states the base-dir workspace constraint + terminate-on-denial", () => {
+  const unit: SchedUnit = {
+    id: "SP-6_SL-1#eu-1",
+    slice: "SP-6_SL-1",
+    footprint: ["src/acceptance/SP-6_3_AC-1.test.ts"],
+    requires: [],
+    shape: "fan-out",
+    role: "test",
+  };
+  const tp = buildWorkerPrompt(unit, "6/3", {
+    specBody: "## Acceptance Criteria\n\n- [ ] x",
+    baseDir: "/home/u/repos/thinkube-ai-integration",
+  });
+  // The read-here/write-there separation is stated PLAINLY (information, not a silent fence).
+  assert.match(tp, /WORKSPACE/);
+  assert.match(tp, /\/home\/u\/repos\/thinkube-ai-integration/);
+  assert.match(tp, /independent of any one implementation/i);
+  // Terminate-on-denial: a system denial is a hard stop, not an obstacle to route around.
+  assert.match(tp, /hard boundary/i);
+  assert.match(tp, /do NOT retry|another way|work around a denial/i);
+  // A code worker gets no base-dir workspace block.
+  const cp = buildWorkerPrompt(
+    { ...unit, role: "code" },
+    "6/3",
+    { specBody: "## Acceptance Criteria\n\n- [ ] x", baseDir: "/home/u/repos/x" },
+  );
+  assert.doesNotMatch(cp, /WORKSPACE \(read here/);
+  // …but the terminate-on-denial instruction applies to EVERY worker.
+  assert.match(cp, /hard boundary/i);
+});
+
+test("SP-6/7: the test convention is injected for a test worker (it has no Read/Bash to discover it)", () => {
+  const unit: SchedUnit = {
+    id: "SP-6_SL-1#eu-1",
+    slice: "SP-6_SL-1",
+    footprint: ["src/acceptance/SP-6_3_AC-1.test.ts"],
+    requires: [],
+    shape: "fan-out",
+    role: "test",
+  };
+  const convention = "author your test to run via `node --test out-test/acceptance/…`";
+  const tp = buildWorkerPrompt(unit, "6/3", {
+    specBody: "## Acceptance Criteria\n\n- [ ] x",
+    testConvention: convention,
+  });
+  assert.match(tp, /Test convention:/);
+  assert.match(tp, /node --test/);
+  // A code worker gets no convention block (it isn't withheld its tools).
+  const cp = buildWorkerPrompt(
+    { ...unit, role: "code" },
+    "6/3",
+    { specBody: "## Acceptance Criteria\n\n- [ ] x", testConvention: convention },
+  );
+  assert.doesNotMatch(cp, /Test convention:/);
 });
 
 test("SP-6/7 AC1: role defaults to code — an unset role withholds the ACs", () => {
