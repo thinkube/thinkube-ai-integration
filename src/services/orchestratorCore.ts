@@ -109,6 +109,11 @@ export interface WorkUnit {
    *  (edges remain `consumes`+footprint only). */
   reads?: string[];
   execution: "serial" | "mechanize" | "fan-out";
+  /** Independent-verification role (SP-6/7 AC1). `code` (default) implements to the Spec's INTENT
+   *  (ACs stripped from its prompt); `test` is the held-out verifier (keeps the ACs, its footprint
+   *  is the reserved `acceptance/` probe). Carried onto {@link SchedUnit} by `buildUnitDag` and
+   *  branched on by `buildWorkerPrompt`. Absent ⇒ `code` (backward-compatible). */
+  role?: "code" | "test";
 }
 
 export interface ExecutionUnit {
@@ -125,8 +130,14 @@ export interface ExecutionUnit {
  */
 export function batchExecutionUnits(units: WorkUnit[]): ExecutionUnit[] {
   const out: ExecutionUnit[] = [];
+  // Serial units collapse into ONE warm session — but a `code` and a `test` unit must never share a
+  // session (SP-6/7): the test-author is the held-out verifier and its prompt keeps the ACs a
+  // code-author must not see. So batch serial units by role, keeping each execution unit role-uniform.
   const serial = units.filter((u) => u.execution === "serial");
-  if (serial.length) out.push({ shape: "serial", units: serial });
+  const serialCode = serial.filter((u) => (u.role ?? "code") !== "test");
+  const serialTest = serial.filter((u) => (u.role ?? "code") === "test");
+  if (serialCode.length) out.push({ shape: "serial", units: serialCode });
+  if (serialTest.length) out.push({ shape: "serial", units: serialTest });
   for (const u of units.filter((u) => u.execution === "mechanize"))
     out.push({ shape: "mechanize", units: [u] });
   for (const u of units.filter((u) => u.execution === "fan-out"))
@@ -175,6 +186,10 @@ export interface SchedUnit {
   /** Unit + slice ids this unit waits on. */
   requires: string[];
   shape: "serial" | "mechanize" | "fan-out";
+  /** Independent-verification role (SP-6/7 AC1), carried from the underlying work units. `test` ⇒
+   *  the held-out verifier: `buildWorkerPrompt` KEEPS the ACs in its prompt and its footprint is the
+   *  reserved `acceptance/` probe. Absent/`code` ⇒ the intent-only implementer (ACs stripped). */
+  role?: "code" | "test";
   /** The unit's task text(s), for the worker prompt. */
   note?: string;
   /** The underlying work units (for the worker prompt + footprint). */
@@ -265,12 +280,21 @@ export function buildUnitDag(slices: SliceForDag[]): SchedUnit[] {
           .map((u) => (u as WorkUnit & { note?: string }).note)
           .filter(Boolean)
           .join("; ") || undefined;
+      // Role carried onto the SchedUnit (SP-6/7 AC1): an execution unit is `test` only when EVERY
+      // underlying work unit is `test` (batchExecutionUnits keeps serial batches role-uniform, and
+      // mechanize/fan-out are single-unit), else `code`. `buildWorkerPrompt` branches on this.
+      const role: "code" | "test" = eu.units.every(
+        (u) => (u.role ?? "code") === "test",
+      )
+        ? "test"
+        : "code";
       out.push({
         id: thisId,
         slice: s.handle,
         footprint,
         requires,
         shape: eu.shape,
+        role,
         note,
         units: eu.units,
       });
@@ -436,6 +460,37 @@ export function isEscalated(
   return n >= b;
 }
 
+/**
+ * The role a failed acceptance run is attributed to (SP-6/7 AC4): the **code**-author (the
+ * implementation diverged from intent), the **test**-author (the held-out probe is itself wrong), or
+ * `both` / ambiguous (neither can be singled out → escalate to a human). The verdict of
+ * {@link JudgeFailure}; routes {@link reDispatchDecision}.
+ */
+export type Fault = "code" | "test" | "both";
+
+/**
+ * An independent judge's verdict on a red acceptance run (SP-6/7 AC4): which role is at fault plus the
+ * **rationale** (why), so the routing decision is recordable in the verification trace. The same
+ * independent-judgment shape as {@link AcAssessment} — a verdict WITH a rationale.
+ */
+export interface FailureJudgment {
+  fault: Fault;
+  rationale: string;
+}
+
+/**
+ * Judge a FAILED acceptance verification (SP-6/7 AC4) — the same independent-judgment primitive as
+ * {@link AssessAc}: a fresh session, NEVER the implementing worker, returning a verdict + rationale.
+ * Given the failing unit + the failure evidence it decides whether the fault lies in the CODE or the
+ * TEST (or both), so {@link reDispatchDecision} can route the re-dispatch to the right role (or
+ * escalate on `both`). Injectable so the gate is unit-testable with no live model; the real
+ * SDK-session dispatch lives in `OrchestratorService`.
+ */
+export type JudgeFailure = (
+  unit: Pick<SchedUnit, "id" | "slice" | "role">,
+  failure: string,
+) => Promise<FailureJudgment>;
+
 /** One verdict from {@link reDispatchDecision}: whether to send a red slice back for rework or stop. */
 export interface ReDispatchVerdict {
   /** `re-dispatch` → bump the counter and return the slice to the ready frontier; `escalate` → leave
@@ -443,29 +498,46 @@ export interface ReDispatchVerdict {
   action: "re-dispatch" | "escalate";
   /** The slice's new failed-attempt count (prior + 1), to persist on `state.attempts`. */
   attempts: number;
+  /** SP-6/7 AC4: which role the re-dispatch targets — set ONLY when a judged `fault` was supplied.
+   *  `code`/`test` route the re-author to that role; `both` forces escalation (ambiguous). Absent when
+   *  no fault is given (the pure attempt-bound decision), so the AC5 behaviour is unchanged. */
+  route?: Fault;
 }
 
 /**
  * The pure, deterministic re-dispatch decision for a slice that just failed its (independently-graded)
- * acceptance run (SP-6/6 AC5). Given the slice's PRIOR recorded failed-attempt count and the bound
- * (default {@link MAX_REWORK_ATTEMPTS}), it increments the counter and decides: while the new count is
- * below the bound the slice is **re-dispatched** for another bounded rework attempt; once it reaches
- * the bound the loop **escalates** — the slice stays `requires-attention` (marked with
- * {@link ESCALATION_MARKER}) and {@link readyFrontier} stops dispatching it. No model is consulted —
- * the bound and the verdict are control-plane, the deterministic analog of "stop retrying after N."
+ * acceptance run (SP-6/6 AC5 + SP-6/7 AC4). Given the slice's PRIOR recorded failed-attempt count, the
+ * bound (default {@link MAX_REWORK_ATTEMPTS}), and — when the failure was judged — the code-vs-test
+ * `fault`, it increments the counter and decides:
+ *
+ *   • while the new count is below the bound AND the fault is not ambiguous, the slice is
+ *     **re-dispatched** for another bounded rework attempt, routed (`route`) to the faulting role —
+ *     the code-author for a `code` fault, the test-author for a `test` fault;
+ *   • once the count reaches the bound, OR the fault is `both`/ambiguous, the loop **escalates** — the
+ *     slice stays `requires-attention` (marked with {@link ESCALATION_MARKER}) and {@link readyFrontier}
+ *     stops dispatching it, so a human decides.
+ *
+ * No model is consulted here — the bound and the route are control-plane, the deterministic analog of
+ * "stop retrying after N"; the code-vs-test `fault` is the only model input and it is supplied by the
+ * injectable {@link JudgeFailure}, never computed in this pure function.
  */
 export function reDispatchDecision(
   priorAttempts: number,
   bound: number = MAX_REWORK_ATTEMPTS,
+  fault?: Fault,
 ): ReDispatchVerdict {
   const prior = Number.isFinite(priorAttempts)
     ? Math.max(0, Math.floor(priorAttempts))
     : 0;
   const attempts = prior + 1;
-  return {
-    action: isEscalated(attempts, bound) ? "escalate" : "re-dispatch",
+  // Escalate at the bound OR when the fault is ambiguous (both code and test suspect) — AC4.
+  const escalate = isEscalated(attempts, bound) || fault === "both";
+  const verdict: ReDispatchVerdict = {
+    action: escalate ? "escalate" : "re-dispatch",
     attempts,
   };
+  if (fault) verdict.route = fault;
+  return verdict;
 }
 
 /**
@@ -566,10 +638,14 @@ export function stripSatisfies(body: string): string {
  * with a question ONLY when genuinely blocked — the posture that keeps headless
  * execution from stopping on routine approvals.
  *
- * **Intent view, exam held out (SP-6 AC1):** the embedded spec/slice is the *intent* (summary,
- * Design, the unit's task + footprint) with the `## Acceptance Criteria` block and any `satisfies`
- * ordinals **stripped** ({@link stripAcceptanceCriteria} / {@link stripSatisfies}) — the worker
- * builds to what "correct" means, never to the rubric it is graded on. Pure → unit-tested.
+ * **Intent view, exam held out (SP-6 AC1) — and its inverse for a test unit (SP-6/7 AC1):** for a
+ * `code` unit the embedded spec/slice is the *intent* (summary, Design, the unit's task + footprint)
+ * with the `## Acceptance Criteria` block and any `satisfies` ordinals **stripped**
+ * ({@link stripAcceptanceCriteria} / {@link stripSatisfies}) — the code-author builds to what
+ * "correct" means, never to the rubric it is graded on. A `test` unit ({@link SchedUnit.role} ===
+ * `"test"`) is the **held-out verifier**: the SAME strip is **inverted** — the ACs + `satisfies` are
+ * KEPT so its probe (under the reserved `acceptance/` path) can grade the exact criteria, black-box.
+ * Pure → unit-tested.
  */
 export function buildWorkerPrompt(
   unit: SchedUnit,
@@ -591,27 +667,37 @@ export function buildWorkerPrompt(
     consumes.length > 0
       ? `\nContract dependency: this unit CONSUMES ${consumes.join(", ")} — a sibling unit produces ${consumes.length > 1 ? "these files" : "this file"}. Import ${consumes.length > 1 ? "their" : "its"} contract (types/exports/shape); do NOT re-invent it. If ${consumes.length > 1 ? "they don't exist" : "it doesn't exist"} yet, code to the contract the spec/slice describes.\n`
       : "";
+  const isTest = (unit.role ?? "code") === "test";
   const task =
     unit.shape === "mechanize"
       ? `This is a MECHANIZE unit: author ONE transform and apply it across all of [${fp}] — do not hand-edit each object.`
       : unit.shape === "fan-out"
         ? `This is a FAN-OUT unit over [${fp}].${unit.note ? ` Task: ${unit.note}` : ""}`
         : `This is a SERIAL unit — do its steps in order over [${fp}].${unit.note ? ` Task: ${unit.note}` : ""}`;
+  // SP-6/7 AC1: a `test` unit is the held-out verifier. Frame it explicitly — its job is to author the
+  // acceptance probe under the reserved `acceptance/` path (its footprint), grading the ACs embedded
+  // below, black-box (it must NOT read or couple to the implementation the code-author writes in parallel).
+  const roleBlock = isTest
+    ? `\nYou are the HELD-OUT TEST-AUTHOR (the independent verifier) for this slice. Author the acceptance probe at your footprint (a reserved \`acceptance/\` path) that GRADES the slice's \`## Acceptance Criteria\` (embedded below). Target the INTENT — the criteria + design — BLACK-BOX: do NOT read or couple to the implementation code (a code-author writes that in parallel). Your probe is the independent evidence the closing gate grades on, so it must fail if the intent is not met.\n`
+    : "";
   // The worker runs in a worktree of the CODE repo — the thinking space/specs dir is NOT there. Embed the
-  // spec + slice so it has full context inline rather than hunting the filesystem for a spec it
-  // cannot reach. SP-6 AC1: embed the INTENT VIEW only — strip the `## Acceptance Criteria` block and
-  // any `satisfies` ordinals so the worker builds to intent, never to the rubric it is graded on.
-  const intentSpec = stripSatisfies(
-    stripAcceptanceCriteria(context?.specBody ?? ""),
-  ).trim();
-  const intentSlice = stripSatisfies(
-    stripAcceptanceCriteria(context?.sliceBody ?? ""),
-  ).trim();
+  // spec + slice so it has full context inline rather than hunting the filesystem for a spec it cannot
+  // reach. SP-6 AC1 / SP-6/7 AC1: a `code` unit gets the INTENT VIEW only — the `## Acceptance Criteria`
+  // block and any `satisfies` ordinals are STRIPPED so it builds to intent, never to the rubric it is
+  // graded on; a `test` unit KEEPS them (the inverse) so its held-out probe can target the exact criteria.
+  const viewOf = (body: string): string =>
+    (isTest
+      ? (body ?? "")
+      : stripSatisfies(stripAcceptanceCriteria(body ?? ""))
+    ).trim();
+  const intentSpec = viewOf(context?.specBody ?? "");
+  const intentSlice = viewOf(context?.sliceBody ?? "");
+  const viewLabel = isTest ? "" : " — INTENT";
   const specBlock = intentSpec
-    ? `\n──── PARENT SPEC (SP-${specNumber}) — INTENT ────\n${intentSpec}\n`
+    ? `\n──── PARENT SPEC (SP-${specNumber})${viewLabel} ────\n${intentSpec}\n`
     : "";
   const sliceBlock = intentSlice
-    ? `\n──── YOUR SLICE (${unit.slice}) — INTENT ────\n${intentSlice}\n`
+    ? `\n──── YOUR SLICE (${unit.slice})${viewLabel} ────\n${intentSlice}\n`
     : "";
   const hasCtx = specBlock || sliceBlock;
   return (
@@ -621,6 +707,7 @@ export function buildWorkerPrompt(
       ? `The thinking space/specs dir is NOT in this worktree; your spec + slice are embedded below — use them, don't search the filesystem for specs/.\n`
       : `(Read the parent spec/slice for context if available — note the specs dir may not be in this worktree.)\n`) +
     `\n${task}\n` +
+    roleBlock +
     consumesBlock +
     specBlock +
     sliceBlock +
@@ -901,10 +988,13 @@ export function isResultSuccess(evt: Record<string, unknown>): boolean {
 export interface AcVerification {
   /** 1-based AC ordinal this check proves. */
   ac: number;
-  /** The shell/playbook command run in the worktree (exit 0 = the AC passed). */
+  /** The shell/playbook command run in the worktree (exit 0 = the AC passed). Empty for an
+   *  `assessment` AC (SP-6/7 AC3) — that AC is graded by an independent assessor, not a command. */
   run: string;
-  /** Where it runs — informational; the live cluster run is the shell's job (low AI-testability). */
-  env?: "cluster" | "local";
+  /** Where it runs — informational for `cluster`/`local` (the live cluster run is the shell's job).
+   *  `assessment` (SP-6/7 AC3) is the model-graded branch: the closing gate dispatches a fresh
+   *  independent assessor session (never the implementing worker) instead of spawning `run`. */
+  env?: "cluster" | "local" | "assessment";
 }
 
 /** The outcome of running one AC's verification — pass/fail with its evidence (log excerpt). */
@@ -930,12 +1020,18 @@ export function parseAcVerifications(raw: unknown): AcVerification[] {
     if (!Number.isInteger(ac) || ac <= 0) continue;
     if (!val || typeof val !== "object") continue;
     const run = (val as Record<string, unknown>).run;
-    if (typeof run !== "string" || !run.trim()) continue;
     const env = (val as Record<string, unknown>).env;
+    const isAssessment = env === "assessment";
+    // An `assessment` AC (SP-6/7 AC3) is graded by an independent assessor session, not a runnable
+    // command — so it needs no non-empty `run`. Every other AC still requires a runnable command.
+    if (!isAssessment && (typeof run !== "string" || !run.trim())) continue;
     out.push({
       ac,
-      run: run.trim(),
-      env: env === "cluster" || env === "local" ? env : undefined,
+      run: typeof run === "string" ? run.trim() : "",
+      env:
+        env === "cluster" || env === "local" || env === "assessment"
+          ? env
+          : undefined,
     });
   }
   return out.sort((a, b) => a.ac - b.ac);
@@ -947,6 +1043,36 @@ export type AcExec = (
   run: string,
   cwd: string,
 ) => Promise<{ code: number | null; output: string }>;
+
+/** The independent-assessor verdict for an `env: "assessment"` AC (SP-6/7 AC3): pass/fail plus the
+ *  assessor's **rationale** (why), so the verdict is recordable in the verification trace. */
+export interface AcAssessment {
+  pass: boolean;
+  rationale: string;
+}
+
+/**
+ * Grade one `assessment` AC (SP-6/7 AC3) by dispatching a **fresh independent assessor** (never the
+ * implementing worker): judge the delivered `artifact` against the AC + its `intent` and return
+ * pass/fail **with a rationale** — no runnable command required. Injectable so the closing gate is
+ * unit-testable with no live model; the real SDK-session dispatch lives in `OrchestratorService`.
+ */
+export type AssessAc = (
+  ac: AcVerification,
+  intent: string,
+  artifact: string,
+) => Promise<AcAssessment>;
+
+/** What {@link runAcVerifications} needs to grade an `assessment` AC (SP-6/7 AC3): the injectable
+ *  assessor plus the per-AC intent (the criterion text / Spec intent) and a description of the
+ *  delivered artifact the assessor judges. */
+export interface AssessContext {
+  assessAc: AssessAc;
+  /** The intent handed to the assessor for AC #`ac` — its criterion text + surrounding Spec intent. */
+  intentFor?: (ac: number) => string;
+  /** A description of the delivered artifact (changed files / diff summary) the assessor judges. */
+  artifact?: string;
+}
 
 /** Knobs for {@link runBounded}: the time bound + a fixed base env (no ambient PATH leaks in). */
 export interface BoundedOptions {
@@ -1133,21 +1259,73 @@ export async function runAcVerifications(
   verifs: AcVerification[],
   cwd: string,
   exec: AcExec = defaultAcExec,
+  assess?: AssessContext,
 ): Promise<AcResult[]> {
   const out: AcResult[] = [];
+  // AC7 (SP-6/7): run each DISTINCT runnable command at most once; a later AC declaring the same
+  // command reuses the cached exit/output (or the cached spawn error) rather than re-running it.
+  // Assessment ACs are never cached — each is graded against its own AC intent by the assessor.
+  const runCache = new Map<
+    string,
+    { code: number | null; output: string } | { error: string }
+  >();
   for (const v of verifs) {
-    try {
-      const { code, output } = await exec(v.run, cwd);
-      out.push({
-        ac: v.ac,
-        pass: code === 0,
-        evidence: acEvidence(v.run, code, output),
-      });
-    } catch (err) {
+    // `env: "assessment"` (SP-6/7 AC3): grade by dispatching a fresh independent assessor — never a
+    // runnable command. No assessor injected ⇒ un-runnable ⇒ red (the no-skip rule: never silently green).
+    if (v.env === "assessment") {
+      if (!assess?.assessAc) {
+        out.push({
+          ac: v.ac,
+          pass: false,
+          evidence: `assessment AC #${v.ac} → could not run: no independent assessor available`,
+        });
+        continue;
+      }
+      try {
+        const intent = assess.intentFor?.(v.ac) ?? "";
+        const { pass, rationale } = await assess.assessAc(
+          v,
+          intent,
+          assess.artifact ?? "",
+        );
+        out.push({
+          ac: v.ac,
+          pass,
+          evidence: `assessment (independent) → ${pass ? "pass" : "fail"}: ${clip(
+            (rationale ?? "").trim() || "(no rationale)",
+            600,
+          )}`,
+        });
+      } catch (err) {
+        out.push({
+          ac: v.ac,
+          pass: false,
+          evidence: `assessment AC #${v.ac} → could not run: ${(err as Error).message}`,
+        });
+      }
+      continue;
+    }
+    // AC7 de-dup: exec a given command once, then map its result to every AC that declared it.
+    let cached = runCache.get(v.run);
+    if (!cached) {
+      try {
+        cached = await exec(v.run, cwd);
+      } catch (err) {
+        cached = { error: (err as Error).message };
+      }
+      runCache.set(v.run, cached);
+    }
+    if ("error" in cached) {
       out.push({
         ac: v.ac,
         pass: false,
-        evidence: `$ ${v.run} → could not run: ${(err as Error).message}`,
+        evidence: `$ ${v.run} → could not run: ${cached.error}`,
+      });
+    } else {
+      out.push({
+        ac: v.ac,
+        pass: cached.code === 0,
+        evidence: acEvidence(v.run, cached.code, cached.output),
       });
     }
   }
@@ -1338,6 +1516,95 @@ export function resumeDecision(
   return "author";
 }
 
+// ── Durable, structured verification trace (SP-6/7 AC5) ────────────────────
+//
+// The delivery report's per-AC table is ephemeral prose; AC5 needs a DURABLE, structured record —
+// per AC and per rework round — of HOW each criterion was verified, so the methodology itself can be
+// debugged and improved. `buildVerificationTrace` derives that structure from the per-AC results: for
+// each AC it records the verification `kind` (a held-out `probe` command vs an independent
+// `assessment`), the `verdict`, the assessor/judge `rationale`, and — when the run was red and judged
+// — the code-vs-test `route`. The shell persists it as JSON alongside DELIVERY.md (accumulating across
+// runs, keyed by AC + round) and surfaces it in the delivery report + panel.
+
+/** One entry of the structured verification trace (SP-6/7 AC5) — one AC's verdict in one rework round. */
+export interface VerificationTraceEntry {
+  /** 1-based AC ordinal this entry records. */
+  ac: number;
+  /** The rework round it was verified in (1 = the first attempt; bumped each re-dispatch). */
+  round: number;
+  /** How it was verified: a held-out `probe` command, or an independent `assessment`. */
+  kind: "probe" | "assessment";
+  verdict: "pass" | "fail";
+  /** The assessor's rationale / the probe's evidence tail — why this verdict. */
+  rationale?: string;
+  /** SP-6/7 AC4: the judged code-vs-test route recorded for a FAILED AC (absent on a pass / un-judged). */
+  route?: Fault;
+}
+
+/** Inputs to {@link buildVerificationTrace}: one run's per-AC results + how to place each in the trace. */
+export interface VerificationTraceInput {
+  /** The rework round this run represents for the AC's slice (1-based). A number, or a per-AC lookup. */
+  round: number | ((ac: number) => number);
+  /** The declared per-AC plan — its `env` distinguishes `assessment` from a runnable `probe`. */
+  declared: AcVerification[];
+  /** The per-AC results (pass/fail + evidence) this run produced. */
+  acResults: AcResult[];
+  /** AC ordinal → the judged re-dispatch route for a FAILED AC (SP-6/7 AC4). */
+  routes?: ReadonlyMap<number, Fault> | Record<number, Fault>;
+}
+
+/**
+ * Build one run's slice of the structured verification trace (SP-6/7 AC5): one entry per AC result,
+ * recording its round, verification kind (`assessment` when the declared `env` is `assessment`, else a
+ * held-out `probe`), verdict, rationale (the evidence tail — the assessor's rationale for an
+ * assessment, the command output for a probe), and — for a failed, judged AC — the code-vs-test route.
+ * Pure → unit-tested; the shell merges these into the durable per-Spec trace file. See AC5.
+ */
+export function buildVerificationTrace(
+  i: VerificationTraceInput,
+): VerificationTraceEntry[] {
+  const envByAc = new Map(i.declared.map((v) => [v.ac, v.env]));
+  const roundOf = (ac: number): number =>
+    typeof i.round === "function" ? i.round(ac) : i.round;
+  const routeOf = (ac: number): Fault | undefined => {
+    const r = i.routes;
+    if (!r) return undefined;
+    return r instanceof Map ? r.get(ac) : (r as Record<number, Fault>)[ac];
+  };
+  return i.acResults.map((r) => {
+    const kind: VerificationTraceEntry["kind"] =
+      envByAc.get(r.ac) === "assessment" ? "assessment" : "probe";
+    const entry: VerificationTraceEntry = {
+      ac: r.ac,
+      round: roundOf(r.ac),
+      kind,
+      verdict: r.pass ? "pass" : "fail",
+      rationale: (r.evidence ?? "").trim() || undefined,
+    };
+    const route = routeOf(r.ac);
+    if (!r.pass && route) entry.route = route;
+    return entry;
+  });
+}
+
+/**
+ * Merge this run's trace entries into the durable, accumulating per-Spec trace (SP-6/7 AC5). Keyed on
+ * `ac`+`round`, a new entry REPLACES an existing one for the same AC+round (a re-run of the same round
+ * overwrites its stale verdict) and is otherwise appended — so the persisted trace carries every AC
+ * across every rework round without duplication. Sorted by round then AC for a stable, readable file.
+ * Pure → the shell reads the prior file, calls this, and writes the result back.
+ */
+export function mergeVerificationTrace(
+  prior: VerificationTraceEntry[],
+  next: VerificationTraceEntry[],
+): VerificationTraceEntry[] {
+  const key = (e: VerificationTraceEntry) => `${e.round}::${e.ac}`;
+  const byKey = new Map<string, VerificationTraceEntry>();
+  for (const e of prior ?? []) byKey.set(key(e), e);
+  for (const e of next ?? []) byKey.set(key(e), e);
+  return [...byKey.values()].sort((a, b) => a.round - b.round || a.ac - b.ac);
+}
+
 /** One execution unit's outcome, for the delivery report's per-unit table. */
 export interface ReportUnit {
   id: string;
@@ -1365,6 +1632,10 @@ export interface DeliveryReportInput {
   attention?: string[];
   /** The whole Spec landed green and was committed. */
   committed: boolean;
+  /** The durable, structured verification trace (SP-6/7 AC5) — per AC and per rework round: kind,
+   *  verdict, rationale, and any code-vs-test route. Rendered as an auditable table; omitted/empty ⇒
+   *  the trace section is left off (backward-compatible with pre-AC5 reports). */
+  trace?: VerificationTraceEntry[];
 }
 
 /**
@@ -1423,6 +1694,28 @@ export function buildDeliveryReport(i: DeliveryReportInput): string {
           "(no skip, TEP-tgzx3p). Declare a per-AC verification map on the Spec, then re-run.",
       ];
 
+  // SP-6/7 AC5: the durable, structured verification trace — per AC, per rework round, kind, verdict,
+  // rationale, and any code-vs-test route. Surfaced here so a completed (or stalled) Spec carries the
+  // machine-readable record of HOW each criterion was verified across every round, for inspection.
+  const trace = i.trace ?? [];
+  const traceSection = trace.length
+    ? [
+        "## Verification trace",
+        "",
+        "| AC | Round | Kind | Verdict | Route | Rationale |",
+        "| --- | --- | --- | --- | --- | --- |",
+        ...trace.map((e) => {
+          const v = e.verdict === "pass" ? "✓ pass" : "✗ fail";
+          const rationale = clip(
+            (e.rationale ?? "").replace(/\s+/g, " ").replace(/\|/g, "\\|"),
+            160,
+          );
+          return `| #${e.ac} | ${e.round} | ${e.kind} | ${v} | ${e.route ?? "—"} | ${rationale || "—"} |`;
+        }),
+        "",
+      ]
+    : [];
+
   const problems = (i.problems ?? []).filter(Boolean);
   const problemSection = problems.length
     ? ["## Caught problems", "", ...problems.map((p) => `- ${p}`), ""]
@@ -1443,6 +1736,7 @@ export function buildDeliveryReport(i: DeliveryReportInput): string {
     "",
     ...verifySection,
     "",
+    ...traceSection,
     ...problemSection,
     `## Files (${i.files.length})`,
     "",

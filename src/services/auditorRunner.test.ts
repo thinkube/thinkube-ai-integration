@@ -88,3 +88,60 @@ test("createSdkAuditRunner leaves the model command when the repo has no test re
   // No recipe to substitute → the model's command stands as a best-effort fallback (no invention).
   assert.equal(res.verdicts[0]?.run, "node ./check.js");
 });
+
+// ── SP-6/7 AC6: a held-out acceptance/ command survives the auditor ─────────
+// The verifiability auditor OVERRIDES a local verifiable AC's command with the repo recipe (npm
+// test) — the design-phase fabrication fix. But a command pointing at an `acceptance/` path is the
+// held-out probe the closing gate must grade INDEPENDENTLY; clobbering it to npm test is exactly
+// what kept mechanism 5 from firing. So an acceptance/ command is KEPT.
+
+test("SP-6/7 AC6: an acceptance/ command is KEPT, not overridden to the repo recipe", async () => {
+  const modelVerdicts = JSON.stringify([
+    { ordinal: 1, verdict: "verifiable", run: "node --test out-test/acceptance/SP-6.test.js", env: "local" },
+    { ordinal: 2, verdict: "verifiable", run: "npx vitest run src/b.test.ts", env: "local" },
+  ]);
+  const runner = createSdkAuditRunner({
+    loadQuery: async () => fakeQuery(modelVerdicts),
+    resolveLocalRun: async () => "npm test",
+  });
+  const res = await runner({ acs: ACS, cwd: "/repo" });
+  const byOrd = new Map(res.verdicts.map((v) => [v.ordinal, v]));
+  // AC1's held-out acceptance/ probe survives verbatim; AC2 (an ordinary src probe) is overridden.
+  assert.equal(byOrd.get(1)?.run, "node --test out-test/acceptance/SP-6.test.js");
+  assert.equal(byOrd.get(2)?.run, "npm test");
+  assert.equal(res.passed, true);
+});
+
+// ── SP-6/7: the auditor gains an assessment verdict (distinct from needs-reframe) ──
+
+test("SP-6/7: an assessment verdict passes the audit, carries no run, and is not overridden", async () => {
+  const modelVerdicts = JSON.stringify([
+    { ordinal: 1, verdict: "verifiable", run: "npm test -- one", env: "local" },
+    { ordinal: 2, verdict: "assessment", rationale: "a prose/UX quality an assessor judges" },
+  ]);
+  const runner = createSdkAuditRunner({
+    loadQuery: async () => fakeQuery(modelVerdicts),
+    resolveLocalRun: async () => "npm test",
+  });
+  const res = await runner({ acs: ACS, cwd: "/repo" });
+  const byOrd = new Map(res.verdicts.map((v) => [v.ordinal, v]));
+  // The assessment verdict is preserved (distinct from needs-reframe), carries no runnable command,
+  // and keeps its rationale — and the audit PASSES (verifiable-by-assessment counts).
+  assert.equal(byOrd.get(2)?.verdict, "assessment");
+  assert.equal(byOrd.get(2)?.run, undefined);
+  assert.match(byOrd.get(2)?.rationale ?? "", /assessor judges/);
+  assert.equal(res.passed, true);
+});
+
+test("SP-6/7: a needs-reframe verdict still fails the audit (assessment did not weaken it)", async () => {
+  const modelVerdicts = JSON.stringify([
+    { ordinal: 1, verdict: "verifiable", run: "npm test", env: "local" },
+    { ordinal: 2, verdict: "needs-reframe", why: "a human confirms by eye" },
+  ]);
+  const runner = createSdkAuditRunner({
+    loadQuery: async () => fakeQuery(modelVerdicts),
+    resolveLocalRun: async () => "npm test",
+  });
+  const res = await runner({ acs: ACS, cwd: "/repo" });
+  assert.equal(res.passed, false);
+});

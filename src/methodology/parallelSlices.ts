@@ -577,6 +577,33 @@ export function resolveFootprint(
   return (footprint ?? []).filter((f) => !isAcceptanceEvidencePath(f, opts));
 }
 
+/** The independent-verification role of a work/execution unit (SP-6/7 AC1). */
+export type UnitRole = "code" | "test";
+
+/**
+ * Resolve a unit's **effective footprint by role** (SP-6/7 AC1) — the role-vs-held-out split.
+ *
+ *   • A `code` unit (the default) OWNS the ordinary source it declares and can **never** own the
+ *     held-out `acceptance/` evidence: {@link resolveFootprint} strips every acceptance path, so a
+ *     code-author cannot author the probe it is graded on.
+ *   • A `test` unit is the held-out verifier: its footprint is **exactly** the acceptance-evidence
+ *     paths it declares (the inverse filter — keep only what {@link isAcceptanceEvidencePath} matches).
+ *     So the test-author owns the `acceptance/` probe and nothing else, and the grade it authors lies
+ *     outside every code-author's footprint (the independence AC4 relies on).
+ *
+ * Pure — a path-shape decision, no I/O. Paths are returned un-normalized (callers normalize as they
+ * already do), mirroring {@link resolveFootprint}.
+ */
+export function resolveRoleFootprint(
+  role: UnitRole | undefined,
+  footprint: string[],
+  opts?: AcceptanceEvidenceOpts,
+): string[] {
+  if (role === "test")
+    return (footprint ?? []).filter((f) => isAcceptanceEvidencePath(f, opts));
+  return resolveFootprint(footprint, opts);
+}
+
 // ── Footprint enforcement (SP-tgs8nz_SL-6: the PreToolUse guard) ────────────
 //
 // An orchestrated worker runs under `bypassPermissions` (no prompts), so a

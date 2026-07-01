@@ -137,6 +137,7 @@ import {
   acRequirementHash,
   AC_CERT_HASH_KEY,
   emitAcVerifications,
+  type AcVerdict,
 } from "../services/openingGate";
 // SP-6/1 (TEP-6): `write_spec` runs the verifiability audit itself and signs only what its own
 // audit produced — the agent-supplied `ac_verifications` map is no longer honored. The signing
@@ -915,6 +916,12 @@ const TOOL_DEFS = [
                 type: "string",
                 enum: ["serial", "mechanize", "fan-out"],
               },
+              role: {
+                type: "string",
+                enum: ["code", "test"],
+                description:
+                  "Independent-verification role (SP-6/7). `code` (default) implements to the Spec's INTENT — the `## Acceptance Criteria` are stripped from its prompt. `test` is the held-out verifier: it KEEPS the ACs in its prompt and its footprint is the reserved `acceptance/` probe path, so the grade it authors is independent of the code-author. A code-author's own co-located test can never tick an AC green; only a held-out `acceptance/` probe (or an `env: assessment` AC) counts.",
+              },
               note: { type: "string" },
               // Contract-first opt-out (SP-th4wqi). The property KEY is the shared
               // CONTRACT_FIRST_OPTOUT_FIELD constant so the schema's field name
@@ -994,7 +1001,12 @@ const TOOL_DEFS = [
             type: "object",
             properties: {
               run: { type: "string" },
-              env: { type: "string", enum: ["cluster", "local"] },
+              env: {
+                type: "string",
+                enum: ["cluster", "local", "assessment"],
+                description:
+                  "`cluster` (an infra lifecycle) or `local` for a runnable command; `assessment` (SP-6/7 AC3) for a prose/UX/skill AC graded by a fresh independent assessor session (not the implementing worker) that returns pass/fail + rationale from the AC + intent + delivered artifact — no runnable command required.",
+              },
             },
             required: ["run"],
             additionalProperties: false,
@@ -1083,6 +1095,12 @@ const TOOL_DEFS = [
               execution: {
                 type: "string",
                 enum: ["serial", "mechanize", "fan-out"],
+              },
+              role: {
+                type: "string",
+                enum: ["code", "test"],
+                description:
+                  "Independent-verification role (SP-6/7). `code` (default) sees the Spec's intent only; `test` is the held-out verifier (keeps the ACs, footprint under the reserved `acceptance/` path).",
               },
               note: { type: "string" },
               [CONTRACT_FIRST_OPTOUT_FIELD]: {
@@ -1266,6 +1284,7 @@ export async function dispatchTool(
                 consumes?: string[];
                 reads?: string[];
                 execution: string;
+                role?: string;
                 note?: string;
               }[])
             : undefined,
@@ -2215,6 +2234,13 @@ async function moveSlice(
     };
   }
 
+  // SP-6/7 AC7: reopening a slice of an ACCEPTED Spec must clear the Spec's `accepted:` stamp — a
+  // Spec whose delivered work is being reworked is no longer accepted. Detect the OFF-Done move (the
+  // slice was Done, the target is anything else) here, before the frontmatter is mutated below.
+  const wasDone =
+    String(parsed.frontmatter?.status ?? "").toLowerCase() === "done";
+  const movingOffDone = wasDone && target !== "done";
+
   const fm: Frontmatter = { ...(parsed.frontmatter ?? {}), status: target };
   // Attest the documentation obligation (TEP-tgh6iy): a caller updating the doc
   // module in this slice passes docs_done so the gate below is satisfied.
@@ -2286,6 +2312,31 @@ async function moveSlice(
   }
 
   await store.writeFile(rel, fm, parsed.body);
+
+  // SP-6/7 AC7: clear the parent Spec's `accepted:` stamp when this slice moved OFF Done. An accepted
+  // Spec whose slice is being reworked/reopened is no longer accepted — leaving the stamp would let the
+  // Spec's PR merge on stale sign-off. Best-effort + idempotent: no stamp / a read failure is a no-op,
+  // and only the `accepted` key is removed (every other frontmatter field + the body is preserved).
+  let acceptanceCleared = false;
+  if (movingOffDone) {
+    try {
+      const specRel = store.pathForSpecDoc(specNumber);
+      const specDoc = await store.getFile(specRel);
+      if (specDoc?.frontmatter && "accepted" in specDoc.frontmatter) {
+        const { accepted: _dropped, ...rest } = specDoc.frontmatter as Record<
+          string,
+          unknown
+        >;
+        await store.writeFile(specRel, rest as Frontmatter, specDoc.body);
+        acceptanceCleared = true;
+      }
+    } catch (err) {
+      process.stderr.write(
+        `[thinkube-mcp] move_slice: clearing accepted stamp for ${handle} failed: ${(err as Error).message}\n`,
+      );
+    }
+  }
+
   return {
     ok: true,
     slice: store.sliceHandle(specNumber, sliceNumber),
@@ -2293,6 +2344,7 @@ async function moveSlice(
     baselineStamped,
     ...(gateSkipped ? { gateSkipped } : {}),
     ...(docsWarning ? { docsWarning } : {}),
+    ...(acceptanceCleared ? { acceptanceCleared } : {}),
   };
 }
 
@@ -2357,6 +2409,8 @@ export async function createSlice(
       // undeclared-cross-unit-read gate audits these against sibling productions.
       reads?: string[];
       execution: string;
+      // Independent-verification role (SP-6/7): `code` (default) or `test` (the held-out verifier).
+      role?: string;
       note?: string;
       // Contract-first opt-out (SP-th4wqi). The authoritative field name is the
       // shared `CONTRACT_FIRST_OPTOUT_FIELD` constant (the schema key + what
@@ -2517,7 +2571,14 @@ export async function createSlice(
         }
       : {}),
   };
-  const readyVerdict = readyGate(acs, verifications, certification);
+  // `readyGate` only reads each entry's `run` (its structural check), so the `env: "assessment"`
+  // widening (SP-6/7) is irrelevant to it — narrow the type at the call. An assessment AC carries no
+  // runnable `run`, so it is graded by the closing gate's independent assessor, not this opening gate.
+  const readyVerdict = readyGate(
+    acs,
+    verifications as Record<string, { run: string; env?: "cluster" | "local" }>,
+    certification,
+  );
   if (!readyVerdict.ok) {
     // Structural block — an AC with no runnable declaration — names the ordinal.
     if ("ordinal" in readyVerdict) {
@@ -2809,9 +2870,14 @@ function unverifiableOrdinals(
   const flagged: number[] = [];
   for (const ac of acs) {
     const v = byOrdinal.get(ac.ordinal);
-    if (!v || v.verdict !== "verifiable" || !v.run?.trim()) {
-      flagged.push(ac.ordinal);
-    }
+    // `assessment` (SP-6/7) is verifiable-by-assessment — a distinct pass from `verifiable`,
+    // needing no runnable `run`; only a missing verdict, `needs-reframe`, or a `verifiable`
+    // verdict with no command is unverifiable.
+    const ok =
+      v &&
+      (v.verdict === "assessment" ||
+        (v.verdict === "verifiable" && !!v.run?.trim()));
+    if (!ok) flagged.push(ac.ordinal);
   }
   return flagged;
 }
@@ -2930,7 +2996,15 @@ async function writeSpec(
       // Passed: emit the canonical map from the audit's verdicts and bind a server signature over
       // `(acRequirementHash, ac_verifications)` so `readyGate` can verify provenance — the agent
       // can reproduce the hash but never this signature (the secret never leaves the server).
-      const map = emitAcVerifications(result.verdicts);
+      // `assessment` verdicts (SP-6/7) are verifiable-by-assessment, not by a signed runnable
+      // command — the closing gate's independent assessor grades them at quiescence, not this map.
+      // Only `verifiable` verdicts contribute a signed `ac_verifications` entry (emitAcVerifications
+      // drops the rest); an assessment AC is graded via its `env: "assessment"` declaration instead.
+      const map = emitAcVerifications(
+        result.verdicts.filter(
+          (v): v is AcVerdict => v.verdict !== "assessment",
+        ),
+      );
       const acHash = acRequirementHash(trimmed);
       fm.ac_verifications = map;
       fm[AC_CERT_HASH_KEY] = acHash;
@@ -3056,25 +3130,31 @@ function repoStateForRunnableCheck(repoRoot: string): RepoState | undefined {
  *  integer ordinal, and sorting the keys by ordinal for a stable, low-diff write. */
 function normalizeAcVerifications(
   raw: Record<string, unknown>,
-): Record<string, { run: string; env?: "cluster" | "local" }> {
-  const entries: [number, { run: string; env?: "cluster" | "local" }][] = [];
+): Record<string, { run: string; env?: "cluster" | "local" | "assessment" }> {
+  type Decl = { run: string; env?: "cluster" | "local" | "assessment" };
+  const entries: [number, Decl][] = [];
   for (const [key, val] of Object.entries(raw)) {
     const ac = Number(key);
     if (!Number.isInteger(ac) || ac <= 0) continue;
     if (!val || typeof val !== "object") continue;
     const run = (val as Record<string, unknown>).run;
-    if (typeof run !== "string" || !run.trim()) continue;
     const env = (val as Record<string, unknown>).env;
+    const isAssessment = env === "assessment";
+    // An `assessment` AC (SP-6/7 AC3) is graded by an independent assessor session, not a runnable
+    // command — so it needs no non-empty `run`. Every other AC still requires a runnable command.
+    if (!isAssessment && (typeof run !== "string" || !run.trim())) continue;
     entries.push([
       ac,
       {
-        run: run.trim(),
-        ...(env === "cluster" || env === "local" ? { env } : {}),
+        run: typeof run === "string" ? run.trim() : "",
+        ...(env === "cluster" || env === "local" || env === "assessment"
+          ? { env }
+          : {}),
       },
     ]);
   }
   entries.sort((a, b) => a[0] - b[0]);
-  const out: Record<string, { run: string; env?: "cluster" | "local" }> = {};
+  const out: Record<string, Decl> = {};
   for (const [ac, decl] of entries) out[String(ac)] = decl;
   return out;
 }
