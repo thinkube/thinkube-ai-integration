@@ -90,7 +90,16 @@ function canonicalPayload(
   );
   const canonicalMap = ordinals.map((ordinal) => {
     const decl = acVerifications[ordinal] ?? {};
+    // Drop absent / empty fields so a no-`run` `assessment` entry (SP-6/7) and a `run: ""`-normalized
+    // one canonicalize identically — otherwise a map signed at write_spec (`{ env: "assessment" }`)
+    // fails verification at create_slice, which reshapes it via `normalizeAcVerifications`
+    // (`{ run: "", env: "assessment" }`). Every real `run`/`env` is non-empty, so no existing
+    // signature changes.
     const fields = Object.keys(decl)
+      .filter((k) => {
+        const v = (decl as Record<string, unknown>)[k];
+        return v !== undefined && v !== "";
+      })
       .sort()
       .map((k) => [k, (decl as Record<string, unknown>)[k]] as const);
     return [ordinal, fields];
