@@ -52,9 +52,42 @@ test("buildWorkerPrompt injects the slice contract into BOTH code and test units
   ] as const) {
     assert.equal(u.contract, CONTRACT, `${label} unit carries the contract`);
     const prompt = buildWorkerPrompt(u, "6/3");
-    assert.match(prompt, /SLICE CONTRACT/, `${label} prompt frames the contract`);
+    assert.match(prompt, /SPEC CONTRACT/, `${label} prompt frames the contract`);
     assert.match(prompt, /ApprovalToken\.mint/, `${label} prompt has the contract text`);
   }
+});
+
+test("the contract is Spec-wide: a unit in one slice sees a contract another slice declares (cross-slice)", () => {
+  // SL-1 declares the token/store seam; SL-2 (the webview) declares its own — each unit must build
+  // against the UNION, so SL-2's worker sees SL-1's ApprovalToken interface (cross-slice agreement).
+  const dag = buildUnitDag([
+    {
+      handle: "TEP-6_SP-3_SL-1",
+      status: "ready",
+      requires: [],
+      files: [],
+      contract: "ApprovalToken.verify(token, ctx) -> boolean",
+      workUnits: [{ footprint: ["src/approvalToken.ts"], execution: "fan-out" }],
+      satisfies: [1],
+    },
+    {
+      handle: "TEP-6_SP-3_SL-2",
+      status: "ready",
+      requires: [],
+      files: [],
+      contract: "ReviewPanel.open(subjectKey) -> void",
+      workUnits: [{ footprint: ["src/ReviewPanel.ts"], execution: "fan-out" }],
+    },
+  ]);
+  const sl2 = dag.find((u) => u.slice === "TEP-6_SP-3_SL-2")!;
+  const prompt = buildWorkerPrompt(sl2, "6/3");
+  // SL-2's worker sees BOTH its own contract AND SL-1's (the union).
+  assert.match(prompt, /ReviewPanel\.open/, "SL-2 sees its own contract");
+  assert.match(
+    prompt,
+    /ApprovalToken\.verify/,
+    "SL-2 sees SL-1's contract — cross-slice interface agreement",
+  );
 });
 
 // ── a contract-defined slice's test unit needs no `consumes` (gate exempt) ─────

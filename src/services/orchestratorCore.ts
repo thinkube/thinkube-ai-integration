@@ -199,8 +199,9 @@ export interface SchedUnit {
   role?: "code" | "test";
   /** The unit's task text(s), for the worker prompt. */
   note?: string;
-  /** The parent slice's design-time contract (SP-6/3), injected verbatim into this unit's worker
-   *  prompt so code and held-out test alike build to the same interface. Carried from the slice. */
+  /** The Spec-wide design-time contract (SP-6/3): the UNION of every slice's declared contract,
+   *  injected verbatim into this unit's worker prompt so code and held-out test — in ANY slice —
+   *  build to the same interface, including seams another slice defines. Computed by buildUnitDag. */
   contract?: string;
   /** The underlying work units (for the worker prompt + footprint). */
   units?: WorkUnit[];
@@ -225,6 +226,18 @@ export interface SchedUnit {
  */
 export function buildUnitDag(slices: SliceForDag[]): SchedUnit[] {
   const normFile = (f: string) => f.replace(/^\.\//, "");
+
+  // SP-6/3: the CONTRACT is Spec-shared, not slice-local. Each slice declares the interfaces it
+  // introduces; the shared seam for the whole feature is the UNION of every slice's contract. It is
+  // stamped on every unit — across ALL slices — so a unit in one slice builds against an interface
+  // another slice defines (e.g. a webview slice against the token/store a headless-gate slice owns).
+  // This is the cross-slice interface agreement that `consumes`-between-slices used to carry; genuine
+  // produced-artifact `consumes` stays cross-slice too, so nothing loses cross-slice reach.
+  const specContract =
+    slices
+      .map((s) => s.contract?.trim())
+      .filter((c): c is string => !!c)
+      .join("\n\n") || undefined;
 
   // Batch each unit-bearing slice's work units into execution units once; a unit-less
   // (legacy) slice has none (it becomes a single serial node keyed by its bare handle).
@@ -269,7 +282,7 @@ export function buildUnitDag(slices: SliceForDag[]): SchedUnit[] {
         footprint: s.files ?? [],
         requires: [],
         shape: "serial",
-        contract: s.contract,
+        contract: specContract,
       });
       continue;
     }
@@ -307,7 +320,7 @@ export function buildUnitDag(slices: SliceForDag[]): SchedUnit[] {
         shape: eu.shape,
         role,
         note,
-        contract: s.contract,
+        contract: specContract,
         units: eu.units,
       });
     });
@@ -692,12 +705,13 @@ export function buildWorkerPrompt(
   const roleBlock = isTest
     ? `\nYou are the HELD-OUT TEST-AUTHOR (the independent verifier) for this slice. Author the acceptance probe at your footprint (a reserved \`acceptance/\` path) that GRADES the slice's \`## Acceptance Criteria\` (embedded below). Target the INTENT — the criteria + design — BLACK-BOX: do NOT read or couple to the implementation code (a code-author writes that in parallel). Drive it through the SLICE CONTRACT below (its public exports/signatures); your probe is the independent evidence the closing gate grades on, so it must fail if the intent is not met.\n`
     : "";
-  // SP-6/3: the slice's design-time CONTRACT — the shared interface every unit (code AND held-out
-  // test) builds against, established when the slice was created. Injected verbatim into EVERY
-  // unit's prompt so they agree on the exact seam (exports/types/signatures/behaviour) WITHOUT
-  // reading each other's code — the coordination `consumes` used to force, now pinned up front.
+  // SP-6/3: the Spec-wide design-time CONTRACT — the shared interface (union of every slice's
+  // declared contract) every unit (code AND held-out test, in ANY slice) builds against. Injected
+  // verbatim into EVERY unit's prompt so they agree on the exact seam (exports/types/signatures/
+  // behaviour) WITHOUT reading each other's code — including a seam another slice owns. This is the
+  // cross-slice interface agreement `consumes` used to carry, now pinned up front.
   const contractBlock = unit.contract?.trim()
-    ? `\n──── SLICE CONTRACT (the shared interface — implement and verify EXACTLY against this; do not rename, widen, or invent) ────\n${unit.contract.trim()}\n`
+    ? `\n──── SPEC CONTRACT (the shared interface across the whole feature — implement and verify EXACTLY against this; do not rename, widen, or invent) ────\n${unit.contract.trim()}\n`
     : "";
   // The worker runs in a worktree of the CODE repo — the thinking space/specs dir is NOT there. Embed the
   // spec + slice so it has full context inline rather than hunting the filesystem for a spec it cannot
