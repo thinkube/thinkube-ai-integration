@@ -89,8 +89,15 @@ export interface Frontmatter {
    *  at Spec quiescence and gates Done/commit on all-green (no skip; red or un-runnable →
    *  requires-attention). `run` is a shell/playbook command (exit 0 = the AC's verification
    *  passed); `env` is informational — `cluster` for an infra lifecycle, `local` otherwise.
-   *  Keys are the 1-based AC ordinals (as YAML map keys, parsed tolerantly). */
-  ac_verifications?: Record<string, { run: string; env?: "cluster" | "local" }>;
+   *  Keys are the 1-based AC ordinals (as YAML map keys, parsed tolerantly).
+   *  `env: "assessment"` (SP-6/7 AC3) marks an AC graded by an independent assessor session
+   *  rather than a runnable command — a prose/UX/skill AC that no shell probe fits; the closing
+   *  gate dispatches a fresh assessor (never the implementing worker) that returns pass/fail +
+   *  rationale from the AC + intent + delivered artifact, so `run` is unused for it. */
+  ac_verifications?: Record<
+    string,
+    { run: string; env?: "cluster" | "local" | "assessment" }
+  >;
   /** Execution-aware work units under this slice (SP-tgs8gb): each an atom with a
    *  file/object footprint + an execution shape. The slice stays the validation
    *  envelope — work units are never independently gated. */
@@ -114,6 +121,12 @@ export interface Frontmatter {
     /** serial (coupled) | mechanize (uniform data-parallel: one transform applied
      *  N times) | fan-out (heterogeneous: AI per object). */
     execution: "serial" | "mechanize" | "fan-out";
+    /** Independent-verification role (SP-6/7 AC1). A `code` unit (the default) sees the Spec's
+     *  INTENT only — the `## Acceptance Criteria` block + `satisfies` are stripped from its prompt;
+     *  a `test` unit is the held-out verifier: it KEEPS the ACs in its prompt and its footprint is
+     *  the reserved `acceptance/` probe path, so the grade it authors is independent of the code.
+     *  Absent ⇒ `code` (backward-compatible; existing slices are unaffected). */
+    role?: "code" | "test";
     /** The unit's task text — what this unit does. Self-describing so a worker can
      *  act on it without re-reading siblings; required in practice for `fan-out`. */
     note?: string;

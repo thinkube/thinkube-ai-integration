@@ -30,6 +30,38 @@ import {
   sessionIdOf,
   summarizeEvent,
 } from "./orchestratorCore";
+// SP-6/7 AC6: an AC whose verification command points at a held-out `acceptance/` path is KEPT by the
+// auditor, not overridden to the repo's `npm test`. Reuse the single path-convention regex.
+import { ACCEPTANCE_EVIDENCE_RE } from "../methodology/parallelSlices";
+
+/**
+ * The auditor's verdict kinds, extended with `assessment` (SP-6/7): a prose/UX/skill AC that no
+ * runnable probe fits is *verifiable-by-assessment* — an independent assessor session grades it at
+ * the closing gate — which is DISTINCT from a `needs-reframe` that leaves the AC un-gateable. Widened
+ * locally so `openingGate`'s exported {@link AcVerdictKind} (outside this Spec's footprint) is untouched.
+ */
+export type AuditVerdictKind = AcVerdictKind | "assessment";
+
+/**
+ * One auditor verdict, widened to carry the SP-6/7 `assessment` kind. A `verifiable`/`needs-reframe`
+ * verdict is structurally exactly an {@link AcVerdict}; an `assessment` verdict needs no runnable `run`
+ * (the closing gate dispatches an assessor for it) and may carry a `rationale`. `env` stays
+ * `cluster | local` so a non-assessment verdict narrows cleanly back to {@link AcVerdict}.
+ */
+export interface AuditVerdict {
+  /** 1-based AC ordinal this verdict covers. */
+  ordinal: number;
+  /** The auditor's call, including the SP-6/7 `assessment` kind. */
+  verdict: AuditVerdictKind;
+  /** The command that proves a `verifiable` AC. */
+  run?: string;
+  /** Where a `verifiable` AC runs. */
+  env?: "cluster" | "local";
+  /** Why a `needs-reframe` AC can't be verified as written. */
+  why?: string;
+  /** Why an `assessment` AC must be graded by an independent assessor rather than a command. */
+  rationale?: string;
+}
 
 /** One acceptance criterion as the auditor interrogates it: its 1-based ordinal and prose. */
 export interface AuditAc {
@@ -62,7 +94,7 @@ export interface AuditRequest {
  *     treat an errored audit as a refusal (never sign), distinct from a clean `passed: false`.
  */
 export interface AuditResult {
-  verdicts: AcVerdict[];
+  verdicts: AuditVerdict[];
   passed: boolean;
   sessionId?: string;
   error?: string;
@@ -83,13 +115,20 @@ export type AuditRunner = (req: AuditRequest) => Promise<AuditResult>;
  * the audit — mirroring `readyGate`'s structural rule so a passing audit's emitted map is
  * Ready-eligible by construction. An empty AC set fails (nothing to certify).
  */
-export function computePassed(acs: AuditAc[], verdicts: AcVerdict[]): boolean {
+export function computePassed(
+  acs: AuditAc[],
+  verdicts: AuditVerdict[],
+): boolean {
   if (!acs.length) return false;
-  const byOrdinal = new Map<number, AcVerdict>();
+  const byOrdinal = new Map<number, AuditVerdict>();
   for (const v of verdicts) byOrdinal.set(v.ordinal, v);
   for (const ac of acs) {
     const v = byOrdinal.get(ac.ordinal);
-    if (!v || v.verdict !== "verifiable") return false;
+    if (!v) return false;
+    // `assessment` (SP-6/7) passes the audit with no runnable `run` — the closing gate grades it via
+    // an independent assessor. `verifiable` still requires a concrete command. `needs-reframe` fails.
+    if (v.verdict === "assessment") continue;
+    if (v.verdict !== "verifiable") return false;
     if (typeof v.run !== "string" || !v.run.trim()) return false;
   }
   return true;
@@ -119,8 +158,11 @@ export function buildAuditPrompt(acs: AuditAc[], specBody?: string): string {
     "  - its verifying actor is a human (it says a person looks/checks/confirms by eye), or",
     "  - its verification is deploy/merge-circular (it can only be checked after the very",
     "    merge or deploy that the gate it arms gates).",
-    "Otherwise call it `verifiable` and give the single command (`run`) that proves it, and",
-    'where it runs (`env`: "local" or "cluster").',
+    "When a criterion CAN be judged before merge but no runnable command fits it (a prose / UX /",
+    "skill / judgment AC), call it `assessment`: an independent assessor session will read the",
+    "delivered artifact and grade it pass/fail with a rationale — this is DISTINCT from",
+    "`needs-reframe` (which leaves the AC un-gateable). Otherwise call it `verifiable` and give the",
+    'single command (`run`) that proves it, and where it runs (`env`: "local" or "cluster").',
     "",
     "Acceptance Criteria:",
     acBlock,
@@ -129,14 +171,20 @@ export function buildAuditPrompt(acs: AuditAc[], specBody?: string): string {
     "Respond with ONLY a JSON array (no prose, no markdown fence needed) of one object per",
     "criterion, in ordinal order:",
     '  [{"ordinal":1,"verdict":"verifiable","run":"npm test","env":"local"},',
-    '   {"ordinal":2,"verdict":"needs-reframe","why":"a human confirms by eye"}]',
-    "Include `run` (and optionally `env`) only for `verifiable`; include `why` for `needs-reframe`.",
+    '   {"ordinal":2,"verdict":"assessment","rationale":"a UX quality an assessor judges"},',
+    '   {"ordinal":3,"verdict":"needs-reframe","why":"a human confirms by eye"}]',
+    "Include `run` (and optionally `env`) only for `verifiable`; `rationale` for `assessment`; `why`",
+    "for `needs-reframe`.",
   ].join("\n");
 }
 
 // ── verdict parsing ──────────────────────────────────────────────────────────
 
-const VERDICT_KINDS = new Set<AcVerdictKind>(["verifiable", "needs-reframe"]);
+const VERDICT_KINDS = new Set<AuditVerdictKind>([
+  "verifiable",
+  "needs-reframe",
+  "assessment",
+]);
 
 /**
  * Parse the auditor's reply into {@link AcVerdict}s. Tolerant of a surrounding ```json fence or
@@ -145,10 +193,10 @@ const VERDICT_KINDS = new Set<AcVerdictKind>(["verifiable", "needs-reframe"]);
  * verdict must never silently pass the audit). Non-object entries and non-positive-integer ordinals
  * are dropped. Returns `[]` when nothing parseable is found (the runner then reports an error).
  */
-export function parseAuditVerdicts(text: string): AcVerdict[] {
+export function parseAuditVerdicts(text: string): AuditVerdict[] {
   const arr = extractJsonArray(text);
   if (!Array.isArray(arr)) return [];
-  const out: AcVerdict[] = [];
+  const out: AuditVerdict[] = [];
   for (const raw of arr) {
     if (!raw || typeof raw !== "object") continue;
     const rec = raw as Record<string, unknown>;
@@ -161,14 +209,20 @@ export function parseAuditVerdicts(text: string): AcVerdict[] {
       continue;
     const kind =
       typeof rec.verdict === "string" &&
-      VERDICT_KINDS.has(rec.verdict as AcVerdictKind)
-        ? (rec.verdict as AcVerdictKind)
+      VERDICT_KINDS.has(rec.verdict as AuditVerdictKind)
+        ? (rec.verdict as AuditVerdictKind)
         : "needs-reframe";
-    const verdict: AcVerdict = { ordinal, verdict: kind };
+    const verdict: AuditVerdict = { ordinal, verdict: kind };
     if (kind === "verifiable") {
       if (typeof rec.run === "string" && rec.run.trim())
         verdict.run = rec.run.trim();
       if (rec.env === "cluster" || rec.env === "local") verdict.env = rec.env;
+    } else if (kind === "assessment") {
+      // Verifiable-by-assessment (SP-6/7): no runnable command; carry the rationale hint if present.
+      if (typeof rec.rationale === "string" && rec.rationale.trim())
+        verdict.rationale = rec.rationale.trim();
+      else if (typeof rec.why === "string" && rec.why.trim())
+        verdict.rationale = rec.why.trim();
     } else if (typeof rec.why === "string" && rec.why.trim()) {
       verdict.why = rec.why.trim();
     }
@@ -324,10 +378,15 @@ export function createSdkAuditRunner(deps: SdkAuditDeps = {}): AuditRunner {
     const localRun = await resolveLocalRun(req.cwd);
     if (localRun) {
       for (const v of verdicts) {
-        if (v.verdict === "verifiable" && v.env !== "cluster") {
-          v.run = localRun;
-          v.env = "local";
-        }
+        if (v.verdict !== "verifiable" || v.env === "cluster") continue;
+        // SP-6/7 AC6: a command pointing at a held-out `acceptance/` path is KEPT, not overridden to
+        // the repo's `npm test`. That probe is authored by the held-out test unit at slice time and
+        // is exactly the independent evidence the closing gate must grade — clobbering it with the
+        // whole-suite recipe is what kept mechanism 5 from ever firing. Everything else still resolves
+        // to the repo recipe (the model's per-file command is a design-phase fabrication).
+        if (v.run && ACCEPTANCE_EVIDENCE_RE.test(v.run)) continue;
+        v.run = localRun;
+        v.env = "local";
       }
     }
 
@@ -356,7 +415,7 @@ function collectAssistantText(rec: Record<string, unknown>): string {
  * sign on pass, refuse otherwise* invariant be unit-tested with no model call.
  */
 export function fixedAuditRunner(
-  verdicts: AcVerdict[],
+  verdicts: AuditVerdict[],
   overrides: { passed?: boolean; sessionId?: string; error?: string } = {},
 ): AuditRunner {
   return async (req: AuditRequest): Promise<AuditResult> => ({

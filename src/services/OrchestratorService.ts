@@ -34,6 +34,8 @@ import {
   runAcVerifications,
   checkAcOrdinals,
   buildDeliveryReport,
+  buildVerificationTrace,
+  mergeVerificationTrace,
   finalizationVerdict,
   FINALIZATION_WEDGED_DIAGNOSIS,
   commitPlan,
@@ -48,6 +50,13 @@ import {
   type WorkUnit,
   type AcVerification,
   type AcResult,
+  type AcAssessment,
+  type AssessAc,
+  type AssessContext,
+  type Fault,
+  type FailureJudgment,
+  type JudgeFailure,
+  type VerificationTraceEntry,
   type FinalizationState,
   type SliceOutcome,
 } from "./orchestratorCore";
@@ -99,6 +108,19 @@ export interface OrchestratorDeps {
     verifs: AcVerification[],
     cwd: string,
   ) => Promise<AcResult[]>;
+  /** Grade an `env: "assessment"` AC (SP-6/7 AC3) by dispatching a fresh INDEPENDENT assessor session
+   *  (never the implementing worker), returning pass/fail + rationale from the AC + intent + delivered
+   *  artifact. The closing gate hands it to `runAcVerifications` so a prose/UX/skill AC no runnable
+   *  probe fits is still gated. Defaults to {@link createSdkAssessor} (a headless `query()` session);
+   *  tests inject a fake so the assessment branch is unit-testable with no live model. */
+  assessAc?: AssessAc;
+  /** Judge a FAILED acceptance run (SP-6/7 AC4) — the same independent-judgment primitive as
+   *  {@link assessAc}: a fresh session, NEVER the implementing worker, deciding whether the fault lies
+   *  in the CODE or the TEST (or both) with a rationale, so the closing gate can route the re-dispatch
+   *  to the right role (or escalate on `both`). Defaults to {@link createSdkJudge} (a headless read-only
+   *  `query()` session in the worktree); tests inject a fake so the routing is unit-testable with no
+   *  live model. */
+  judgeFailure?: JudgeFailure;
   /** Tick the satisfied AC ordinals on the Spec doc (tests): defaults to flipping the checkboxes
    *  under the Spec body's `## Acceptance Criteria`, so the accept gate (every AC checked) passes. */
   checkAcs?: (specNumber: string, ordinals: number[]) => Promise<void>;
@@ -244,6 +266,10 @@ export interface SpecRunResult {
   deliveryDoc?: string;
   /** The closing gate's per-AC verification results (pass/fail + evidence); empty when it couldn't run. */
   acResults: AcResult[];
+  /** The durable, structured verification trace this run produced (SP-6/7 AC5) — per AC and per rework
+   *  round: kind (probe/assessment), verdict, rationale, and any code-vs-test route. Persisted alongside
+   *  DELIVERY.md and surfaced in the delivery report; empty when the closing gate could not run. */
+  verificationTrace: VerificationTraceEntry[];
 }
 
 // Leading/trailing shell punctuation to peel off a `run`-command token (quotes,
@@ -317,6 +343,320 @@ export function verificationIsWholeSuite(run: string): boolean {
   return false;
 }
 
+// ── Independent assessor for `env: "assessment"` ACs (SP-6/7 AC3) ───────────
+//
+// The one independent-judgment primitive: a FRESH SDK session, never the implementing worker,
+// that judges whether the delivered artifact satisfies an AC's intent and returns pass/fail WITH a
+// rationale. `runAcVerifications` calls it (via `AssessContext`) for any AC declared `env:
+// "assessment"`. Injectable end-to-end — tests wire `deps.assessAc` with a fake so no live model runs.
+
+/** Minimal structural type of the Agent SDK `query()` the assessor depends on (loose so the lazy
+ *  import doesn't pull SDK types into the module graph). A one-shot string prompt, read-only session. */
+type AssessorSdkQuery = (args: {
+  prompt: string;
+  options: { cwd: string; permissionMode: "bypassPermissions" };
+}) => AsyncIterable<unknown>;
+
+/** Deps for {@link createSdkAssessor} — the worktree cwd the assessor reads, plus injectable SDK
+ *  loader + log sink (both defaulted) so the spawn path is testable without a live model. */
+export interface SdkAssessorDeps {
+  /** Working directory for the headless assessor session (the worktree carrying the delivered change). */
+  cwd: string;
+  /** Loads the SDK `query`. Defaults to a lazy `import("@anthropic-ai/claude-agent-sdk")`. */
+  loadQuery?: () => Promise<AssessorSdkQuery>;
+  /** Progress sink. Defaults to a no-op. */
+  log?: (line: string) => void;
+}
+
+/** Clip a string to `n` chars with an ellipsis (local copy — the core's `clip` is not exported). */
+function clipText(x: string, n: number): string {
+  return x.length > n ? x.slice(0, n - 1) + "…" : x;
+}
+
+/**
+ * Build the independent-assessor prompt (SP-6/7 AC3): judge ONE acceptance criterion's intent against
+ * the delivered artifact, black-box, and answer in machine-readable JSON with a rationale. The session
+ * runs in the worktree so the assessor may read the delivered change, but it did NOT author it.
+ */
+export function buildAssessPrompt(
+  ac: AcVerification,
+  intent: string,
+  artifact: string,
+): string {
+  return [
+    "You are an INDEPENDENT assessor for ONE acceptance criterion of a software Spec.",
+    "You did NOT implement the change. Judge ONLY whether the delivered artifact satisfies the",
+    "criterion's INTENT — not whether it is implemented a particular way.",
+    "",
+    `Acceptance criterion #${ac.ac}:`,
+    intent.trim() ||
+      "(criterion text unavailable — infer it from the artifact and the spec context)",
+    artifact.trim()
+      ? `\nDelivered artifact / context:\n${artifact.trim()}`
+      : "",
+    "\nYou may read the working tree (your cwd) to inspect the delivered change.",
+    "",
+    "Respond with ONLY a JSON object (no prose, no markdown fence needed):",
+    '  {"pass": true, "rationale": "one or two sentences explaining the verdict"}',
+  ]
+    .filter((l) => l !== null && l !== undefined)
+    .join("\n");
+}
+
+/** Extract the last top-level `{ ... }` object from arbitrary text (tolerant of a ```json fence /
+ *  surrounding prose). Returns the parsed value, or null when nothing parses. */
+function extractJsonObject(text: string): unknown {
+  if (!text) return null;
+  const starts: number[] = [];
+  for (let i = 0; i < text.length; i++) if (text[i] === "{") starts.push(i);
+  for (let s = starts.length - 1; s >= 0; s--) {
+    const start = starts[s];
+    for (let e = text.lastIndexOf("}"); e > start; e--) {
+      if (text[e] !== "}") continue;
+      try {
+        const v = JSON.parse(text.slice(start, e + 1));
+        if (v && typeof v === "object" && !Array.isArray(v)) return v;
+      } catch {
+        /* try a shorter close */
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Parse an assessor session's reply into an {@link AcAssessment} (SP-6/7 AC3). Tolerant of a fence /
+ * surrounding prose: the last top-level JSON object with a truthy `pass` (or `verdict: "pass"`) and a
+ * `rationale`/`why` string. Fail-safe: an unparseable reply → a FAIL carrying the raw reply as the
+ * rationale (never a silent pass — the no-skip rule). Pure.
+ */
+export function parseAssessment(text: string): AcAssessment {
+  const obj = extractJsonObject(text);
+  if (obj) {
+    const rec = obj as Record<string, unknown>;
+    const pass =
+      rec.pass === true ||
+      rec.pass === "true" ||
+      rec.verdict === "pass" ||
+      rec.passed === true;
+    const rationale =
+      (typeof rec.rationale === "string" && rec.rationale.trim()) ||
+      (typeof rec.why === "string" && rec.why.trim()) ||
+      "";
+    return { pass, rationale: rationale || "(no rationale)" };
+  }
+  return {
+    pass: false,
+    rationale: `assessor produced no parseable verdict: ${clipText((text ?? "").trim(), 200)}`,
+  };
+}
+
+/**
+ * The production {@link AssessAc} (SP-6/7 AC3): dispatch a headless, read-only Claude session in the
+ * worktree that judges one AC's intent against the delivered artifact and returns pass/fail + rationale.
+ * Lazy-imported and failure-tolerant — a load/run error, a non-success result, or an unparseable reply
+ * all degrade to a FAIL with a rationale (never a thrown crash, never a spurious pass).
+ */
+export function createSdkAssessor(deps: SdkAssessorDeps): AssessAc {
+  const log = deps.log ?? (() => {});
+  const loadQuery =
+    deps.loadQuery ??
+    (async () =>
+      (await import("@anthropic-ai/claude-agent-sdk"))
+        .query as unknown as AssessorSdkQuery);
+  return async (ac, intent, artifact): Promise<AcAssessment> => {
+    const prompt = buildAssessPrompt(ac, intent, artifact);
+    let resultText = "";
+    let assistantText = "";
+    let sawSuccess = false;
+    try {
+      const query = await loadQuery();
+      for await (const msg of query({
+        prompt,
+        options: { cwd: deps.cwd, permissionMode: "bypassPermissions" },
+      })) {
+        const rec = msg as Record<string, unknown>;
+        const line = summarizeEvent(rec);
+        if (line) log(`  [assess AC#${ac.ac}] ${line}`);
+        if (rec.type === "assistant") {
+          const m = rec.message as { content?: unknown } | undefined;
+          const content = Array.isArray(m?.content) ? m!.content : [];
+          for (const b of content as Array<Record<string, unknown>>)
+            if (b.type === "text" && typeof b.text === "string")
+              assistantText += b.text;
+        }
+        if (rec.type === "result") {
+          if (typeof rec.result === "string") resultText = rec.result;
+          sawSuccess = isResultSuccess(rec);
+        }
+      }
+    } catch (err) {
+      return {
+        pass: false,
+        rationale: `assessor session failed: ${(err as Error).message}`,
+      };
+    }
+    if (!sawSuccess)
+      return {
+        pass: false,
+        rationale: "assessor session did not complete successfully",
+      };
+    return parseAssessment(resultText || assistantText);
+  };
+}
+
+// ── Independent code-vs-test judge for a red acceptance run (SP-6/7 AC4) ────
+//
+// The SAME independent-judgment primitive as the assessor (a fresh SDK session, never the implementing
+// worker, a verdict WITH a rationale) — reused to decide whether a FAILED acceptance run is a CODE
+// fault (the implementation diverged from intent) or a TEST fault (the held-out probe is itself wrong),
+// or BOTH/ambiguous. Its verdict routes `reDispatchDecision` to re-author the right role (or escalate
+// on `both`). Injectable end-to-end — tests wire `deps.judgeFailure` with a fake so no live model runs.
+
+/**
+ * Build the code-vs-test judge prompt (SP-6/7 AC4): given the failing unit + the failure evidence, ask
+ * a fresh INDEPENDENT session (it did NOT author the change) to attribute the fault to the code, the
+ * test, or both, and answer in machine-readable JSON with a rationale. It runs in the worktree so it
+ * may read BOTH the implementation and the held-out probe before deciding. Pure.
+ */
+export function buildJudgePrompt(
+  unit: Pick<SchedUnit, "id" | "slice" | "role">,
+  failure: string,
+): string {
+  return [
+    "You are an INDEPENDENT judge for a FAILED acceptance verification of a software Spec.",
+    "You did NOT implement the change and you did NOT author the test. A held-out acceptance probe",
+    "(the TEST, authored black-box by a test-author) graded the implementation (the CODE, authored by a",
+    "code-author) and it went RED. Decide WHERE the fault lies:",
+    "  - `code`  — the implementation diverged from the intent; the probe is correct. Re-author the CODE.",
+    "  - `test`  — the probe itself is wrong (over-strict / mis-reads the intent); the code is correct.",
+    "              Re-author the TEST.",
+    "  - `both`  — both are suspect, or you cannot single one out. (This escalates to a human.)",
+    "",
+    `Failing unit: ${unit.id} (slice ${unit.slice}${unit.role ? `, role ${unit.role}` : ""}).`,
+    "",
+    "Failure evidence:",
+    (failure ?? "").trim() ||
+      "(no evidence supplied — inspect the working tree)",
+    "",
+    "You may read the working tree (your cwd) to inspect BOTH the implementation and the probe.",
+    "",
+    "Respond with ONLY a JSON object (no prose, no markdown fence needed):",
+    '  {"fault": "code", "rationale": "one or two sentences explaining the attribution"}',
+  ].join("\n");
+}
+
+/**
+ * Parse a judge session's reply into a {@link FailureJudgment} (SP-6/7 AC4). Tolerant of a fence /
+ * surrounding prose: the last top-level JSON object with a `fault` of `code`/`test`/`both` and a
+ * `rationale`/`why`. Fail-safe: an unrecognised fault or unparseable reply → `both` (which escalates
+ * to a human — never a silent mis-route), carrying the raw reply as the rationale. Pure.
+ */
+export function parseJudgment(text: string): FailureJudgment {
+  const obj = extractJsonObject(text);
+  if (obj) {
+    const rec = obj as Record<string, unknown>;
+    const raw =
+      typeof rec.fault === "string"
+        ? rec.fault.trim().toLowerCase()
+        : typeof rec.verdict === "string"
+          ? rec.verdict.trim().toLowerCase()
+          : "";
+    const fault: Fault =
+      raw === "code" || raw === "test" || raw === "both" ? raw : "both";
+    const rationale =
+      (typeof rec.rationale === "string" && rec.rationale.trim()) ||
+      (typeof rec.why === "string" && rec.why.trim()) ||
+      "";
+    return {
+      fault,
+      rationale:
+        rationale ||
+        (raw && fault === "both" && raw !== "both"
+          ? `unrecognised fault "${raw}" — escalating`
+          : "(no rationale)"),
+    };
+  }
+  return {
+    fault: "both",
+    rationale: `judge produced no parseable verdict: ${clipText((text ?? "").trim(), 200)}`,
+  };
+}
+
+/**
+ * The production {@link JudgeFailure} (SP-6/7 AC4): dispatch a headless, read-only Claude session in the
+ * worktree that attributes a red acceptance run to the code or the test (or both) and returns the fault
+ * + rationale. Built exactly like {@link createSdkAssessor} (the shared independent-judgment seam) and
+ * equally failure-tolerant — a load/run error, a non-success result, or an unparseable reply all degrade
+ * to a `both` (escalate) verdict with a rationale, never a thrown crash and never a silent mis-route.
+ */
+export function createSdkJudge(deps: SdkAssessorDeps): JudgeFailure {
+  const log = deps.log ?? (() => {});
+  const loadQuery =
+    deps.loadQuery ??
+    (async () =>
+      (await import("@anthropic-ai/claude-agent-sdk"))
+        .query as unknown as AssessorSdkQuery);
+  return async (unit, failure): Promise<FailureJudgment> => {
+    const prompt = buildJudgePrompt(unit, failure);
+    let resultText = "";
+    let assistantText = "";
+    let sawSuccess = false;
+    try {
+      const query = await loadQuery();
+      for await (const msg of query({
+        prompt,
+        options: { cwd: deps.cwd, permissionMode: "bypassPermissions" },
+      })) {
+        const rec = msg as Record<string, unknown>;
+        const line = summarizeEvent(rec);
+        if (line) log(`  [judge ${unit.id}] ${line}`);
+        if (rec.type === "assistant") {
+          const m = rec.message as { content?: unknown } | undefined;
+          const content = Array.isArray(m?.content) ? m!.content : [];
+          for (const b of content as Array<Record<string, unknown>>)
+            if (b.type === "text" && typeof b.text === "string")
+              assistantText += b.text;
+        }
+        if (rec.type === "result") {
+          if (typeof rec.result === "string") resultText = rec.result;
+          sawSuccess = isResultSuccess(rec);
+        }
+      }
+    } catch (err) {
+      return {
+        fault: "both",
+        rationale: `judge session failed: ${(err as Error).message}`,
+      };
+    }
+    if (!sawSuccess)
+      return {
+        fault: "both",
+        rationale: "judge session did not complete successfully",
+      };
+    return parseJudgment(resultText || assistantText);
+  };
+}
+
+/**
+ * Extract the acceptance-criterion text by 1-based ordinal from a Spec body (SP-6/7 AC3) — the
+ * `intent` an assessor grades. Mirrors the `## Acceptance Criteria` checkbox parser used elsewhere so
+ * the ordinals align with the grade. Pure.
+ */
+export function acTextByOrdinal(body: string): Map<number, string> {
+  const out = new Map<number, string>();
+  const m = /##\s*Acceptance Criteria\s*\n([\s\S]*?)(?=\n##\s|$)/i.exec(
+    body ?? "",
+  );
+  if (!m) return out;
+  for (const line of m[1].split(/\r?\n/)) {
+    const item = /^\s*[-*+]\s*\[[ xX]\]\s?(.*)$/.exec(line);
+    if (!item) continue;
+    out.set(out.size + 1, item[1].trim());
+  }
+  return out;
+}
+
 export class OrchestratorService {
   constructor(private readonly deps: OrchestratorDeps) {}
 
@@ -353,25 +693,26 @@ export class OrchestratorService {
   /**
    * Fetch the parent spec doc + each slice body from the thinking space, to embed in worker prompts.
    *
-   * **Intent view, exam held out (SP-6 AC1).** What we store is the *intent* — the spec/slice with the
-   * `## Acceptance Criteria` block and any `satisfies` ordinals already **stripped** at the source via
-   * the core's pure {@link stripAcceptanceCriteria} / {@link stripSatisfies}. So `promptCtx.specBody`
-   * itself never carries the gradeable criteria: `buildWorkerPrompt` receives the intent view, not the
-   * raw whole-Spec body with the AC block. (The slice keeps `satisfies` orchestrator-internally — read
-   * from frontmatter in `buildSlices`, never from this prose embedding — so the grader still ticks the
-   * right ordinals while the implementer never reads the exam it is graded on.) Stripping here, not only
-   * in `buildWorkerPrompt`, is defense-in-depth using the same single-sourced helpers — no fork.
+   * **Intent view, exam held out (SP-6 AC1) — with the SP-6/7 role branch.** We store the **raw**
+   * spec/slice bodies (ACs included) and let {@link buildWorkerPrompt} decide per unit: a `code` unit
+   * gets the intent view (the `## Acceptance Criteria` block + `satisfies` ordinals stripped via the
+   * core's pure {@link stripAcceptanceCriteria} / {@link stripSatisfies}) so it never reads the rubric
+   * it is graded on; a `test` unit — the held-out verifier (SP-6/7 AC1) — KEEPS the ACs so its probe can
+   * grade the exact criteria. Because the strip decision is role-dependent, it MUST live in the single
+   * per-unit authority ({@link buildWorkerPrompt}); pre-stripping here would blind a test unit to the
+   * ACs it must implement. (The slice still keeps `satisfies` orchestrator-internally — read from
+   * frontmatter in `buildSlices`, never from this prose embedding — so the grader ticks the right
+   * ordinals regardless.)
    */
   private async loadPromptContext(specNumber: string): Promise<void> {
     const { store } = this.deps;
-    // Reduce a raw spec/slice body to its intent view: drop the gradeable criteria + ordinals.
-    const intentViewOf = (body: string): string =>
-      stripSatisfies(stripAcceptanceCriteria(body ?? ""));
     const sliceBodies = new Map<string, string>();
     let specBody = "";
     try {
       const specDoc = await store.getFile(store.pathForSpecDoc(specNumber));
-      specBody = intentViewOf(specDoc?.body ?? "");
+      // Store the RAW body — `buildWorkerPrompt` applies the role-aware strip (code strips the ACs,
+      // test keeps them). Pre-stripping here would deny a test unit the criteria it must grade.
+      specBody = specDoc?.body ?? "";
       for (const rel of await store.listSlices(specNumber)) {
         const m = SLICE_REL_RE.exec(rel);
         if (!m) continue;
@@ -379,7 +720,7 @@ export class OrchestratorService {
         if (parsed?.body)
           sliceBodies.set(
             store.sliceHandle(specNumber, Number(m[2])),
-            intentViewOf(parsed.body),
+            parsed.body,
           );
       }
     } catch {
@@ -482,6 +823,7 @@ export class OrchestratorService {
       rolledBack: [],
       committed: false,
       acResults: [],
+      verificationTrace: [],
     };
 
     const slices = await this.buildSlices(specNumber);
@@ -672,17 +1014,25 @@ export class OrchestratorService {
     // requires-attention path on the same slice (e.g. closing gate then finalization wedge) never
     // double-bumps the bounded counter.
     const countedThisRun = new Set<string>();
-    const blockSlice = async (slice: string, diagnosis: string) => {
+    const blockSlice = async (
+      slice: string,
+      diagnosis: string,
+      fault?: Fault,
+    ) => {
       if (countedThisRun.has(slice)) return;
       countedThisRun.add(slice);
-      // Bounded re-dispatch (SP-6/6 AC5): this requires-attention is one failed acceptance/rework
-      // attempt. The PURE, no-LLM decision increments the per-slice counter and decides re-dispatch vs
-      // escalate. On escalate the slice stays requires-attention with the durable ESCALATION_MARKER and
-      // `readyFrontier` (now reading the bumped `attemptsMap`) stops auto-re-dispatching it — a human
-      // must decide. The counter is persisted to frontmatter so the loop carries across runs.
+      // Bounded re-dispatch (SP-6/6 AC5) + code-vs-test routing (SP-6/7 AC4): this requires-attention is
+      // one failed acceptance/rework attempt. The PURE, no-LLM decision increments the per-slice counter
+      // and, given the judged `fault` (from the injectable `judgeFailure`, when the caller supplied one),
+      // decides re-dispatch-vs-escalate AND the re-dispatch ROUTE: the code-author unit for a `code`
+      // fault, the test-author unit for a `test` fault, or ESCALATE on `both`/at the bound. On escalate
+      // the slice stays requires-attention with the durable ESCALATION_MARKER and `readyFrontier` (now
+      // reading the bumped `attemptsMap`) stops auto-re-dispatching it — a human must decide. The counter
+      // is persisted to frontmatter so the loop carries across runs.
       const verdict = reDispatchDecision(
         attemptsMap.get(slice) ?? 0,
         state.attemptBound,
+        fault,
       );
       attemptsMap.set(slice, verdict.attempts);
       const escalate = verdict.action === "escalate";
@@ -690,14 +1040,28 @@ export class OrchestratorService {
         attempts: verdict.attempts,
         escalated: escalate,
       });
-      (unitsBySlice.get(slice) ?? []).forEach((u) => state.blocked.add(u.id));
+      // Route the re-dispatch (AC4): on escalate or an unrouted failure, block EVERY unit of the slice.
+      // On a routed re-dispatch, block only the SIBLING role's units so the frontier re-authors just the
+      // faulting role — the code-author for a `code` route, the test-author for a `test` route.
+      const units = unitsBySlice.get(slice) ?? [];
+      const route = verdict.route;
+      if (escalate || !route) {
+        units.forEach((u) => state.blocked.add(u.id));
+      } else {
+        units
+          .filter((u) => (u.role ?? "code") !== route)
+          .forEach((u) => state.blocked.add(u.id));
+        output.appendLine(
+          `↻ ${slice}: fault routed to the ${route}-author — re-dispatching its unit(s), holding the ${route === "code" ? "test" : "code"}-author.`,
+        );
+      }
       remaining.delete(slice);
       result.attention.push(slice);
       if (escalate) {
         this.escalatedSlices.add(slice);
         if (!result.escalated.includes(slice)) result.escalated.push(slice);
         output.appendLine(
-          `⛔ ${slice}: bounded rework attempts exhausted (${verdict.attempts}) → escalated, awaiting a human decision.`,
+          `⛔ ${slice}: bounded rework attempts exhausted (${verdict.attempts})${fault === "both" ? " / fault ambiguous (both code and test)" : ""} → escalated, awaiting a human decision.`,
         );
       }
     };
@@ -970,7 +1334,11 @@ export class OrchestratorService {
     landed: Set<string>,
     unitsBySlice: Map<string, SchedUnit[]>,
     state: SchedulerState,
-    blockSlice: (slice: string, diagnosis: string) => Promise<void>,
+    blockSlice: (
+      slice: string,
+      diagnosis: string,
+      fault?: Fault,
+    ) => Promise<void>,
     result: SpecRunResult,
   ): Promise<Map<string, number[]>> {
     const { output, store } = this.deps;
@@ -995,9 +1363,30 @@ export class OrchestratorService {
     output.appendLine(
       `▸ SP-${specNumber}: closing gate — running ${verifs.length} declared AC verification(s).`,
     );
+    // SP-6/7 AC3: an `env: "assessment"` AC is graded by a fresh INDEPENDENT assessor session — never
+    // the implementing worker. Wire the injectable (default: a headless SDK session in the worktree)
+    // plus the per-AC intent (the criterion text) and a description of the delivered artifact.
+    const assessAc =
+      this.deps.assessAc ??
+      createSdkAssessor({
+        cwd: worktreePath,
+        log: (l) => output.appendLine(l),
+      });
+    const acText = acTextByOrdinal(specDoc?.body ?? "");
+    const artifactFiles = [...unitsBySlice.values()]
+      .flat()
+      .flatMap((u) => u.footprint ?? []);
+    const assess: AssessContext = {
+      assessAc,
+      intentFor: (ac) => acText.get(ac) ?? "",
+      artifact: `The delivered change lives in this worktree. Declared footprint: ${
+        artifactFiles.length ? artifactFiles.join(", ") : "(none)"
+      }`,
+    };
     const acResults = await (
       this.deps.runAcVerifications ??
-      ((vs: AcVerification[], cwd: string) => runAcVerifications(vs, cwd))
+      ((vs: AcVerification[], cwd: string) =>
+        runAcVerifications(vs, cwd, undefined, assess))
     )(verifs, worktreePath);
     // The full per-AC run lands on the auditable report regardless of who could
     // have authored it — but the GRADE is derived only from the independently-authored
@@ -1045,6 +1434,15 @@ export class OrchestratorService {
     const pass = new Map<number, boolean>(graded.map((r) => [r.ac, r.pass]));
     const allGreen = graded.length > 0 && graded.every((r) => r.pass);
 
+    // SP-6/7 AC4: the code-vs-test judge — the same independent-judgment seam as the assessor (a fresh
+    // session, never the implementing worker). Wire the injectable (default: a headless read-only SDK
+    // session in the worktree) and collect, per red AC, the judged route so the verification trace and
+    // the re-dispatch both record it.
+    const judge =
+      this.deps.judgeFailure ??
+      createSdkJudge({ cwd: worktreePath, log: (l) => output.appendLine(l) });
+    const routes = new Map<number, Fault>();
+
     // Per slice: green iff every AC it satisfies ran green. A slice with no `satisfies` rides on the
     // whole-plan verdict (all declared checks green) — a legacy slice can't be stranded by having no
     // ordinals, but it still can't reach Done on a red plan. Red/un-runnable → requires-attention here;
@@ -1065,18 +1463,62 @@ export class OrchestratorService {
         const why = sat.length
           ? `AC ${[...missing.map((n) => `#${n} (no verification ran)`), ...red.map((n) => `#${n} (verification red)`)].join(", ")} did not pass`
           : "the declared AC verification plan was not all-green";
+        // AC4: judge the fault (code vs test vs both) on ONE independent session per red slice, then
+        // route the re-dispatch. The judge reads the worktree (both the code and the held-out probe);
+        // its verdict + rationale steer `blockSlice` (which role to re-author, or escalate on `both`)
+        // and are recorded in the verification trace against the slice's red ACs.
+        const units = unitsBySlice.get(s.handle) ?? [];
+        const failedAcs = sat.length ? [...missing, ...red] : [];
+        const failEvidence = acResults
+          .filter((r) => (failedAcs.length ? failedAcs : [r.ac]).includes(r.ac))
+          .filter((r) => !r.pass)
+          .map((r) => `AC #${r.ac}: ${r.evidence}`)
+          .join("\n\n");
+        let fault: Fault = "both";
+        try {
+          const judgment = await judge(
+            {
+              id: units[0]?.id ?? s.handle,
+              slice: s.handle,
+              role: units[0]?.role,
+            },
+            `${why}\n\n${failEvidence}`,
+          );
+          fault = judgment.fault;
+          output.appendLine(
+            `⚖ ${s.handle}: judged fault = ${judgment.fault} — ${judgment.rationale}`,
+          );
+        } catch (err) {
+          // Fail-safe: a judge error escalates (fault `both`) rather than mis-routing.
+          output.appendLine(
+            `⚖ ${s.handle}: judge failed (${(err as Error).message}) → fault ambiguous (both).`,
+          );
+        }
+        for (const n of failedAcs) routes.set(n, fault);
         await blockSlice(
           s.handle,
-          `Closing gate: ${why}. The acceptance criteria were NOT verified green — see DELIVERY.md for per-AC evidence.`,
-        );
-        (unitsBySlice.get(s.handle) ?? []).forEach((u) =>
-          state.blocked.add(u.id),
+          `Closing gate: ${why}. Judged fault: ${fault}. The acceptance criteria were NOT verified green — see DELIVERY.md for per-AC evidence.`,
+          fault,
         );
         output.appendLine(
           `⚑ ${s.handle}: closing gate red → requires-attention.`,
         );
       }
     }
+
+    // SP-6/7 AC5: build this run's slice of the durable, structured verification trace — per AC and per
+    // rework round (the slice's current attempt), kind (probe/assessment), verdict, rationale, and the
+    // judged code-vs-test route on a red AC. The caller persists it alongside DELIVERY.md + surfaces it.
+    const roundForAc = (ac: number): number => {
+      const owner = slices.find((s) => (s.satisfies ?? []).includes(ac));
+      return (this.reworkAttempts.get(owner?.handle ?? "") ?? 0) + 1;
+    };
+    result.verificationTrace = buildVerificationTrace({
+      round: roundForAc,
+      declared: verifs,
+      acResults,
+      routes,
+    });
 
     return green;
   }
@@ -1496,6 +1938,7 @@ export class OrchestratorService {
     files: string[],
     result: SpecRunResult,
     verifs: AcVerification[],
+    trace: VerificationTraceEntry[],
   ): string {
     // Caught problems for the audit trail: each failed / parked unit, surfaced from the run.
     const problems = result.results
@@ -1515,6 +1958,9 @@ export class OrchestratorService {
       advanced: result.advanced,
       attention: result.attention,
       committed: result.committed,
+      // SP-6/7 AC5: the durable, accumulated verification trace — surfaced in the delivery report
+      // (which the panel renders) so a completed / stalled Spec carries the per-AC, per-round record.
+      trace,
     });
   }
 
@@ -1535,12 +1981,29 @@ export class OrchestratorService {
       const verifs = parseAcVerifications(
         specDoc?.frontmatter?.ac_verifications,
       );
+      // SP-6/7 AC5: persist the DURABLE, structured verification trace alongside DELIVERY.md, merging
+      // this run's entries into the accumulated per-Spec file (keyed by AC + rework round) so the record
+      // grows across runs rather than being overwritten. The merged trace is what the report renders.
+      const traceRel = this.deps.store
+        .pathForSpecDoc(specNumber)
+        .replace(/spec\.md$/, "VERIFICATION-TRACE.json");
+      const traceAbs = path.join(this.deps.store.thinkubeDir, traceRel);
+      const prior = this.readVerificationTrace(traceAbs);
+      const trace = mergeVerificationTrace(prior, result.verificationTrace);
+      try {
+        fs.writeFileSync(traceAbs, JSON.stringify(trace, null, 2), "utf8");
+      } catch (err) {
+        this.deps.output.appendLine(
+          `▸ SP-${specNumber}: verification trace skipped — ${(err as Error).message}`,
+        );
+      }
       const body = this.deliveryMarkdown(
         specNumber,
         sha,
         files,
         result,
         verifs,
+        trace,
       );
       const rel = this.deps.store
         .pathForSpecDoc(specNumber)
@@ -1559,6 +2022,18 @@ export class OrchestratorService {
         `▸ SP-${specNumber}: delivery summary skipped — ${(err as Error).message}`,
       );
       return undefined;
+    }
+  }
+
+  /** Read the durable per-Spec verification trace JSON (SP-6/7 AC5), or [] when absent / unreadable —
+   *  best-effort: a missing or corrupt file must never fail the (already-completed) delivery write. */
+  private readVerificationTrace(absPath: string): VerificationTraceEntry[] {
+    try {
+      const raw = fs.readFileSync(absPath, "utf8");
+      const parsed: unknown = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as VerificationTraceEntry[]) : [];
+    } catch {
+      return [];
     }
   }
 

@@ -38,6 +38,8 @@ import {
   markEscalated,
   MAX_REWORK_ATTEMPTS,
   ESCALATION_MARKER,
+  buildVerificationTrace,
+  mergeVerificationTrace,
   type ReDispatchVerdict,
   type SliceRow,
   type WorkUnit,
@@ -46,6 +48,10 @@ import {
   type SchedUnit,
   type AcExec,
   type AcResult,
+  type AcVerification,
+  type AssessContext,
+  type Fault,
+  type VerificationTraceEntry,
 } from "./orchestratorCore";
 import { validateDag } from "../methodology/parallelSlices";
 
@@ -1226,4 +1232,376 @@ test("AC5: end-to-end — the loop re-dispatches up to the bound, then escalates
     false,
     "after escalation the slice is NOT re-queued — readyFrontier drops it, a human must decide",
   );
+});
+
+// ── SP-6/7: independent-verification roles + assessment ACs ────────────────
+// A `test` unit is the held-out verifier — it KEEPS the ## Acceptance Criteria + satisfies (the
+// inverse of the SP-6 SL-1 strip) so its probe can grade the exact criteria; a `code` unit strips
+// them. Role is carried onto the SchedUnit by buildUnitDag. An `env: "assessment"` AC is graded by
+// an injectable independent assessor, never a runnable command.
+
+test("SP-6/7 AC1: a test unit KEEPS the Acceptance Criteria + satisfies; a code unit strips them", () => {
+  const specBody = [
+    "## Design",
+    "",
+    "Build foo end to end.",
+    "",
+    "## Acceptance Criteria",
+    "",
+    "- [ ] foo must round-trip losslessly",
+  ].join("\n");
+  const sliceBody = ["satisfies: [1]", "", "Wire foo."].join("\n");
+
+  const testUnit: SchedUnit = {
+    id: "SP-6_SL-1#eu-1",
+    slice: "SP-6_SL-1",
+    footprint: ["acceptance/SP-6.foo.test.ts"],
+    requires: [],
+    shape: "fan-out",
+    role: "test",
+  };
+  const tp = buildWorkerPrompt(testUnit, "6", { specBody, sliceBody });
+  // The held-out verifier SEES the exam — the ACs + satisfies are embedded.
+  assert.match(tp, /Acceptance Criteria/);
+  assert.match(tp, /foo must round-trip losslessly/);
+  assert.match(tp, /satisfies/);
+  // …and it is framed as the held-out test-author.
+  assert.match(tp, /HELD-OUT TEST-AUTHOR/);
+
+  const codeUnit: SchedUnit = {
+    ...testUnit,
+    id: "SP-6_SL-1#eu-0",
+    role: "code",
+  };
+  const cp = buildWorkerPrompt(codeUnit, "6", { specBody, sliceBody });
+  // The code-author never reads the rubric it is graded on.
+  assert.doesNotMatch(cp, /Acceptance Criteria/);
+  assert.doesNotMatch(cp, /foo must round-trip losslessly/);
+  assert.doesNotMatch(cp, /satisfies/i);
+  assert.doesNotMatch(cp, /HELD-OUT TEST-AUTHOR/);
+});
+
+test("SP-6/7 AC1: role defaults to code — an unset role withholds the ACs", () => {
+  const specBody = "## Acceptance Criteria\n\n- [ ] secret rubric";
+  const unit: SchedUnit = {
+    id: "SP-6_SL-9#eu-0",
+    slice: "SP-6_SL-9",
+    footprint: ["src/x.ts"],
+    requires: [],
+    shape: "fan-out",
+  };
+  assert.doesNotMatch(
+    buildWorkerPrompt(unit, "6", { specBody }),
+    /secret rubric/,
+  );
+});
+
+test("SP-6/7 AC1: buildUnitDag carries role onto the SchedUnit (test vs code)", () => {
+  const dag = buildUnitDag([
+    slice("SP-6_SL-1", {
+      workUnits: [
+        { footprint: ["src/foo.ts"], execution: "fan-out", role: "code" },
+        {
+          footprint: ["acceptance/SP-6.foo.test.ts"],
+          execution: "fan-out",
+          role: "test",
+        },
+        // a role-less unit defaults to code.
+        { footprint: ["src/bar.ts"], execution: "fan-out" },
+      ] as WorkUnit[],
+    }),
+  ]);
+  const byFp = (f: string) => dag.find((u) => u.footprint.includes(f));
+  assert.equal(byFp("src/foo.ts")?.role, "code");
+  assert.equal(byFp("acceptance/SP-6.foo.test.ts")?.role, "test");
+  assert.equal(byFp("src/bar.ts")?.role, "code");
+});
+
+test("SP-6/7 AC1: batchExecutionUnits keeps serial code and serial test in separate role-uniform units", () => {
+  const dag = buildUnitDag([
+    slice("SP-6_SL-2", {
+      workUnits: [
+        { footprint: ["src/a.ts"], execution: "serial", role: "code" },
+        { footprint: ["src/b.ts"], execution: "serial", role: "code" },
+        {
+          footprint: ["acceptance/a.test.ts"],
+          execution: "serial",
+          role: "test",
+        },
+      ] as WorkUnit[],
+    }),
+  ]);
+  const codeNode = dag.find((u) => u.footprint.includes("src/a.ts"));
+  const testNode = dag.find((u) =>
+    u.footprint.includes("acceptance/a.test.ts"),
+  );
+  assert.notEqual(
+    codeNode?.id,
+    testNode?.id,
+    "code and test serial units do not share a session",
+  );
+  assert.equal(codeNode?.role, "code");
+  assert.deepEqual(codeNode?.footprint, ["src/a.ts", "src/b.ts"]);
+  assert.equal(testNode?.role, "test");
+});
+
+test("SP-6/7 AC3: parseAcVerifications keeps an env:assessment entry even with no runnable command", () => {
+  const verifs = parseAcVerifications({
+    "1": { run: "npm test", env: "local" },
+    "2": { run: "", env: "assessment" },
+    "3": { env: "assessment" }, // run omitted entirely
+  });
+  const byAc = new Map(verifs.map((v) => [v.ac, v]));
+  assert.equal(byAc.get(1)?.env, "local");
+  assert.equal(
+    byAc.get(2)?.env,
+    "assessment",
+    "an assessment AC survives with an empty run",
+  );
+  assert.equal(
+    byAc.get(3)?.env,
+    "assessment",
+    "an assessment AC survives with no run at all",
+  );
+  // A non-assessment entry with no runnable command is still dropped (no silent green).
+  const dropped = parseAcVerifications({ "1": { run: "", env: "local" } });
+  assert.equal(dropped.length, 0);
+});
+
+test("SP-6/7 AC3: runAcVerifications routes an env:assessment AC to the injectable assessor with rationale", async () => {
+  const verifs: AcVerification[] = [
+    { ac: 1, run: "true", env: "local" },
+    { ac: 2, run: "", env: "assessment" },
+  ];
+  const seen: { ac: number; intent: string; artifact: string }[] = [];
+  const assess: AssessContext = {
+    assessAc: async (ac, intent, artifact) => {
+      seen.push({ ac: ac.ac, intent, artifact });
+      return { pass: true, rationale: "the delivered UX matches the intent" };
+    },
+    intentFor: (ac) => `intent for AC ${ac}`,
+    artifact: "the delivered change",
+  };
+  const exec: AcExec = async () => ({ code: 0, output: "ok" });
+  const results = await runAcVerifications(verifs, "/repo", exec, assess);
+  const byAc = new Map(results.map((r) => [r.ac, r]));
+  // The runnable AC ran through exec; the assessment AC went to the assessor.
+  assert.equal(byAc.get(1)?.pass, true);
+  assert.equal(byAc.get(2)?.pass, true);
+  assert.match(byAc.get(2)?.evidence ?? "", /assessment \(independent\)/);
+  assert.match(byAc.get(2)?.evidence ?? "", /matches the intent/);
+  assert.deepEqual(seen, [
+    { ac: 2, intent: "intent for AC 2", artifact: "the delivered change" },
+  ]);
+});
+
+test("SP-6/7 AC3: an assessment AC with NO assessor available is red (no skip), never silently green", async () => {
+  const verifs: AcVerification[] = [{ ac: 1, run: "", env: "assessment" }];
+  const results = await runAcVerifications(verifs, "/repo", async () => ({
+    code: 0,
+    output: "",
+  }));
+  assert.equal(results[0].pass, false);
+  assert.match(results[0].evidence, /could not run: no independent assessor/);
+});
+
+// ── SP-6/7 AC4: a red acceptance run is judged and routed to the right role ──
+// reDispatchDecision, given the judged code-vs-test fault, returns a ROUTE: re-dispatch the
+// code-author for a `code` fault, the test-author for a `test` fault, or ESCALATE on `both` /
+// at the attempt bound. With no fault it is the pure attempt-bound decision (backward-compatible).
+
+test("SP-6/7 AC4: reDispatchDecision routes a code/test fault below the bound, escalates on both", () => {
+  // A code fault below the bound → re-dispatch, routed to the code-author.
+  const codeVerdict = reDispatchDecision(0, 3, "code");
+  assert.equal(codeVerdict.action, "re-dispatch");
+  assert.equal(codeVerdict.route, "code");
+
+  // A test fault below the bound → re-dispatch, routed to the test-author.
+  const testVerdict = reDispatchDecision(1, 3, "test");
+  assert.equal(testVerdict.action, "re-dispatch");
+  assert.equal(testVerdict.route, "test");
+
+  // `both`/ambiguous → escalate REGARDLESS of the bound (the fault can't be singled out).
+  const bothVerdict = reDispatchDecision(0, 3, "both");
+  assert.equal(
+    bothVerdict.action,
+    "escalate",
+    "an ambiguous fault escalates even on the first attempt",
+  );
+  assert.equal(bothVerdict.route, "both");
+
+  // At the attempt bound a code fault ALSO escalates (the bound wins) — route still recorded.
+  const boundVerdict = reDispatchDecision(2, 3, "code");
+  assert.equal(boundVerdict.action, "escalate");
+  assert.equal(boundVerdict.route, "code");
+});
+
+test("SP-6/7 AC4: reDispatchDecision with NO fault is the unchanged attempt-bound decision (no route key)", () => {
+  // Backward-compat: the pure attempt-bound path omits the `route` key entirely.
+  assert.deepEqual(reDispatchDecision(0), {
+    action: "re-dispatch",
+    attempts: 1,
+  });
+  assert.equal("route" in reDispatchDecision(0), false);
+  assert.equal(reDispatchDecision(2, 3).action, "escalate");
+});
+
+// ── SP-6/7 AC7: identical AC commands run once (de-dup) ─────────────────────
+
+test("SP-6/7 AC7: runAcVerifications runs an identical command ONCE and maps it to every AC", async () => {
+  const ran: string[] = [];
+  const exec: AcExec = async (run) => {
+    ran.push(run);
+    return { code: run.includes("FAIL") ? 1 : 0, output: `out:${run}` };
+  };
+  const results = await runAcVerifications(
+    [
+      { ac: 1, run: "npm test" },
+      { ac: 2, run: "npm test" }, // same command as AC1
+      { ac: 3, run: "npm test" }, // and again
+      { ac: 4, run: "step-FAIL" },
+      { ac: 5, run: "step-FAIL" }, // a shared FAILING command is not re-run either
+    ],
+    "/wt",
+    exec,
+  );
+  // Each DISTINCT command ran exactly once, in declared order.
+  assert.deepEqual(ran, ["npm test", "step-FAIL"]);
+  // …but every AC that declared it got its own mapped result.
+  assert.deepEqual(
+    results.map((r) => [r.ac, r.pass]),
+    [
+      [1, true],
+      [2, true],
+      [3, true],
+      [4, false],
+      [5, false],
+    ],
+  );
+});
+
+test("SP-6/7 AC7: a shared un-runnable command is cached red once, not re-attempted per AC", async () => {
+  let calls = 0;
+  const exec: AcExec = async () => {
+    calls++;
+    throw new Error("command not found");
+  };
+  const results = await runAcVerifications(
+    [
+      { ac: 1, run: "missing" },
+      { ac: 2, run: "missing" },
+    ],
+    "/wt",
+    exec,
+  );
+  assert.equal(calls, 1, "the failing command is attempted once, then cached");
+  assert.ok(results.every((r) => !r.pass));
+  assert.match(results[1].evidence, /could not run: command not found/);
+});
+
+// ── SP-6/7 AC5: durable, structured verification trace ─────────────────────
+
+test("SP-6/7 AC5: buildVerificationTrace records kind, verdict, rationale, and route per AC", () => {
+  const declared: AcVerification[] = [
+    { ac: 1, run: "acceptance/SP.probe.js" }, // a held-out probe
+    { ac: 2, run: "", env: "assessment" }, // an independent assessment
+  ];
+  const acResults: AcResult[] = [
+    { ac: 1, pass: false, evidence: "$ acceptance/SP.probe.js → exit 1" },
+    {
+      ac: 2,
+      pass: true,
+      evidence: "assessment (independent) → pass: the UX matches",
+    },
+  ];
+  const routes = new Map<number, Fault>([[1, "code"]]);
+  const trace = buildVerificationTrace({
+    round: 2,
+    declared,
+    acResults,
+    routes,
+  });
+
+  const byAc = new Map(trace.map((e) => [e.ac, e]));
+  assert.equal(byAc.get(1)?.kind, "probe");
+  assert.equal(byAc.get(1)?.verdict, "fail");
+  assert.equal(byAc.get(1)?.round, 2);
+  assert.equal(
+    byAc.get(1)?.route,
+    "code",
+    "a failed AC carries its judged route",
+  );
+  assert.match(byAc.get(1)?.rationale ?? "", /exit 1/);
+
+  assert.equal(byAc.get(2)?.kind, "assessment");
+  assert.equal(byAc.get(2)?.verdict, "pass");
+  assert.equal(
+    byAc.get(2)?.route,
+    undefined,
+    "a passing AC records no code-vs-test route",
+  );
+});
+
+test("SP-6/7 AC5: round can be a per-AC lookup", () => {
+  const trace = buildVerificationTrace({
+    round: (ac) => ac * 10,
+    declared: [{ ac: 1, run: "x" }],
+    acResults: [{ ac: 1, pass: true, evidence: "ok" }],
+  });
+  assert.equal(trace[0].round, 10);
+});
+
+test("SP-6/7 AC5: mergeVerificationTrace accumulates across rounds and overwrites the same AC+round", () => {
+  const round1: VerificationTraceEntry[] = [
+    { ac: 1, round: 1, kind: "probe", verdict: "fail", route: "code" },
+    { ac: 2, round: 1, kind: "assessment", verdict: "pass" },
+  ];
+  const round2: VerificationTraceEntry[] = [
+    // AC1 re-verified in round 2 (now green) — a NEW round entry, not a replacement of round 1.
+    { ac: 1, round: 2, kind: "probe", verdict: "pass" },
+    // AC2 re-verified within round 1 (a re-run of the same round) — REPLACES the stale entry.
+    { ac: 2, round: 1, kind: "assessment", verdict: "fail", route: "test" },
+  ];
+  const merged = mergeVerificationTrace(round1, round2);
+  assert.equal(
+    merged.length,
+    3,
+    "AC1 has two rounds; AC2 round-1 was overwritten",
+  );
+  // Sorted by round then AC.
+  assert.deepEqual(
+    merged.map((e) => [e.ac, e.round, e.verdict]),
+    [
+      [1, 1, "fail"],
+      [2, 1, "fail"],
+      [1, 2, "pass"],
+    ],
+  );
+});
+
+test("SP-6/7 AC5: buildDeliveryReport renders the verification-trace section when a trace is present", () => {
+  const md = buildDeliveryReport({
+    specNumber: "6",
+    sha: "abc1234",
+    files: ["src/a.ts"],
+    units: [{ id: "SP-6_SL-1#eu-0", outcome: "success" }],
+    declared: [{ ac: 1, run: "acceptance/probe.js" }],
+    acResults: [{ ac: 1, pass: false, evidence: "$ probe → exit 1" }],
+    advanced: [],
+    committed: false,
+    trace: [
+      {
+        ac: 1,
+        round: 2,
+        kind: "probe",
+        verdict: "fail",
+        rationale: "the probe never reached green",
+        route: "code",
+      },
+    ],
+  });
+  assert.match(md, /Verification trace/);
+  assert.match(md, /probe/);
+  assert.match(md, /code/); // the route column
+  assert.match(md, /the probe never reached green/);
 });

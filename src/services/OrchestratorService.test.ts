@@ -17,10 +17,19 @@ import * as path from "node:path";
 import {
   OrchestratorService,
   verificationIsWorkerAuthored,
+  parseAssessment,
+  buildAssessPrompt,
+  createSdkAssessor,
+  parseJudgment,
+  buildJudgePrompt,
+  createSdkJudge,
+  acTextByOrdinal,
   type OrchestratorDeps,
   type OnPark,
   type WorkerResult,
 } from "./OrchestratorService";
+import { normalizeFilePath } from "../methodology/parallelSlices";
+import { buildWorkerPrompt, type AcVerification } from "./orchestratorCore";
 import { answerParkedWorker } from "./orchestratorSessions";
 import type { SchedUnit } from "./orchestratorCore";
 import {
@@ -149,6 +158,9 @@ function makeDeps(
     verifs?: Record<string, { run: string; env?: "cluster" | "local" }> | null;
     /** Per-AC pass override for the injected runner (default: every declared AC passes). */
     acPass?: Record<number, boolean>;
+    /** The judged code-vs-test fault a red closing gate attributes (SP-6/7 AC4). Injected so the
+     *  default judge (a real SDK session) never fires in a test; defaults to `code` (re-dispatch). */
+    fault?: "code" | "test" | "both";
   } = {},
 ): {
   deps: OrchestratorDeps;
@@ -167,6 +179,10 @@ function makeDeps(
     created: number;
     committed: number;
     log: string[];
+    /** The failing units the judge was asked to attribute (SP-6/7 AC4). */
+    judged: string[];
+    /** The thinking space dir, so a test can read the persisted VERIFICATION-TRACE.json (AC5). */
+    thinkubeDir: string;
   };
 } {
   const calls = {
@@ -181,6 +197,8 @@ function makeDeps(
     created: 0,
     committed: 0,
     log: [] as string[],
+    judged: [] as string[],
+    thinkubeDir: "",
   };
 
   // Default declaration: cover every AC any slice satisfies, else a single generic AC #1.
@@ -201,6 +219,7 @@ function makeDeps(
   fs.mkdirSync(path.join(thinkingSpaceDir, path.dirname(SPEC_DOC)), {
     recursive: true,
   });
+  calls.thinkubeDir = thinkingSpaceDir;
 
   const deps: OrchestratorDeps = {
     store: {
@@ -258,6 +277,15 @@ function makeDeps(
           evidence: `$ ${v.run} → exit ${pass ? 0 : 1}`,
         };
       }),
+    // SP-6/7 AC4: the code-vs-test judge seam — injected so the real SDK judge never fires in a test.
+    // Records the failing unit it was asked to attribute and returns the configured fault (default code).
+    judgeFailure: async (unit) => {
+      calls.judged.push(unit.id);
+      return {
+        fault: opts.fault ?? "code",
+        rationale: `test judge: fault is ${opts.fault ?? "code"}`,
+      };
+    },
     checkAcs: async (_spec: string, ordinals: number[]) => {
       calls.checked.push(...ordinals);
     },
@@ -631,17 +659,14 @@ test("dispatchSpec: a resident worker PARKS (frees its slot), then an external a
 
 // ── loadPromptContext supplies the INTENT view, not the raw AC block (SP-6/6 AC1) ──
 //
-// AC1: "When the orchestrator builds a worker's prompt for a slice, the prompt contains the
-// intent (goal / design / behavioural spec of what correct does) but NOT the Spec's
-// `## Acceptance Criteria` block nor the slice's `satisfies` ordinals — the implementer cannot
-// read the exam it is graded on." `loadPromptContext` is the source that fills `promptCtx`
-// (the spec/slice prose later embedded by `buildWorkerPrompt`). These tests drive the REAL
-// `loadPromptContext` against a store whose spec doc + slices carry real markdown bodies, then
-// assert what it stored: the intent (Summary / Design) survives, while the gradeable criteria
-// (the `## Acceptance Criteria` block + every `satisfies` embedding) is held out — at the source,
-// so `promptCtx.specBody` itself is already exam-free (defence in depth alongside the strip in
-// `buildWorkerPrompt`). The slice still keeps `satisfies` orchestrator-internally (frontmatter,
-// read in `buildSlices`) — what's withheld is only the PROSE the worker reads.
+// AC1 (SP-6 AC1 + the SP-6/7 role branch): the implementer must not read the exam — but the
+// held-out TEST-author MUST. So `loadPromptContext` now stores the RAW spec/slice bodies (ACs
+// included) and the exam-hold-out decision moved to the single per-unit authority,
+// `buildWorkerPrompt`, which strips for a `code` unit and KEEPS them for a `test` unit (SP-6/7 AC1).
+// Pre-stripping at the source would blind a test unit to the criteria it must grade, so these tests
+// assert `loadPromptContext` keeps the raw body, and the role-aware strip is covered by
+// `buildWorkerPrompt`'s own tests (orchestratorCore.test.ts). The slice still keeps `satisfies`
+// orchestrator-internally (frontmatter, read in `buildSlices`).
 
 const AC1_SPEC_BODY = [
   "## Summary",
@@ -664,32 +689,43 @@ const AC1_SPEC_BODY = [
   "Stay deterministic — no clock, no randomness.",
 ].join("\n");
 
-test("loadPromptContext: the spec INTENT view keeps Summary/Design but strips the `## Acceptance Criteria` block + `satisfies` (the worker never reads the exam)", async () => {
+test("loadPromptContext: stores the RAW spec body (ACs kept) so buildWorkerPrompt can hold the exam per role (SP-6/7)", async () => {
   const h = svcLoadPromptContext(makeBodyDeps(AC1_SPEC_BODY, []));
   await h.load("1/1");
   const { specBody } = h.ctx();
 
-  // Intent survives — the worker must build correctly from this alone.
+  // Intent survives — the worker must build correctly from this.
   assert.match(specBody, /## Summary/);
   assert.match(specBody, /dedupe gateway/);
   assert.match(specBody, /## Design/);
   assert.match(specBody, /bounded LRU/);
-  // …and the section AFTER the AC block survives (the strip ends at the next same-level heading,
-  // it does not swallow the rest of the document).
   assert.match(specBody, /## Constraints/);
-  assert.match(specBody, /no randomness/);
 
-  // The gradeable criteria are HELD OUT — heading, each criterion title, and the leaked
-  // gradeable detail the implementer would otherwise optimise toward.
-  assert.doesNotMatch(specBody, /## Acceptance Criteria/);
-  assert.doesNotMatch(specBody, /drops exact duplicates/i);
-  assert.doesNotMatch(specBody, /EXACTLY ONCE/);
-  assert.doesNotMatch(specBody, /evicts oldest-first/i);
-  // …and the `satisfies` embedding (which AC ordinals it is graded against) is stripped too.
-  assert.doesNotMatch(specBody, /^\s*satisfies\s*:/im);
+  // SP-6/7: the RAW body is stored (ACs + satisfies present) — the role-aware exam-hold-out is
+  // buildWorkerPrompt's job now (a code unit strips, a test unit keeps). Pre-stripping here would
+  // blind the held-out test-author to the very criteria it must grade.
+  assert.match(specBody, /## Acceptance Criteria/);
+  assert.match(specBody, /drops exact duplicates/i);
+  assert.match(specBody, /^\s*satisfies\s*:/im);
+
+  // End-to-end: a CODE unit's prompt built from this raw body still holds out the exam.
+  const codePrompt = buildWorkerPrompt(
+    {
+      id: "TEP-1_SP-1_SL-1#eu-0",
+      slice: "TEP-1_SP-1_SL-1",
+      footprint: ["src/a.ts"],
+      requires: [],
+      shape: "fan-out",
+      role: "code",
+    },
+    "1/1",
+    { specBody },
+  );
+  assert.doesNotMatch(codePrompt, /## Acceptance Criteria/);
+  assert.doesNotMatch(codePrompt, /drops exact duplicates/i);
 });
 
-test("loadPromptContext: each slice body is reduced to its intent view (AC block + `satisfies` stripped), keyed by slice handle", async () => {
+test("loadPromptContext: stores each slice's RAW body keyed by handle (buildWorkerPrompt applies the role strip)", async () => {
   const sliceBody = [
     "satisfies: [3]",
     "",
@@ -707,19 +743,17 @@ test("loadPromptContext: each slice body is reduced to its intent view (AC block
   await h.load("1/1");
   const { sliceBodies } = h.ctx();
 
-  const intent = sliceBodies.get("TEP-1_SP-1_SL-1");
+  const raw = sliceBodies.get("TEP-1_SP-1_SL-1");
   assert.ok(
-    intent !== undefined,
-    "the slice's intent view is stored under its handle",
+    raw !== undefined,
+    "the slice's raw body is stored under its handle",
   );
   // Intent (the unit's task) survives…
-  assert.match(intent!, /## Task/);
-  assert.match(intent!, /forward path/);
-  // …while the slice's own AC block + `satisfies` embedding are held out.
-  assert.doesNotMatch(intent!, /## Acceptance Criteria/);
-  assert.doesNotMatch(intent!, /single-pass/i);
-  assert.doesNotMatch(intent!, /AT MOST ONCE/);
-  assert.doesNotMatch(intent!, /^\s*satisfies\s*:/im);
+  assert.match(raw!, /## Task/);
+  assert.match(raw!, /forward path/);
+  // …and the ACs are KEPT raw (a held-out test unit needs them; a code unit's buildWorkerPrompt strips).
+  assert.match(raw!, /## Acceptance Criteria/);
+  assert.match(raw!, /single-pass/i);
 });
 
 test("loadPromptContext: a store read error is best-effort — promptCtx falls back to empty, never leaks a raw body", async () => {
@@ -2095,4 +2129,321 @@ test("verificationIsWorkerAuthored: a run reaching worker-owned footprint is a s
     false,
     "with no worker-owned footprint nothing is a self-tick",
   );
+});
+
+// ── SP-6/7 AC3: the independent assessor (assessment ACs) ──────────────────
+// The one independent-judgment primitive: a fresh SDK session, never the implementing worker, that
+// returns pass/fail WITH a rationale. Pure parse + prompt + the spawn path are unit-testable with a
+// faked query — no live model.
+
+test("SP-6/7 AC3: parseAssessment reads pass + rationale, tolerates a fence, fails safe on garbage", () => {
+  assert.deepEqual(
+    parseAssessment('{"pass": true, "rationale": "matches intent"}'),
+    {
+      pass: true,
+      rationale: "matches intent",
+    },
+  );
+  // Surrounding prose / a ```json fence still parses the last object.
+  assert.deepEqual(
+    parseAssessment(
+      'here is my verdict:\n```json\n{"pass": false, "rationale": "regressed X"}\n```',
+    ),
+    { pass: false, rationale: "regressed X" },
+  );
+  // No parseable object → a FAIL (never a silent pass — the no-skip rule).
+  const junk = parseAssessment("I think it is probably fine");
+  assert.equal(junk.pass, false);
+  assert.match(junk.rationale, /no parseable verdict/);
+});
+
+test("SP-6/7 AC3: buildAssessPrompt frames an INDEPENDENT judge over the AC intent + artifact", () => {
+  const ac: AcVerification = { ac: 3, run: "", env: "assessment" };
+  const p = buildAssessPrompt(
+    ac,
+    "the panel must feel responsive",
+    "footprint: src/panel.ts",
+  );
+  assert.match(p, /INDEPENDENT/);
+  assert.match(p, /did NOT implement/i);
+  assert.match(p, /#3/);
+  assert.match(p, /the panel must feel responsive/);
+  assert.match(p, /footprint: src\/panel\.ts/);
+  assert.match(p, /"pass"/); // asks for the JSON verdict shape
+});
+
+test("SP-6/7 AC3: createSdkAssessor dispatches a fresh session and returns its parsed verdict", async () => {
+  const calls: { prompt: string; cwd: string }[] = [];
+  const fakeQuery = (args: { prompt: string; options: { cwd: string } }) => {
+    calls.push({ prompt: args.prompt, cwd: args.options.cwd });
+    return (async function* () {
+      yield {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: '{"pass": true, "rationale": "intent satisfied"}',
+        session_id: "assess-1",
+      };
+    })();
+  };
+  const assessAc = createSdkAssessor({
+    cwd: "/worktree",
+    loadQuery: async () => fakeQuery as never,
+  });
+  const verdict = await assessAc(
+    { ac: 1, run: "", env: "assessment" },
+    "AC 1 intent",
+    "the delivered change",
+  );
+  assert.deepEqual(verdict, { pass: true, rationale: "intent satisfied" });
+  assert.equal(
+    calls.length,
+    1,
+    "dispatched exactly one fresh assessor session",
+  );
+  assert.equal(calls[0].cwd, "/worktree");
+  assert.match(calls[0].prompt, /AC 1 intent/);
+});
+
+test("SP-6/7 AC3: createSdkAssessor fails safe when the session does not complete successfully", async () => {
+  const fakeQuery = () =>
+    (async function* () {
+      yield {
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+      };
+    })();
+  const assessAc = createSdkAssessor({
+    cwd: "/worktree",
+    loadQuery: async () => fakeQuery as never,
+  });
+  const verdict = await assessAc(
+    { ac: 1, run: "", env: "assessment" },
+    "x",
+    "y",
+  );
+  assert.equal(verdict.pass, false);
+  assert.match(verdict.rationale, /did not complete/);
+});
+
+test("SP-6/7 AC3: acTextByOrdinal maps 1-based ordinals to the AC prose", () => {
+  const body = [
+    "## Acceptance Criteria",
+    "",
+    "- [ ] first criterion holds",
+    "- [x] second criterion holds",
+    "",
+    "## Design",
+    "",
+    "- not an AC",
+  ].join("\n");
+  const map = acTextByOrdinal(body);
+  assert.equal(map.get(1), "first criterion holds");
+  assert.equal(map.get(2), "second criterion holds");
+  assert.equal(map.get(3), undefined, "the Design bullet is not an AC");
+});
+
+// ── SP-6/7 AC4: the grade counts a held-out probe, drops a code-author's own test ──
+
+test("SP-6/7 AC4: a held-out acceptance/ probe counts; a code-author's own co-located test is dropped", () => {
+  // The code-author's declared footprint — resolveFootprint strips the held-out acceptance/ path,
+  // so it is NOT in the worker-owned set even if declared.
+  const declared = [
+    "src/foo.ts",
+    "src/foo.test.ts",
+    "acceptance/SP-6.foo.test.ts",
+  ];
+  const workerOwned = new Set(
+    resolveFootprint(declared).map(normalizeFilePath),
+  );
+
+  // A verification that runs the code-author's OWN co-located test is worker-authored → dropped.
+  assert.equal(
+    verificationIsWorkerAuthored(
+      "node --test out-test/foo.test.js",
+      workerOwned,
+    ),
+    true,
+    "a code-author's own co-located test can never tick an AC",
+  );
+  // A verification that runs ONLY the held-out acceptance/ probe is independent → counts.
+  assert.equal(
+    verificationIsWorkerAuthored(
+      "node --test out-test/acceptance/SP-6.foo.test.js",
+      workerOwned,
+    ),
+    false,
+    "the held-out acceptance/ probe lies outside every code-author footprint, so it grades",
+  );
+});
+
+// ── SP-6/7 AC4: a red acceptance run is judged + routed; AC5: the trace is persisted ──
+
+test("SP-6/7 AC4: a red closing gate JUDGES the failure and routes the re-dispatch to that role", async () => {
+  const { deps, calls } = makeDeps(
+    {
+      "teps/TEP-1/SP-1/SL-1.md": {
+        status: "ready",
+        files: ["src/a.ts"],
+        satisfies: [1],
+      },
+    },
+    { acPass: { 1: false }, fault: "test" }, // AC#1 red; judged a TEST fault
+  );
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
+  // The judge was consulted for the failing slice's unit.
+  assert.equal(
+    calls.judged.length,
+    1,
+    "the red slice's failure is judged once",
+  );
+  // The slice is requires-attention (re-dispatch route, not escalated — below the bound).
+  assert.deepEqual(r.attention, ["TEP-1_SP-1_SL-1"]);
+  assert.deepEqual(
+    r.escalated,
+    [],
+    "a test fault below the bound re-dispatches, not escalates",
+  );
+  // The judged fault is surfaced on the diagnosis so a human/next-run sees the route.
+  assert.ok(
+    calls.attentionReasons.some((d) => /Judged fault: test/.test(d)),
+    "the requires-attention diagnosis records the judged fault",
+  );
+  assert.equal(r.committed, false);
+});
+
+test("SP-6/7 AC4: an ambiguous (both) fault ESCALATES even below the attempt bound", async () => {
+  const { deps, calls } = makeDeps(
+    {
+      "teps/TEP-1/SP-1/SL-1.md": {
+        status: "ready",
+        files: ["src/a.ts"],
+        satisfies: [1],
+      },
+    },
+    { acPass: { 1: false }, fault: "both" },
+  );
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
+  assert.equal(calls.judged.length, 1);
+  assert.deepEqual(
+    r.escalated,
+    ["TEP-1_SP-1_SL-1"],
+    "a both/ambiguous fault escalates to a human on the first attempt",
+  );
+});
+
+test("SP-6/7 AC5: the structured verification trace is persisted alongside DELIVERY.md and surfaced in it", async () => {
+  const { deps, calls } = makeDeps(
+    {
+      "teps/TEP-1/SP-1/SL-1.md": {
+        status: "ready",
+        files: ["src/a.ts"],
+        satisfies: [1],
+      },
+    },
+    { acPass: { 1: false }, fault: "code" },
+  );
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
+
+  // The trace is on the run result …
+  assert.equal(r.verificationTrace.length, 1);
+  assert.equal(r.verificationTrace[0].ac, 1);
+  assert.equal(r.verificationTrace[0].verdict, "fail");
+  assert.equal(
+    r.verificationTrace[0].route,
+    "code",
+    "the judged route is recorded",
+  );
+
+  // … persisted as a durable JSON sibling of DELIVERY.md …
+  const traceFile = path.join(
+    calls.thinkubeDir,
+    "teps/TEP-1/SP-1/VERIFICATION-TRACE.json",
+  );
+  assert.ok(fs.existsSync(traceFile), "VERIFICATION-TRACE.json is written");
+  const persisted = JSON.parse(fs.readFileSync(traceFile, "utf8"));
+  assert.equal(persisted[0].ac, 1);
+  assert.equal(persisted[0].route, "code");
+
+  // … and surfaced in the delivery report the panel renders.
+  const deliveryFile = path.join(
+    calls.thinkubeDir,
+    "teps/TEP-1/SP-1/DELIVERY.md",
+  );
+  const md = fs.readFileSync(deliveryFile, "utf8");
+  assert.match(md, /Verification trace/);
+  assert.match(md, /code/);
+});
+
+test("SP-6/7 AC4: buildJudgePrompt frames an independent code-vs-test judge; parseJudgment is fail-safe", () => {
+  const p = buildJudgePrompt(
+    { id: "SP-1_SL-1#eu-0", slice: "SP-1_SL-1", role: "code" },
+    "AC #1: $ probe → exit 1",
+  );
+  assert.match(p, /INDEPENDENT/);
+  assert.match(p, /did NOT implement/i);
+  assert.match(p, /did NOT author the test/i);
+  assert.match(p, /"fault"/);
+
+  // A clean verdict parses; an unparseable one fails safe to `both` (escalate), never a mis-route.
+  assert.deepEqual(
+    parseJudgment('{"fault":"test","rationale":"probe over-strict"}'),
+    {
+      fault: "test",
+      rationale: "probe over-strict",
+    },
+  );
+  assert.equal(parseJudgment("not json at all").fault, "both");
+  assert.equal(parseJudgment('{"fault":"weird"}').fault, "both");
+});
+
+test("SP-6/7 AC4: createSdkJudge dispatches a fresh session and returns its parsed fault", async () => {
+  const calls: { prompt: string; cwd: string }[] = [];
+  const fakeQuery = (args: { prompt: string; options: { cwd: string } }) => {
+    calls.push({ prompt: args.prompt, cwd: args.options.cwd });
+    return (async function* () {
+      yield {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: '{"fault":"code","rationale":"the implementation diverged"}',
+      };
+    })();
+  };
+  const judge = createSdkJudge({
+    cwd: "/worktree",
+    loadQuery: async () => fakeQuery as never,
+  });
+  const verdict = await judge(
+    { id: "SP-1_SL-1#eu-0", slice: "SP-1_SL-1", role: "code" },
+    "the probe went red",
+  );
+  assert.deepEqual(verdict, {
+    fault: "code",
+    rationale: "the implementation diverged",
+  });
+  assert.equal(calls.length, 1, "dispatched exactly one fresh judge session");
+  assert.equal(calls[0].cwd, "/worktree");
+});
+
+test("SP-6/7 AC4: createSdkJudge fails safe to `both` when the session does not complete", async () => {
+  const fakeQuery = () =>
+    (async function* () {
+      yield {
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+      };
+    })();
+  const judge = createSdkJudge({
+    cwd: "/worktree",
+    loadQuery: async () => fakeQuery as never,
+  });
+  const verdict = await judge(
+    { id: "SP-1_SL-1#eu-0", slice: "SP-1_SL-1" },
+    "x",
+  );
+  assert.equal(verdict.fault, "both");
+  assert.match(verdict.rationale, /did not complete/);
 });

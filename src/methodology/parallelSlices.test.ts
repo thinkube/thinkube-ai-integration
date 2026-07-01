@@ -23,6 +23,7 @@ import {
   UNDECLARED_READ_RULE_MSG,
   isAcceptanceEvidencePath,
   resolveFootprint,
+  resolveRoleFootprint,
   ACCEPTANCE_EVIDENCE_RE,
   type ParallelSliceInput,
   type OwnershipState,
@@ -1009,4 +1010,37 @@ test("footprintContainment: an override predicate marks a custom evidence path n
     ).ok,
     true,
   );
+});
+
+// ── SP-6/7 AC1: the role-vs-held-out footprint split ───────────────────────
+// resolveRoleFootprint is the inverse pair of resolveFootprint: a `code` unit can NEVER own the
+// held-out acceptance evidence (it is stripped), while a `test` unit's footprint IS exactly the
+// held-out `acceptance/` probe — the independent evidence the closing gate grades on.
+
+test("resolveRoleFootprint: a test unit's footprint is ONLY its held-out acceptance/ paths", () => {
+  const declared = [
+    "acceptance/SP-6.foo.test.ts",
+    "src/foo.ts",
+    "tests/acceptance/bar.test.ts",
+  ];
+  assert.deepEqual(resolveRoleFootprint("test", declared), [
+    "acceptance/SP-6.foo.test.ts",
+    "tests/acceptance/bar.test.ts",
+  ]);
+});
+
+test("resolveRoleFootprint: a code unit can never own the held-out acceptance evidence (stripped)", () => {
+  const declared = ["src/foo.ts", "acceptance/SP-6.foo.test.ts"];
+  // code role mirrors resolveFootprint — acceptance/ paths removed.
+  assert.deepEqual(resolveRoleFootprint("code", declared), ["src/foo.ts"]);
+  assert.deepEqual(resolveRoleFootprint("code", declared), resolveFootprint(declared));
+  // an absent role defaults to code.
+  assert.deepEqual(resolveRoleFootprint(undefined, declared), ["src/foo.ts"]);
+});
+
+test("resolveRoleFootprint: honours a custom acceptance-evidence predicate for both roles", () => {
+  const opts = { isAcceptanceEvidence: (f: string) => f.startsWith("held/") };
+  const declared = ["held/probe.test.ts", "src/x.ts"];
+  assert.deepEqual(resolveRoleFootprint("test", declared, opts), ["held/probe.test.ts"]);
+  assert.deepEqual(resolveRoleFootprint("code", declared, opts), ["src/x.ts"]);
 });
