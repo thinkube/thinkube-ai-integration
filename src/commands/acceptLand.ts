@@ -140,13 +140,12 @@ export async function acceptLandSpec(
       ? ` (Worktree retire failed: ${result.retireError.message})`
       : "");
 
-  // After the PR merged on the remote, fast-forward the canonical local `main` so the
-  // accepted work is actually present locally — closing the stale-checkout gap that
-  // strands delivered scripts and stale builds. Only when something landed; best-effort,
-  // appended to the toast note.
-  const syncNote = result.merge.merged
-    ? await fastForwardBaseNote(args.worktrees, args.repoPath)
-    : "";
+  // Fast-forward the canonical local `main` so the accepted work is actually present locally —
+  // closing the stale-checkout gap that strands delivered scripts and stale builds. Attempt it
+  // whenever the Spec has landed on origin — merged NOW *or* already merged by an earlier accept:
+  // gating on `result.merge.merged` skipped the sync for an already-merged PR and left the local
+  // checkout behind (the recurring gap). fastForwardBaseNote is best-effort (never throws).
+  const syncNote = await fastForwardBaseNote(args.worktrees, args.repoPath);
 
   return { merge: result.merge, retireNote: retireNote + syncNote };
 }

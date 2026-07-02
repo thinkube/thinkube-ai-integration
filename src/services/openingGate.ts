@@ -46,8 +46,10 @@ import { requirementHash } from "../methodology/specChange";
 //                // `secret`; false for any tampered/absent/malformed/foreign-secret signature.
 import { verifyAcSignature } from "./acSignature";
 
-/** The auditor's per-AC certification (the model-side judgment from `/spec-prepare`). */
-export type AcVerdictKind = "verifiable" | "needs-reframe";
+/** The auditor's per-AC certification (the model-side judgment from `/spec-prepare`). `assessment`
+ *  (SP-6/7) is verifiable-by-assessment: a prose/UX/skill AC that no runnable probe fits, graded by
+ *  the closing gate's independent assessor — it carries `env: "assessment"` and no `run`. */
+export type AcVerdictKind = "verifiable" | "needs-reframe" | "assessment";
 
 /**
  * One AC's audit verdict. A `verifiable` verdict carries the concrete `{ run, env }` declaration;
@@ -67,10 +69,12 @@ export interface AcVerdict {
   why?: string;
 }
 
-/** The canonical `ac_verifications` frontmatter shape (AC ordinal → declaration). */
+/** The canonical `ac_verifications` frontmatter shape (AC ordinal → declaration). An `env:
+ *  "assessment"` entry (SP-6/7) carries no `run` — it is graded by the closing gate's independent
+ *  assessor, not a shell command. */
 export type AcVerificationMap = Record<
   string,
-  { run: string; env?: "cluster" | "local" }
+  { run?: string; env?: "cluster" | "local" | "assessment" }
 >;
 
 /**
@@ -148,11 +152,14 @@ export function isAcCertificationStale(
   return stampedHash !== currentHash;
 }
 
-/** True iff `decl` is a usable declaration — an object with a non-empty `run` string. */
-function hasRunnableEntry(decl: unknown): decl is { run: string } {
+/** True iff `decl` is a usable declaration — an object with a non-empty `run` string, OR an
+ *  `env: "assessment"` entry (SP-6/7), which is certified for the closing gate's independent
+ *  assessor and so carries no runnable `run`. */
+function hasRunnableEntry(decl: unknown): decl is { run?: string; env?: string } {
   if (!decl || typeof decl !== "object") return false;
-  const run = (decl as Record<string, unknown>).run;
-  return typeof run === "string" && run.trim().length > 0;
+  const d = decl as Record<string, unknown>;
+  if (d.env === "assessment") return true;
+  return typeof d.run === "string" && d.run.trim().length > 0;
 }
 
 /**
@@ -184,7 +191,10 @@ function hasRunnableEntry(decl: unknown): decl is { run: string } {
  */
 export function readyGate(
   acs: { ordinal: number }[],
-  verifications: Record<string, { run: string; env?: "cluster" | "local" }>,
+  verifications: Record<
+    string,
+    { run?: string; env?: "cluster" | "local" | "assessment" }
+  >,
   certification?: {
     currentHash: string;
     stampedHash?: unknown;
@@ -239,10 +249,20 @@ export function readyGate(
  * `parseAcVerifications` — every emitted AC present, no orphans.
  */
 export function emitAcVerifications(verdicts: AcVerdict[]): AcVerificationMap {
-  const entries: [number, { run: string; env?: "cluster" | "local" }][] = [];
+  const entries: [
+    number,
+    { run?: string; env?: "cluster" | "local" | "assessment" },
+  ][] = [];
   for (const v of verdicts) {
-    if (v.verdict !== "verifiable") continue;
     if (!Number.isInteger(v.ordinal) || v.ordinal <= 0) continue;
+    // An `assessment` AC (SP-6/7) is certified with NO runnable command — the closing gate grades it
+    // via an independent assessor. It contributes an `env: "assessment"` entry (no `run`) so it
+    // survives to the frontmatter, arms → Ready, and the closing gate dispatches the assessor.
+    if (v.verdict === "assessment") {
+      entries.push([v.ordinal, { env: "assessment" }]);
+      continue;
+    }
+    if (v.verdict !== "verifiable") continue;
     if (typeof v.run !== "string" || !v.run.trim()) continue;
     entries.push([
       v.ordinal,

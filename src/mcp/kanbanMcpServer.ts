@@ -44,6 +44,13 @@ import "./installVscodeStub";
  *                             <root>/<container>/<rel>, not co-located.
  *   THINKUBE_FOLDERS          JSON [{name,path}] of workspace folders; the
  *                             folder name supplies the namespace container.
+ *   THINKUBE_APPROVAL_DIR     arms the human-approval gate on `create_slice` /
+ *                             spec→Ready (SP-6/3): the directory the approval
+ *                             secret and the side-channel token store live under
+ *                             (the host injects its globalStorage path). Read
+ *                             PER CALL — never cached at boot — so arming or
+ *                             disarming takes effect on the next call. Unset ⇒
+ *                             gate off, legacy pre-approval path (ships dark).
  *
  * Logging: stderr only. VS Code captures it under the MCP server's output
  * channel; never print to stdout — that channel is the protocol stream.
@@ -151,8 +158,21 @@ import {
   loadOrCreateSecret,
   signAcVerifications,
 } from "../services/acSignature";
+// SP-6/3 (TEP-6 mechanism 2): the human-approval gate on `create_slice` / spec→Ready. The review
+// webview's Approve button — a UI action only the maintainer can take — mints a short-lived,
+// content-bound token (HMAC'd with a server-only secret) into a side-channel store under
+// THINKUBE_APPROVAL_DIR; the gate reads and verifies it. The tool call carries NO token, so the
+// agent can neither present, forge, nor replay one — the approval is a signal it cannot synthesize.
+import {
+  APPROVAL_TTL_MS,
+  approvalContentHash,
+  loadOrCreateApprovalSecret,
+  verifyApproval,
+} from "../services/approvalToken";
+import { createApprovalStore } from "../services/approvalStore";
 import {
   createSdkAuditRunner,
+  deriveVerificationCommands,
   type AuditAc,
   type AuditRunner,
 } from "../services/auditorRunner";
@@ -449,7 +469,23 @@ function thinkingSpaceDirOf(repoPath: string, env: ServerEnv): string {
     // a worktree session's default thinking space + addressing both resolve to the same
     // central thinking space as the canonical repo.
     const wt = linkedWorktreeInfo(repoPath);
-    const ns = namespaceForRepo(wt ? wt.canonicalRepo : repoPath, env.folders);
+    const effective = path.resolve(wt ? wt.canonicalRepo : repoPath);
+    // Co-located under the root: a thinking space that ALREADY lives inside the
+    // thinking-space root keeps its org tree in place — resolving it must NOT
+    // re-mirror it through a `<container>/<rel>` sidecar namespace. The sidecar
+    // mapping exists to mirror a thinking space that lives OUTSIDE the root into
+    // it; applying it to a path already inside the root double-applies the
+    // container segment whenever the root coincides with a workspace folder
+    // (here root == the "Tandem Board" folder, container `Tandem-Board`),
+    // yielding a phantom `<root>/Tandem-Board/…` dir with the `<org>/teps` tree
+    // lost. So a thinking space addressed by its absolute path resolves to the
+    // SAME dir its `<product>/projects/<id>` namespace does — the path itself.
+    const root = path.resolve(env.thinkingSpaceRoot);
+    const rel = path.relative(root, effective);
+    if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) {
+      return effective;
+    }
+    const ns = namespaceForRepo(effective, env.folders);
     if (ns) return thinkingSpaceDirForNamespace(env.thinkingSpaceRoot, ns);
   }
   return path.join(repoPath, ".thinkube");
@@ -894,6 +930,11 @@ const TOOL_DEFS = [
           description:
             "1-based AC ordinals this slice delivers (positions in the parent Spec's `## Acceptance Criteria`). Arms the → Done gate: the slice can't reach Done until each listed criterion is checked on the Spec.",
         },
+        contract: {
+          type: "string",
+          description:
+            "The slice's design-time CONTRACT (SP-6/3): the shared interface — the exact exports, types, signatures and behaviour — every work unit builds against, written by the slicer WHEN THE SLICE IS CREATED (~10–20 lines, not prose). It is injected verbatim into every worker's prompt (code AND held-out test alike), so the units agree on the seam WITHOUT reading each other's code. Because the contract pins the interface up front, a contract-defined slice needs `consumes` ONLY for a genuine produced-artifact dependency (a unit that ingests another unit's OUTPUT) — never for interface agreement — and its units are exempt from the contract-first gate (the contract IS the shared seam). Write the contract for any multi-unit slice.",
+        },
         work_units: {
           type: "array",
           items: {
@@ -1186,6 +1227,30 @@ const TOOL_DEFS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "open_review",
+    description:
+      "Open the human review panel for a document (SP-6/3, TEP-6 mechanism 2) — the reusable, kind-agnostic review primitive. The MCP server is a detached process with no `vscode` API, so this bridges to the Extension Host via a one-shot control request (the same MCP→host filesystem channel `start_spec_worktree` uses); the host mounts the review webview on the resolved document for subjectKey `${kind}:${id}` (e.g. `spec:TEP-6/SP-3`). The panel renders the live markdown and carries the maintainer-only **Approve** button — a UI action the agent cannot take — which mints the short-lived, content-bound approval token into the side-channel store that `create_slice` / spec→Ready verifies when `THINKUBE_APPROVAL_DIR` arms the gate. The agent never sees or carries the token; this tool only opens the surface where the human grants it. Requires the Extension Host to be running.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "string",
+          enum: ["spec", "tep"],
+          description:
+            "The subject kind — namespaces the subjectKey (`spec:` vs `tep:`) so an approval for one kind can never satisfy another kind's gate. Only the `spec` instance is wired to a gate today (`create_slice`/→Ready); `tep` reuses the same primitive for the follow-up Accept-TEP flow.",
+        },
+        id: {
+          type: "string",
+          description:
+            'The subject id. For `spec`: the canonical `TEP-<t>/SP-<n>` (e.g. "TEP-6/SP-3"; the internal composite `<t>/<n>` or a unique bare SP number is also accepted). For `tep`: `TEP-<id>` (or the bare id).',
+        },
+        ...THINKING_SPACE_PARAM,
+      },
+      required: ["kind", "id"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 export async function dispatchTool(
@@ -1250,10 +1315,15 @@ export async function dispatchTool(
       );
     case "create_slice": {
       writeGate(name);
-      const createSpecId =
+      // Resolve a bare SP number to its composite `<tep>/<sp>` (SP numbers are
+      // per-TEP) up front, so the TEP-approval gate and createSlice below act on
+      // the same real spec — not an ambiguous bare id that mis-resolves.
+      const createSpecId = await resolveCompositeSpecId(
+        () => store.listSpecDirs(),
         typeof args.spec === "number"
           ? String(args.spec)
-          : asString(args, "spec");
+          : asString(args, "spec"),
+      );
       // Approval gate (SP-th4wqg_SL-1, TEP-th3i18 #25): a slice may not reach
       // Ready while the parent Spec's `implements:` TEP is not yet `accepted`
       // (approved-to-build). Resolve the TEP's status via thinking space context and run
@@ -1273,6 +1343,7 @@ export async function dispatchTool(
           parallel_group: optString(args, "parallel_group"),
           files: optStringArray(args, "files"),
           satisfies: optNumberArray(args, "satisfies"),
+          contract: optString(args, "contract"),
           // The execution-aware work units (SP-tgs8gb). Forwarded verbatim — createSlice
           // validates each unit's footprint and serializes the array to frontmatter. Without
           // this line the schema accepts work_units but the handler silently drops it (the
@@ -1464,6 +1535,12 @@ export async function dispatchTool(
           : asString(args, "spec"),
         store.workspaceRoot,
       );
+    case "open_review":
+      // Deliberately NOT write-gated: it mutates nothing in the thinking space — it
+      // asks the host to show the review panel so the MAINTAINER can act. A
+      // read-only (navigator) session must still be able to surface the
+      // Approve affordance; the approval itself is human-minted, never an AI write.
+      return openReview(store, asString(args, "kind"), asString(args, "id"));
     default:
       throw new Error(`unknown tool: ${name}`);
   }
@@ -1494,6 +1571,121 @@ async function startSpecWorktree(spec: string, repo: string): Promise<unknown> {
     "utf8",
   );
   return { ok: true, spec, request: file };
+}
+
+/**
+ * Filename for an open-review control request (one per subject, fire-once).
+ * Hex-encoded like `startWorktreeRequestFile` so an exotic subjectKey (it
+ * carries `:` and `/`) can never escape the control dir.
+ */
+function openReviewRequestFile(subjectKey: string): string {
+  const safe = Buffer.from(subjectKey, "utf8").toString("hex");
+  return `open-review-${safe}.json`;
+}
+
+/**
+ * `open_review({kind, id})` (SP-6/3, TEP-6 mechanism 2): hand "open the review
+ * panel for this document" to the Extension Host. This process has no `vscode`
+ * API, so — exactly like `startSpecWorktree` above — it writes a one-shot
+ * control request into the host-published `THINKUBE_CONTROL_DIR`; the host's
+ * watcher consumes it and mounts `ReviewPanel.open(subjectKey, docPath, deps)`.
+ * The request carries the resolved arguments (the server resolves the
+ * thinking-space doc path here, where the store lives, so the host needn't
+ * re-map ids to files) plus the normalized subject pieces, so the host may
+ * route either straight to `ReviewPanel.open(subjectKey, docPath, deps)` or
+ * through its `openReviewFromHost({kind, id}, {storageDir, thinkingSpaceDir})`
+ * seam (the same one the kanban panel's "Approve spec" button uses):
+ *
+ *   { kind: "open-review", subjectKind, id, subjectKey, docPath, thinkingSpaceDir }
+ *
+ * Kind-agnostic by construction: `subjectKey` is the kind-namespaced
+ * `${kind}:${id}` (`spec:TEP-6/SP-3` / `tep:TEP-6`), so the panel this opens —
+ * and the token its Approve button mints — can never satisfy another kind's
+ * gate. For `spec` the id is normalized to the EXACT subjectKey the
+ * `create_slice` gate computes (`spec:TEP-<t>/SP-<n>`), so the approval the
+ * maintainer mints in the panel is the one the gate verifies. Only that spec
+ * instance is wired to a gate here; the `tep:` instance is the follow-up
+ * Accept-TEP flow reusing this same primitive.
+ */
+async function openReview(
+  store: ThinkubeStore,
+  kind: string,
+  id: string,
+): Promise<unknown> {
+  if (kind !== "spec" && kind !== "tep") {
+    throw new Error(
+      `Unknown review kind "${kind}" — expected "spec" or "tep".`,
+    );
+  }
+  let subjectKey: string;
+  let canonicalId: string;
+  let docRel: string;
+  if (kind === "spec") {
+    // Accept the canonical `TEP-<t>/SP-<n>` (the form the gate's refusal
+    // teaches), the internal composite `<t>/<n>`, or a bare SP number resolved
+    // to its unique TEP the same way `create_slice` resolves it.
+    const canonical = /^TEP-([A-Za-z0-9]+)\/SP-([A-Za-z0-9]+)$/i.exec(
+      id.trim(),
+    );
+    const composite = canonical
+      ? `${canonical[1]}/${canonical[2]}`
+      : await resolveCompositeSpecId(
+          () => store.listSpecDirs(),
+          id.trim().replace(/^SP-/i, ""),
+        );
+    if (!composite.includes("/")) {
+      throw new Error(
+        `Spec "${id}" not found — pass the composite id \`TEP-<t>/SP-<n>\` (e.g. "TEP-6/SP-3").`,
+      );
+    }
+    const [tep, sp] = composite.split("/");
+    canonicalId = `TEP-${tep}/SP-${sp}`;
+    subjectKey = `spec:${canonicalId}`;
+    docRel = store.pathForSpecDoc(composite);
+    if (!(await store.getFile(docRel))) {
+      throw new Error(
+        `Spec document not found at \`${docRel}\` — nothing to review. Write the spec (write_spec) before opening its review panel.`,
+      );
+    }
+  } else {
+    const tepId = id.trim().replace(/^TEP-/i, "");
+    // `findTep` resolves the real file (slugless or legacy slugged), so the
+    // panel watches the document that actually exists.
+    const found = await store.findTep(tepId);
+    if (!found) {
+      throw new Error(
+        `TEP-${tepId} not found in this thinking space — nothing to review.`,
+      );
+    }
+    canonicalId = `TEP-${tepId}`;
+    subjectKey = `tep:${canonicalId}`;
+    docRel = found;
+  }
+  const dir = process.env[CONTROL_DIR_ENV];
+  if (!dir) {
+    throw new Error(
+      `${CONTROL_DIR_ENV} is not set, so the review-panel hand-off can't reach the extension host. Re-install the methodology bundle so the MCP env carries it, or have the maintainer open the review panel from the Kanban view.`,
+    );
+  }
+  await fsSync.promises.mkdir(dir, { recursive: true });
+  const docPath = path.join(store.thinkubeDir, docRel);
+  const file = path.join(dir, openReviewRequestFile(subjectKey));
+  // Same wire format as `serializeControlRequest` (a JSON line). The shape is
+  // written raw here because the `open-review` request kind is host-bridge
+  // surface: `parseControlRequest`'s union grows it on the host side.
+  await fsSync.promises.writeFile(
+    file,
+    JSON.stringify({
+      kind: "open-review",
+      subjectKind: kind,
+      id: canonicalId,
+      subjectKey,
+      docPath,
+      thinkingSpaceDir: store.thinkubeDir,
+    }) + "\n",
+    "utf8",
+  );
+  return { ok: true, subjectKey, docPath, request: file };
 }
 
 // Org-scoped tree (TEP-th8lzj): a slice file is `<org>/teps/TEP-n/SP-m/SL-k.md`;
@@ -2181,13 +2373,20 @@ async function getThinkubeFile(
   store: ThinkubeStore,
   relativePath: string,
 ): Promise<unknown> {
-  const parsed = await store.getFile(relativePath);
+  // Org-aware: a caller may address the org tree by a bare `teps/…` path without
+  // knowing the maintainer's org segment — the store rewrites it to `<org>/teps/…`
+  // (a path already carrying the org, or a non-org dir, passes through). Keeps the
+  // org invisible plumbing, matching write_spec/get_slice.
+  const rel = store.resolveOrgRelativePath(relativePath);
+  const parsed = await store.getFile(rel);
   if (!parsed) {
-    throw new Error(
-      `No thinking space file at ${store.thinkubeDir}/${relativePath}`,
-    );
+    throw new Error(`No thinking space file at ${store.thinkubeDir}/${rel}`);
   }
-  return { relativePath, frontmatter: parsed.frontmatter, body: parsed.body };
+  return {
+    relativePath: rel,
+    frontmatter: parsed.frontmatter,
+    body: parsed.body,
+  };
 }
 
 async function moveSlice(
@@ -2388,6 +2587,88 @@ const TITLE_MAX = 70;
  * The → Ready gate is enforced at creation time: the parent Spec must exist
  * with a non-empty `## Acceptance Criteria`.
  */
+/**
+ * Resolve a `spec` arg to the composite `<tep>/<sp>` id the org tree is keyed by.
+ * SP numbers are PER-TEP (SP-3 can exist under several TEPs), so a bare number is
+ * resolved against `listSpecDirs()`: a unique match is used; an ambiguous one is
+ * refused naming the candidate TEPs; an unknown bare id is returned verbatim so
+ * the caller reports the real not-found path. An id that already carries a `/`
+ * (composite or opaque) passes through untouched. This keeps `/slice`'s `spec: {n}`
+ * shape working without ever silently resolving to the wrong — or a phantom — spec.
+ */
+export async function resolveCompositeSpecId(
+  listSpecDirs: () => Promise<string[]>,
+  id: string,
+): Promise<string> {
+  if (id.includes("/")) return id;
+  const matches = (await listSpecDirs()).filter((s) => s.split("/")[1] === id);
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) {
+    throw new Error(
+      `Ambiguous spec id "${id}" — SP-${id} exists under ${matches
+        .map((m) => "TEP-" + m.split("/")[0])
+        .join(
+          ", ",
+        )}. Pass the composite \`<tep>/${id}\` (e.g. \`${matches[0]}\`).`,
+    );
+  }
+  return id;
+}
+
+/**
+ * Human-approval gate (SP-6/3, TEP-6 mechanism 2): with `THINKUBE_APPROVAL_DIR` set, `create_slice`
+ * refuses unless the side-channel store holds a **valid, recent, content-bound** maintainer
+ * approval for this spec. `create_slice` IS the spec→Ready entry point (there is no separate
+ * →Ready tool), so refusing here is refusing the transition.
+ *
+ * - subjectKey is the kind-namespaced `spec:TEP-<tep>/SP-<sp>` — an approval for another subject
+ *   (a different spec, or a `tep:` approval) can never satisfy this gate.
+ * - contentHash binds the approval to the spec body the maintainer actually reviewed, via the
+ *   SAME `approvalContentHash` the Approve mint uses: editing the spec moves the hash, a prior
+ *   approval stops verifying, and the review panel re-arms Approve.
+ * - `verifyApproval` is pure and never throws; expiry (`APPROVAL_TTL_MS`), signature, subject and
+ *   content binding all collapse to one boolean — the refusal distinguishes only *missing* vs
+ *   *invalid* (the store's absence of a token is the one thing observable out here).
+ *
+ * The env var is read PER CALL — no import-time caching — so arming/disarming takes effect on the
+ * next call. Unset ⇒ gate OFF: return without touching the secret or the store (the legacy
+ * pre-approval path is preserved byte-for-byte; this ships dark).
+ */
+function assertSpecApprovedForSlicing(specId: string, specBody: string): void {
+  const approvalDir = process.env.THINKUBE_APPROVAL_DIR?.trim();
+  if (!approvalDir) return; // gate OFF — legacy path unchanged.
+  // `specId` is the composite `<tep>/<sp>` here (resolved + existence-checked by the caller).
+  const [tep, sp] = specId.split("/");
+  const subjectKey = `spec:TEP-${tep}/SP-${sp}`;
+  const secret = loadOrCreateApprovalSecret(approvalDir);
+  const approvalStore = createApprovalStore(approvalDir);
+  const token = approvalStore.get(subjectKey);
+  const approved = verifyApproval(token, {
+    subjectKey,
+    contentHash: approvalContentHash(specBody),
+    now: Date.now(),
+    secret,
+    ttlMs: APPROVAL_TTL_MS,
+  });
+  if (approved) return;
+  const approveAction =
+    `open the review panel (\`open_review({ kind: "spec", id: "TEP-${tep}/SP-${sp}" })\`) ` +
+    `and have the maintainer click **Approve spec** — a UI action the agent cannot take — then retry.`;
+  if (token === undefined) {
+    throw new Error(
+      `Human approval required — no approval is on file for \`${subjectKey}\`. ` +
+        `The approval gate is armed and \`create_slice\` is the spec→Ready transition, so it ` +
+        `refuses without a maintainer-minted approval token in the side-channel store. To proceed, ${approveAction}`,
+    );
+  }
+  throw new Error(
+    `Human approval invalid — the approval on file for \`${subjectKey}\` does not verify: it has ` +
+      `expired (TTL ${APPROVAL_TTL_MS} ms), the spec content changed since it was approved, it was ` +
+      `minted for a different subject, or it is not signed by this server's approval secret. ` +
+      `A stale or foreign token never satisfies the gate; re-approve the CURRENT content: ${approveAction}`,
+  );
+}
+
 export async function createSlice(
   store: ThinkubeStore,
   args: {
@@ -2399,6 +2680,7 @@ export async function createSlice(
     parallel_group?: string;
     files?: string[];
     satisfies?: number[];
+    contract?: string;
     work_units?: {
       footprint: string[];
       depends_on?: string[];
@@ -2523,12 +2805,29 @@ export async function createSlice(
   // the LLM auditor's verifiable | needs-reframe judgment runs in /spec-prepare,
   // which only emits a declaration for an AC it certifies, so an un-certified AC
   // arrives here with no entry and `readyGate` blocks it by ordinal.
+  // Resolve a bare SP number (`3`, the shape `/slice`'s `spec: {n}` carries) to the
+  // composite `<tep>/<sp>` id the org tree is keyed by. SP numbers are PER-TEP —
+  // SP-3 can exist under several TEPs — so a bare id is resolved against the tree:
+  // a unique match is used; an ambiguous one is refused naming the candidate TEPs.
+  // (Without this the bare id fell through `pathForSpecDoc("3")` → `TEP-3/SP-undefined`
+  // and then reported a MISLEADING legacy `specs/SP-3/spec.md` path for a spec that
+  // exists under its TEP — silent misdirection instead of an actionable id error.)
+  args.spec = await resolveCompositeSpecId(
+    () => store.listSpecDirs(),
+    args.spec,
+  );
   const specDoc = await store.getFile(store.pathForSpecDoc(args.spec));
   if (!specDoc) {
     throw new Error(
-      `No spec at ${store.thinkubeDir}/specs/SP-${args.spec}/spec.md — run /spec-prepare ${args.spec} first.`,
+      `No spec at ${store.thinkubeDir}/${store.pathForSpecDoc(args.spec)} — run /spec-prepare ${args.spec} first.`,
     );
   }
+  // Human-approval gate (SP-6/3): the outermost door of → Ready, checked FIRST —
+  // before any structural AC/certification gate — so an unapproved spec refuses
+  // with the approval error (not a downstream structural one) and no slice file
+  // is ever created. Hashes the CURRENT parsed spec body, so an approval minted
+  // over what the maintainer reviewed stops verifying the moment the body moves.
+  assertSpecApprovedForSlicing(args.spec, specDoc.body);
   const acs = acceptanceCriteriaOrdinals(specDoc.body);
   if (acs.length === 0) {
     throw new Error(
@@ -2571,12 +2870,14 @@ export async function createSlice(
         }
       : {}),
   };
-  // `readyGate` only reads each entry's `run` (its structural check), so the `env: "assessment"`
-  // widening (SP-6/7) is irrelevant to it — narrow the type at the call. An assessment AC carries no
-  // runnable `run`, so it is graded by the closing gate's independent assessor, not this opening gate.
+  // `readyGate` (SP-6/7) accepts an `env: "assessment"` entry as certified even though it carries no
+  // runnable `run` — such an AC is graded by the closing gate's independent assessor, not this gate.
   const readyVerdict = readyGate(
     acs,
-    verifications as Record<string, { run: string; env?: "cluster" | "local" }>,
+    verifications as Record<
+      string,
+      { run?: string; env?: "cluster" | "local" | "assessment" }
+    >,
     certification,
   );
   if (!readyVerdict.ok) {
@@ -2706,60 +3007,71 @@ export async function createSlice(
     }
   }
 
-  // Contract-first gate (SP-th4wqi). The DAG check above proves the graph is
-  // well-formed; this one proves it isn't an **unsequenced-integration** fan-out:
-  // a `*.test.*`/declared-integration `fan-out` unit with no `depends_on` sitting
-  // beside ≥1 sibling implementation unit. With nothing sequencing it after a
-  // shared contract-definition node, the test and its implementers each invent the
-  // shared seam and diverge — the SP-D / SP-th4wqe AC#3 failure. The fix is a
-  // shared contract node every unit `depends_on` (parallelism preserved: no
-  // sibling↔sibling edges); a per-unit opt-out flag accepts a genuinely-independent
-  // test. The pure check + its teaching message are imported from parallelSlices.ts
-  // and never restated here — restating them is the very divergence this gates.
-  const contractVerdict = contractFirstCheck(
-    (args.work_units ?? []) as ContractFirstWorkUnit[],
-  );
-  if (!contractVerdict.ok) {
-    // The check returns the static rule message PLUS the structured offending
-    // unit, so the caller composes the refusal: the imported teaching message
-    // (never restated) and the offending unit named by its footprint, so the
-    // author sees exactly which unit to route through a contract node or opt out.
-    const fp =
-      contractVerdict.offendingUnit.footprint?.join(", ") || "(no footprint)";
-    throw new Error(`${contractVerdict.message}\n  • offending unit: ${fp}`);
+  // Required design-time contract (SP-6/3). A multi-unit slice MUST declare a `contract` — the
+  // shared interface (exact exports, types, signatures, behaviour) every unit, code AND held-out
+  // test, builds against. It is injected into every worker prompt so parallel units agree on the
+  // seam up front; that SUPERSEDES the old contract-first coordination gate (units no longer point
+  // `consumes` at a sibling's seam — they build to the contract). There is deliberately NO
+  // no-contract fallback path: a legacy slice without one is re-sliced, not patched.
+  const unitCount = (args.work_units ?? []).length;
+  if (unitCount > 1 && (args.contract ?? "").trim().length === 0) {
+    throw new Error(
+      `A multi-unit slice must declare a \`contract\` — the shared interface (exact exports, ` +
+        `types, signatures, behaviour) every work unit builds against. Without it, the ${unitCount} ` +
+        `parallel units (and the held-out test) each invent the seam and diverge. Write the ` +
+        `interface in \`contract\` (~10–20 lines); with it, units need \`consumes\` only for a ` +
+        `genuine produced-artifact dependency, never for interface agreement.`,
+    );
   }
 
-  // Consumes-resolvability gate (SP-th4wqk AC#2). `buildUnitDag` resolves a unit's
-  // `consumes` to a dependency on the SIBLING unit whose footprint produces the
-  // named file; a `consumes` that matches no sibling footprint silently resolves
-  // to NO edge — a typo or stale path becomes a no-op, exactly the contract the
-  // gate is meant to make load-bearing. Refuse it at the door, naming the offending
-  // unit + the dangling file. File matching reuses `normalizeFilePath` — the same
-  // normalization `contractFirstCheck` and `buildUnitDag` use — so a `consumes`
-  // naming a real sibling footprint passes by the identical rule.
+  // Consumes-resolvability gate (SP-th4wqk AC#2), resolved GLOBALLY over the Spec's
+  // units — every slice's work_units, not just this slice's — exactly like the
+  // `buildUnitDag` gate above it (SP-5/1). The work-unit DAG is the Spec-wide
+  // scheduling graph and the slice is only a validation envelope, NEVER a
+  // scheduling boundary: a `consumes` naming a file produced by ANOTHER slice's
+  // unit is a normal cross-slice edge, not an error. Only a `consumes` that no
+  // unit ANYWHERE in the Spec produces (a typo/stale path) silently resolves to no
+  // edge — refuse THAT at the door. File matching reuses `normalizeFilePath`, the
+  // same normalization `buildUnitDag` uses, so a real producer passes by the
+  // identical rule.
   {
-    const wus = (args.work_units ?? []) as {
+    const newWus = (args.work_units ?? []) as {
       footprint?: string[];
       consumes?: string[];
     }[];
-    const siblingFiles = (selfIdx: number): Set<string> => {
-      const s = new Set<string>();
-      wus.forEach((w, i) => {
-        if (i === selfIdx) return;
-        for (const f of w.footprint ?? []) s.add(normalizeFilePath(f));
-      });
-      return s;
-    };
-    for (let i = 0; i < wus.length; i++) {
-      const produced = siblingFiles(i);
-      for (const c of wus[i].consumes ?? []) {
-        if (!produced.has(normalizeFilePath(c))) {
-          const fp = wus[i].footprint?.join(", ") || "(no footprint)";
+    // The Spec's full unit set: every already-created slice's units + this new
+    // slice's. `u !== w` (object identity) excludes only the consuming unit itself,
+    // so a unit never satisfies its own `consumes`.
+    const allUnits: { footprint?: string[]; consumes?: string[] }[] = [];
+    for (const rel of await store.listSlices(args.spec)) {
+      const sfm = (await store.getFile(rel))?.frontmatter ?? {};
+      if (Array.isArray(sfm.work_units)) {
+        allUnits.push(
+          ...(sfm.work_units as {
+            footprint?: string[];
+            consumes?: string[];
+          }[]),
+        );
+      }
+    }
+    allUnits.push(...newWus);
+    for (const w of newWus) {
+      for (const c of w.consumes ?? []) {
+        const cn = normalizeFilePath(c);
+        const producedByOther = allUnits.some(
+          (u) =>
+            u !== w &&
+            (u.footprint ?? []).some((f) => normalizeFilePath(f) === cn),
+        );
+        if (!producedByOther) {
+          const fp = w.footprint?.join(", ") || "(no footprint)";
           throw new Error(
             `Dangling \`consumes\` — refusing to create the slice: unit [${fp}] ` +
-              `consumes \`${c}\`, but no sibling work_unit's footprint produces that file. ` +
-              `A \`consumes\` must name a file another unit in this slice produces (so it ` +
-              `resolves to a real contract-first dependency edge), else it is a silent no-op.`,
+              `consumes \`${c}\`, but no work_unit anywhere in this Spec (any slice) ` +
+              `produces that file. \`consumes\` resolves GLOBALLY across the Spec's ` +
+              `units — a cross-slice consumes is fine (the slice is only a validation ` +
+              `envelope) — so check the path is exact; else drop it (it would be a ` +
+              `silent no-op edge).`,
           );
         }
       }
@@ -2800,6 +3112,7 @@ export async function createSlice(
   fm.assignee = "";
   if (args.satisfies?.length)
     fm.satisfies = [...new Set(args.satisfies)].sort((a, b) => a - b);
+  if (args.contract?.trim()) fm.contract = args.contract.trim();
   if (args.work_units?.length)
     fm.work_units = args.work_units as Frontmatter["work_units"];
   fm.docs = docsResult.value.docs;
@@ -2996,15 +3309,18 @@ async function writeSpec(
       // Passed: emit the canonical map from the audit's verdicts and bind a server signature over
       // `(acRequirementHash, ac_verifications)` so `readyGate` can verify provenance — the agent
       // can reproduce the hash but never this signature (the secret never leaves the server).
-      // `assessment` verdicts (SP-6/7) are verifiable-by-assessment, not by a signed runnable
-      // command — the closing gate's independent assessor grades them at quiescence, not this map.
-      // Only `verifiable` verdicts contribute a signed `ac_verifications` entry (emitAcVerifications
-      // drops the rest); an assessment AC is graded via its `env: "assessment"` declaration instead.
-      const map = emitAcVerifications(
-        result.verdicts.filter(
-          (v): v is AcVerdict => v.verdict !== "assessment",
-        ),
-      );
+      // `verifiable` verdicts contribute a runnable `{ run, env }` entry; an `assessment` verdict
+      // (SP-6/7) contributes an `env: "assessment"` entry with **no** `run` — it must survive into the
+      // signed frontmatter so → Ready arms and the closing gate can dispatch its independent assessor
+      // (dropping it here was the arming-side gap that left an all-assessment spec un-Ready-able).
+      // The auditor JUDGED (verdict + env only); now AUTHOR each local verifiable AC's `run` from the
+      // repo's convention — a held-out acceptance-probe recipe filled with (spec, ordinal), else the
+      // whole-suite fallback. Deterministic + model-free, so it belongs to the builder, not the judge.
+      const verdicts = await deriveVerificationCommands(result.verdicts, {
+        cwd: audit.cwd,
+        specId: spec,
+      });
+      const map = emitAcVerifications(verdicts);
       const acHash = acRequirementHash(trimmed);
       fm.ac_verifications = map;
       fm[AC_CERT_HASH_KEY] = acHash;

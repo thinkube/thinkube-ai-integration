@@ -65,6 +65,7 @@ import {
   footprintGuard,
   footprintContainment,
   resolveFootprint,
+  resolveRoleFootprint,
   normalizeFilePath,
   type ContainmentResult,
 } from "../methodology/parallelSlices";
@@ -779,6 +780,9 @@ export class OrchestratorService {
               (n) => Number.isInteger(n) && n > 0,
             )
           : [],
+        // SP-6/3: carry the slice's design-time contract so buildUnitDag stamps it onto every
+        // SchedUnit and buildWorkerPrompt injects it into each worker (code + held-out test).
+        contract: typeof fm?.contract === "string" ? fm.contract : undefined,
       });
     }
     return slices;
@@ -1678,7 +1682,10 @@ export class OrchestratorService {
                     const d = footprintGuard(
                       inp.tool_name ?? "",
                       inp.tool_input,
-                      unit.footprint,
+                      // Screen an Edit/Write against the unit's ROLE-effective footprint (SP-6/7): a
+                      // `test` unit may only touch its held-out `acceptance/` probe; a `code` unit can
+                      // never touch `acceptance/` — so the two hands can't reach into each other's work.
+                      resolveRoleFootprint(unit.role, unit.footprint),
                       cwd,
                     );
                     if (d.allow) return {};
