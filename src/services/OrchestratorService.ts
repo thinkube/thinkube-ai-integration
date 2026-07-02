@@ -1453,7 +1453,16 @@ export class OrchestratorService {
     // has its input. A failure is a real red (the assembled slice does not build): every landed
     // slice goes requires-attention with the compiler output. Tech-agnostic: no `prepare`
     // declared ⇒ nothing runs.
-    const recipe = await defaultAcceptanceRecipeResolver(worktreePath);
+    // The recipe is resolved against the CANONICAL repo first: the verification recipe is the
+    // repo's CURRENT convention (orchestrator config), not spec-branch content — a spec branch
+    // cut before a recipe evolution (e.g. `prepare` being added) must still be graded by today's
+    // recipe, since that is what its merge target enforces. Without this, a stale branch recipe
+    // skips the build and the gate grades whatever compiled output LINGERS in the gitignored
+    // build dir (reset's `clean -fd` preserves it) — a stale-artifact green, the exact
+    // self-deception the build gate exists to prevent.
+    const recipe =
+      (await defaultAcceptanceRecipeResolver(this.deps.canonicalRepo)) ??
+      (await defaultAcceptanceRecipeResolver(worktreePath));
     if (recipe?.prepare) {
       output.appendLine(
         `▸ SP-${specNumber}: build gate — $ ${recipe.prepare}`,
