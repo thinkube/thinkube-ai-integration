@@ -12,6 +12,7 @@ import {
   createSdkAuditRunner,
   deriveVerificationCommands,
   fillProbeTemplate,
+  buildAuditPrompt,
   type AuditVerdict,
 } from "./auditorRunner";
 
@@ -35,6 +36,35 @@ const ACS = [
   { ordinal: 1, text: "AC one" },
   { ordinal: 2, text: "AC two" },
 ];
+
+// ── rubric parity: the SIGNED audit asks all four questions (drift guard) ─────
+// The skill-level /spec-prepare step-7 auditor and this server-side prompt are duplicated
+// definitions of one rubric, and they drifted once already: controllability was added to the
+// skill after a real run lost 4/4 of an AC's tests to an undefined arming seam, while this —
+// the AUTHORITATIVE copy, the only one whose verdicts get signed — kept asking only the first
+// two questions. Pin the four questions here so a future edit to one copy breaks loudly.
+
+test("buildAuditPrompt asks all four questions — human actor, deploy-circular, controllability, assessment-vs-verifiable", () => {
+  const prompt = buildAuditPrompt(
+    [{ ordinal: 1, text: "The gate refuses without a valid approval (with a secret configured)." }],
+    "## Design\n\nSome design.",
+  );
+  // Q1 — human-executed actor.
+  assert.match(prompt, /actor is a human/i);
+  // Q2 — deploy/merge-circular.
+  assert.match(prompt, /deploy\/merge-circular/i);
+  // Q3 — controllability: preconditions reachable through seams the Design NAMES;
+  // an unnamed seam is a Design defect the auditor must name in `why`.
+  assert.match(prompt, /CONTROLLABILITY/);
+  assert.match(prompt, /preconditions/i);
+  assert.match(prompt, /seams the Spec'?s Design\s+names/i);
+  assert.match(prompt, /Design defect/i);
+  // Q4 — the assessment-vs-verifiable classification.
+  assert.match(prompt, /`assessment`/);
+  assert.match(prompt, /`verifiable`/);
+  // And the spec body context travels so controllability is judgeable against the Design.
+  assert.match(prompt, /<spec>/);
+});
 
 // ── the auditor JUDGES only — verdict + env, run verbatim, no command authoring ──
 

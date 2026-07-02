@@ -140,8 +140,19 @@ export function computePassed(
  * Build the adversarial verifiability-audit prompt — the same judgment the `/spec-prepare` skill
  * runs at step 7, framed for a headless one-shot session that must answer in machine-readable JSON.
  * The auditor flags an AC `needs-reframe` when its verifying actor is a human (no AI evidence is
- * producible) or its check is deploy/merge-circular (it can't be checked before the gate it arms);
- * otherwise `verifiable` with the concrete proof command.
+ * producible), its check is deploy/merge-circular (it can't be checked before the gate it arms),
+ * or it fails **controllability** — the probe cannot establish the AC's preconditions using only
+ * what the Design defines (an undefined arming/config seam); otherwise `verifiable` with the
+ * concrete proof command.
+ *
+ * DRIFT GUARD: this rubric is DUPLICATED in the `/spec-prepare` skill's step 7
+ * (`plugins/tandem-methodology/skills/spec-prepare/SKILL.md` + `reference.md`, "the four
+ * questions") — and THIS copy is the authoritative one, because only this audit's verdicts get
+ * signed into `ac_verifications` (SP-6/1; the skill-level Task pass is interactive/advisory).
+ * They have drifted once already: the controllability question was added to the skill after a
+ * real run lost 4/4 of an AC's tests to an undefined arming seam ("with a secret configured" —
+ * how?), while this prompt kept asking only the first two questions, so the WEAKER rubric held
+ * the signing pen. When you change the questions in either place, change both.
  */
 export function buildAuditPrompt(acs: AuditAc[], specBody?: string): string {
   const acBlock = acs
@@ -157,7 +168,16 @@ export function buildAuditPrompt(acs: AuditAc[], specBody?: string): string {
     "human) reads. Flag a criterion `needs-reframe` when:",
     "  - its verifying actor is a human (it says a person looks/checks/confirms by eye), or",
     "  - its verification is deploy/merge-circular (it can only be checked after the very",
-    "    merge or deploy that the gate it arms gates).",
+    "    merge or deploy that the gate it arms gates), or",
+    "  - it fails CONTROLLABILITY: walk through the probe step by step — can it establish the",
+    "    criterion's preconditions and drive the behaviour using ONLY seams the Spec's Design",
+    "    names? If the criterion hinges on a state the Design never says how to reach (\"with X",
+    "    configured\" but never how one configures it, \"when the feature is enabled\" with no named",
+    "    enablement surface, an unnamed constant the assertion pivots on), the probe author must",
+    "    INVENT that seam and the implementer will invent a DIFFERENT one — a guaranteed red",
+    "    against a correct implementation. That is a Design defect: name the missing seam in `why`",
+    "    (the fix is naming it in the Design — a config env var, an injectable parameter, a setup",
+    "    call — then re-auditing).",
     "When a criterion CAN be judged before merge but no runnable command fits it (a prose / UX /",
     "skill / judgment AC), call it `assessment`: an independent assessor session will read the",
     "delivered artifact and grade it pass/fail with a rationale — this is DISTINCT from",
