@@ -367,6 +367,63 @@ test("REGRESSION: a body-only write_spec (no ac_verifications arg) does NOT trig
   assert.equal(doc!.frontmatter?.[AC_SIGNATURE_KEY], undefined);
 });
 
+test("REGRESSION: the skill's certify-only shape — write_spec {spec, ac_verifications} with NO body — certifies the existing on-disk body", async () => {
+  // /spec-prepare step 7 documents exactly this call: `write_spec { thinking_space, spec,
+  // ac_verifications }` — no body. The schema used to require body, so the documented shape
+  // failed with "argument body must be a string" (the SP-1/1 rebrand session hit it verbatim).
+  const store = freshStore();
+  // Step 4: the draft body is already on disk (no certification).
+  await dispatchTool(
+    "write_spec",
+    { spec: SPEC, body: BODY },
+    ctxWithAudit(store, () => {
+      throw new Error("must not run on the draft write");
+    }),
+    () => {},
+  );
+  // Step 7: certify-only — no body re-sent; the on-disk body is audited and signed as-is.
+  const res = (await dispatchTool(
+    "write_spec",
+    { spec: SPEC, ac_verifications: {} },
+    ctxWithAudit(store, fixedAuditRunner(PASS_VERDICTS)),
+    () => {},
+  )) as { ok: boolean };
+  assert.equal(res.ok, true);
+
+  const doc = await store.getFile(store.pathForSpecDoc(SPEC));
+  assert.match(doc!.body, /Demo Spec/, "the on-disk body is untouched");
+  assert.deepEqual(doc!.frontmatter!.ac_verifications, {
+    "1": { run: "npm test -- one", env: "local" },
+    "2": { run: "npm test -- two", env: "local" },
+  });
+  assert.equal(typeof doc!.frontmatter![AC_SIGNATURE_KEY], "string");
+  // And the signature binds to the EXISTING body's AC hash.
+  assert.equal(
+    verifyAcSignature(
+      acRequirementHash(doc!.body),
+      doc!.frontmatter!.ac_verifications as never,
+      doc!.frontmatter![AC_SIGNATURE_KEY],
+      SECRET,
+    ),
+    true,
+  );
+});
+
+test("REGRESSION: a body-less write_spec on a MISSING spec is refused (certify-only never creates)", async () => {
+  const store = freshStore();
+  await assert.rejects(
+    () =>
+      dispatchTool(
+        "write_spec",
+        { spec: SPEC, ac_verifications: {} },
+        ctxWithAudit(store, fixedAuditRunner(PASS_VERDICTS)),
+        () => {},
+      ),
+    /needs a `body` to create/,
+  );
+  assert.equal(await store.getFile(store.pathForSpecDoc(SPEC)), undefined);
+});
+
 test("REGRESSION: a SUBSEQUENT explicit certifying write_spec still signs — the draft path doesn't disable step 7", async () => {
   const store = freshStore();
   // Step 4: land the draft (no ac_verifications) — audit must not run.

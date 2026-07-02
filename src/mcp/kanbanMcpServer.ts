@@ -1036,7 +1036,11 @@ const TOOL_DEFS = [
         },
         ...THINKING_SPACE_PARAM,
       },
-      required: ["body"],
+      // `body` is optional for a CERTIFY-ONLY call on an EXISTING spec — the `/spec-prepare`
+      // step-7 shape (`write_spec { spec, ac_verifications }`) certifies the body already on
+      // disk without re-sending (and without a read-modify-write race). Creating a spec, or
+      // changing its text, still requires `body`; a body-less call on a missing spec is refused.
+      required: [],
       additionalProperties: false,
     },
   },
@@ -1408,7 +1412,8 @@ export async function dispatchTool(
       return writeSpec(
         store,
         composedSpecId,
-        asString(args, "body"),
+        // Optional: absent = certify-only against the existing on-disk body (step-7 shape).
+        optString(args, "body"),
         implementsRaw,
         // The closing gate's per-AC declaration (SP-tgzyfy). Forwarded verbatim — writeSpec
         // normalizes + serializes it to the `ac_verifications:` frontmatter; undefined leaves
@@ -2998,7 +3003,10 @@ async function uniqueSlug(
 async function writeSpec(
   store: ThinkubeStore,
   spec: string,
-  body: string,
+  /** The full replacement body — or `undefined` for a CERTIFY-ONLY call (`/spec-prepare` step 7's
+   *  `write_spec { spec, ac_verifications }` shape): the spec must already exist, and its on-disk
+   *  body is certified as-is, without the caller re-sending it (no read-modify-write race). */
+  body: string | undefined,
   implementsRef?: string,
   acVerifications?: Record<string, unknown>,
   repoRef?: string,
@@ -3011,10 +3019,15 @@ async function writeSpec(
    */
   audit?: { runner: AuditRunner; secret: Buffer; cwd: string },
 ): Promise<unknown> {
-  const trimmed = body.trim();
-  if (!trimmed) throw new Error("Spec body must not be empty.");
   const rel = store.pathForSpecDoc(spec);
   const existing = await store.getFile(rel);
+  if (body === undefined && existing === undefined) {
+    throw new Error(
+      `write_spec needs a \`body\` to create SP-${spec} — a body-less call only certifies an EXISTING spec's on-disk body (there is nothing at ${store.thinkubeDir}/${rel} yet).`,
+    );
+  }
+  const trimmed = (body ?? existing!.body).trim();
+  if (!trimmed) throw new Error("Spec body must not be empty.");
   // Structural gate (SP-th4wqf AC2): a newly-authored Spec body must carry all
   // four canonical sections (Acceptance Criteria / Constraints / Design / File
   // Structure Plan). Refuse a create whose body is missing any of them, naming
