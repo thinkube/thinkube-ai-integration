@@ -3048,15 +3048,33 @@ async function writeSpec(
     else delete fm.repo;
   }
   // `ac_verifications:` — the closing gate's per-AC declaration (SP-tgzyfy).
+  //
+  // Gated on CALLER INTENT (`acVerifications !== undefined`), not on body content: a plain
+  // `write_spec({ spec, body })` — the shape `/spec-prepare` step 4 uses to iteratively land a
+  // still-evolving draft AC list into the file mid-interview — must NOT trigger the full
+  // audit-and-sign machinery. That belongs only to step 7's EXPLICIT, deliberate certifying call
+  // (which the skill always shapes as `write_spec { …, ac_verifications: {…} }`), matching the
+  // legacy (signing-off) branch below, which already gates on this same param. Before this fix the
+  // trigger was `acItems.length > 0` — ANY body containing non-placeholder AC bullets — so an
+  // in-progress draft (Design/Constraints not even settled, no `repo:` resolved yet — a real spec
+  // hit this under a code-less Project umbrella) unconditionally spawned a live headless audit
+  // subprocess and BLOCKED the draft save entirely on its result.
+  //
+  // This narrowing does not reopen the provenance hole SP-6/1 closed: `readyGate` re-verifies the
+  // signature against the Spec's LIVE `acRequirementHash` at GATE-check time (not a write-time
+  // stamp), so a later un-certifying body-only edit is still caught there as `invalid-signature` —
+  // leaving an existing signed `ac_verifications` untouched on a draft write is safe by
+  // construction, never a forgeable path to Ready.
   if (audit !== undefined) {
     // ── Signing on (SP-6/1 / TEP-6): run the audit ourselves, sign only what it produced ──────
-    // The agent's `acVerifications` param is *ignored* here — signing a map the agent handed in
-    // would only prove the tool wrote it, not that the auditor ran. So when this Spec sets ACs we
-    // spawn the (injected) verifiability audit, honor its verdict, and sign on pass; an empty AC
+    // The agent's `acVerifications` VALUE is *ignored* here — signing a map the agent handed in
+    // would only prove the tool wrote it, not that the auditor ran; its mere PRESENCE is the
+    // "please certify now" signal (see the gating note above). So when the caller asks to certify
+    // we spawn the (injected) verifiability audit, honor its verdict, and sign on pass; an empty AC
     // set / a failing or errored audit refuses (nothing is persisted, since we throw before the
     // write). Editing a Spec that carries no ACs leaves any existing `ac_verifications` untouched.
     const acItems = acceptanceCriteriaItems(trimmed);
-    if (acItems.length > 0) {
+    if (acVerifications !== undefined && acItems.length > 0) {
       const result = await audit.runner({
         acs: acItems,
         specBody: trimmed,

@@ -80,21 +80,20 @@ function ctxWithAudit(store: ThinkubeStore, runner: AuditRunner) {
   };
 }
 
-/** Invoke the real `write_spec` tool. `acVerifications` exercises the legacy agent-supplied map. */
+/** Invoke the real `write_spec` tool with certification INTENT signaled — an `ac_verifications`
+ *  argument is always present (default `{}`), matching `/spec-prepare` step 7's shape and the
+ *  caller-intent gate this file's tests exercise. Its VALUE is irrelevant on the signing-on path
+ *  (the audit's own verdicts always win — see the NO-HONOR branch) — only its PRESENCE matters, per
+ *  the regression fixed below ("REGRESSION: a body-only write_spec…"). Pass a real map to test the
+ *  agent-supplied-map-is-ignored behavior specifically. */
 function callWriteSpec(
   store: ThinkubeStore,
   runner: AuditRunner,
-  acVerifications?: Record<string, unknown>,
+  acVerifications: Record<string, unknown> = {},
 ) {
   return dispatchTool(
     "write_spec",
-    {
-      spec: SPEC,
-      body: BODY,
-      ...(acVerifications !== undefined
-        ? { ac_verifications: acVerifications }
-        : {}),
-    },
+    { spec: SPEC, body: BODY, ac_verifications: acVerifications },
     ctxWithAudit(store, runner),
     () => {},
   );
@@ -291,7 +290,13 @@ test("write_spec runs the audit in the working repo resolved from repo:, not the
 
   await dispatchTool(
     "write_spec",
-    { spec: SPEC, body: BODY, implements: "TEP-1", repo: "Plat/extensions/demo-repo" },
+    {
+      spec: SPEC,
+      body: BODY,
+      implements: "TEP-1",
+      repo: "Plat/extensions/demo-repo",
+      ac_verifications: {},
+    },
     ctx as never,
     () => {},
   );
@@ -310,7 +315,7 @@ test("write_spec runs the audit in the working repo resolved from repo:, not the
   };
   await dispatchTool(
     "write_spec",
-    { spec: "1/2", body: BODY, implements: "TEP-1" },
+    { spec: "1/2", body: BODY, implements: "TEP-1", ac_verifications: {} },
     {
       env: { folders: [] } as never,
       thinkingSpaces: { resolve: () => store } as never,
@@ -321,4 +326,65 @@ test("write_spec runs the audit in the working repo resolved from repo:, not the
     () => {},
   );
   assert.equal(seenCwd2, store.workspaceRoot, "no repo: → audit in the thinking space repo");
+});
+
+// ── Caller-intent gating: a DRAFT body-only write must NOT trigger certification ──────────────
+// The live bug (TEP-1 "component rebranding", a project-scoped Spec): a plain write_spec({spec,
+// body}) call — the shape /spec-prepare step 4 uses to iteratively land a still-evolving AC
+// checklist into the file, mid-interview, well before step 7's explicit certifying pass — landed
+// non-placeholder AC bullets and unconditionally triggered the FULL audit-and-sign machinery
+// (a live headless subprocess spawn), which then failed ("audit produced no parseable verdicts")
+// and refused the ENTIRE draft save. The trigger must be caller INTENT (an `ac_verifications`
+// argument, any value — signing ignores its content) never body content alone.
+
+test("REGRESSION: a body-only write_spec (no ac_verifications arg) does NOT trigger the audit, even with non-empty ACs", async () => {
+  const store = freshStore();
+  let called = false;
+  const shouldNeverRun: AuditRunner = async () => {
+    called = true;
+    throw new Error("the audit must not run for a body-only draft write");
+  };
+
+  const res = (await dispatchTool(
+    "write_spec",
+    { spec: SPEC, body: BODY }, // no `ac_verifications` key at all — a plain draft landing
+    ctxWithAudit(store, shouldNeverRun),
+    () => {},
+  )) as { ok: boolean; acVerifications?: unknown };
+
+  assert.equal(called, false, "the audit runner must never be invoked");
+  assert.equal(res.ok, true, "the draft body must still save");
+  assert.equal(
+    res.acVerifications,
+    undefined,
+    "no certification is attempted or persisted for a body-only write",
+  );
+
+  const doc = await store.getFile(store.pathForSpecDoc(SPEC));
+  assert.ok(doc, "the spec doc is written");
+  assert.match(doc!.body, /Acceptance Criteria/);
+  assert.equal(doc!.frontmatter?.ac_verifications, undefined);
+  assert.equal(doc!.frontmatter?.[AC_SIGNATURE_KEY], undefined);
+});
+
+test("REGRESSION: a SUBSEQUENT explicit certifying write_spec still signs — the draft path doesn't disable step 7", async () => {
+  const store = freshStore();
+  // Step 4: land the draft (no ac_verifications) — audit must not run.
+  await dispatchTool(
+    "write_spec",
+    { spec: SPEC, body: BODY },
+    ctxWithAudit(store, () => {
+      throw new Error("must not run on the draft write");
+    }),
+    () => {},
+  );
+  // Step 7: the explicit certifying call, now with `ac_verifications` present.
+  await callWriteSpec(store, fixedAuditRunner(PASS_VERDICTS));
+
+  const doc = await store.getFile(store.pathForSpecDoc(SPEC));
+  assert.deepEqual(doc!.frontmatter!.ac_verifications, {
+    "1": { run: "npm test -- one", env: "local" },
+    "2": { run: "npm test -- two", env: "local" },
+  });
+  assert.equal(typeof doc!.frontmatter![AC_SIGNATURE_KEY], "string");
 });
