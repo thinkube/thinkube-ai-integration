@@ -12,6 +12,8 @@ import {
   createSdkAuditRunner,
   deriveVerificationCommands,
   fillProbeTemplate,
+  buildAuditPrompt,
+  parseAuditVerdicts,
   type AuditVerdict,
 } from "./auditorRunner";
 
@@ -35,6 +37,96 @@ const ACS = [
   { ordinal: 1, text: "AC one" },
   { ordinal: 2, text: "AC two" },
 ];
+
+// ── rubric parity: the SIGNED audit asks all four questions (drift guard) ─────
+// The skill-level /spec-prepare step-7 auditor and this server-side prompt are duplicated
+// definitions of one rubric, and they drifted once already: controllability was added to the
+// skill after a real run lost 4/4 of an AC's tests to an undefined arming seam, while this —
+// the AUTHORITATIVE copy, the only one whose verdicts get signed — kept asking only the first
+// two questions. Pin the four questions here so a future edit to one copy breaks loudly.
+
+test("buildAuditPrompt asks all four questions — human actor, deploy-circular, controllability, assessment-vs-verifiable", () => {
+  const prompt = buildAuditPrompt(
+    [{ ordinal: 1, text: "The gate refuses without a valid approval (with a secret configured)." }],
+    "## Design\n\nSome design.",
+  );
+  // Q1 — human-executed actor.
+  assert.match(prompt, /actor is a human/i);
+  // Q2 — deploy/merge-circular.
+  assert.match(prompt, /deploy\/merge-circular/i);
+  // Q3 — controllability: preconditions reachable through seams the Design NAMES;
+  // an unnamed seam is a Design defect the auditor must name in `why`.
+  assert.match(prompt, /CONTROLLABILITY/);
+  assert.match(prompt, /preconditions/i);
+  assert.match(prompt, /seams the Spec'?s Design\s+names/i);
+  assert.match(prompt, /Design defect/i);
+  // Q4 — the assessment-vs-verifiable classification.
+  assert.match(prompt, /`assessment`/);
+  assert.match(prompt, /`verifiable`/);
+  // And the spec body context travels so controllability is judgeable against the Design.
+  assert.match(prompt, /<spec>/);
+});
+
+// ── verdict parsing: bracket-bearing run commands must not shatter extraction ─
+// The SP-1/1 rebrand certification failed twice with "no parseable verdicts" even though the
+// auditor replied with a perfectly valid JSON array: the extractor scanned from the LAST `[`
+// and returned the first slice parsing as ANY array — and a verdict's own `run` command
+// contained bracket-indexing that is itself valid JSON (the live false winner was `[0]`), whose
+// lone non-object entry the validator then dropped. Any spec whose ACs demand `node -e`-style
+// JSON-inspection commands hit this 100% of the time.
+
+test("REGRESSION: verdicts whose run commands contain [0] / [\"key\"] / packages[''] parse intact", () => {
+  // Structurally the real failing reply: valid JSON array, bracket-indexing inside run strings.
+  const reply = JSON.stringify([
+    {
+      ordinal: 1,
+      verdict: "verifiable",
+      run: `node -e "const p=require('./package.json'),l=require('./package-lock.json');if(!(l.packages['']&&l.packages[''].name==='thinkube-tandem'))process.exit(1)"`,
+      env: "local",
+    },
+    {
+      ordinal: 2,
+      verdict: "verifiable",
+      run: `node -e "const m=require('./package.json').contributes.viewsContainers['activitybar'][0];if(m.title!=='Thinkube Tandem')process.exit(1)"`,
+      env: "local",
+    },
+    { ordinal: 3, verdict: "assessment", rationale: "prose quality" },
+    {
+      ordinal: 4,
+      verdict: "verifiable",
+      run: `node -e "const s=require('fs').readFileSync('dist/extension.js','utf8');if(!/exports[.\\s]/.test(s))process.exit(1)"`,
+      env: "local",
+    },
+  ]);
+  const v = parseAuditVerdicts(reply);
+  assert.equal(v.length, 4, "all four verdicts must survive extraction");
+  assert.equal(v[0].verdict, "verifiable");
+  assert.match(v[0].run ?? "", /packages\[''\]/);
+  assert.equal(v[2].verdict, "assessment");
+});
+
+test("parse: a fenced reply and a prose-wrapped reply still extract (tolerance preserved)", () => {
+  const arr = '[{"ordinal":1,"verdict":"verifiable","run":"npm test","env":"local"}]';
+  // fenced
+  const fenced = "Here are my verdicts:\n```json\n" + arr + "\n```\nDone.";
+  assert.equal(parseAuditVerdicts(fenced).length, 1);
+  // prose-wrapped, with a bracket-indexing decoy AFTER the real array — the object-bearing
+  // requirement keeps the decoy from winning.
+  const prose = `My verdicts follow.\n${arr}\nNote argv[0] is the binary.`;
+  const v = parseAuditVerdicts(prose);
+  assert.equal(v.length, 1);
+  assert.equal(v[0].run, "npm test");
+});
+
+test("parse failure now carries evidence: session id + a reply snippet (no more transcript archaeology)", async () => {
+  const runner = createSdkAuditRunner({
+    loadQuery: async () => fakeQuery("I could not decide on verdicts, sorry."),
+  });
+  const res = await runner({ acs: ACS, cwd: "/repo" });
+  assert.ok(res.error, "unparseable reply → error result");
+  assert.match(res.error!, /sess-1/);
+  assert.match(res.error!, /could not decide on verdicts/);
+});
 
 // ── the auditor JUDGES only — verdict + env, run verbatim, no command authoring ──
 

@@ -24,6 +24,7 @@ import {
   buildUnitDag,
   readyFrontier,
   buildWorkerPrompt,
+  disallowedToolsForRole,
   stripAcceptanceCriteria,
   stripSatisfies,
   extractNeedsInput,
@@ -64,11 +65,13 @@ import {
   validateDag,
   footprintGuard,
   footprintContainment,
+  codeReadFence,
   resolveFootprint,
   resolveRoleFootprint,
   normalizeFilePath,
   type ContainmentResult,
 } from "../methodology/parallelSlices";
+import { defaultAcceptanceRecipeResolver } from "./auditorRunner";
 import {
   startSession,
   appendSession,
@@ -76,6 +79,7 @@ import {
   markUnitDone,
   parkWorker,
   unparkWorker,
+  runningSessions,
 } from "./orchestratorSessions";
 
 /**
@@ -932,6 +936,56 @@ export class OrchestratorService {
       this.deps.baseDir,
       this.deps.thinkingSpaceRoot,
     );
+    // Worktree lifecycle (SP-6/7): a (re)dispatched Spec starts from a CLEAN tree — uncommitted
+    // leftovers of a prior run (a stale impl authored under an old contract, half-landed units)
+    // must never be graded as this run's work. Committed slices live on the branch and survive
+    // the reset. Guarded: skip when a session for this Spec is still live (a resident parked
+    // worker's in-flight edits) or a slice claims resume-commit (its uncommitted work is about
+    // to be landed, not re-authored).
+    const [wtTep, wtSp] = specNumber.split("/");
+    const specUnitPrefix = wtSp
+      ? `TEP-${wtTep}_SP-${wtSp}_`
+      : `SP-${specNumber}_`;
+    const specInFlight = runningSessions().some((id) =>
+      id.startsWith(specUnitPrefix),
+    );
+    if (!specInFlight && resumeCommit.size === 0) {
+      try {
+        await this.deps.worktrees.reset?.(
+          worktreePath,
+          this.deps.thinkingSpaceRoot,
+        );
+        output.appendLine(
+          `▸ SP-${specNumber}: worktree reset to the branch's committed state (fresh run).`,
+        );
+      } catch (err) {
+        output.appendLine(
+          `▸ SP-${specNumber}: worktree reset skipped (${(err as Error).message}).`,
+        );
+      }
+    }
+    // Structural independence (SP-6/7): `role: test` units run in the Spec's TESTER worktree — a
+    // detached snapshot at the branch's committed HEAD, where the code workers' in-progress
+    // modifications simply do not exist. Created/re-snapshotted per run; the finished probes are
+    // copied into the code worktree before the closing gate runs them.
+    let testerPath: string | undefined;
+    if (dag.some((u) => (u.role ?? "code") === "test")) {
+      try {
+        testerPath = await this.deps.worktrees.createTester?.(
+          this.deps.canonicalRepo,
+          specNumber,
+          this.deps.baseDir,
+        );
+      } catch (err) {
+        output.appendLine(
+          `▸ SP-${specNumber}: tester worktree unavailable (${(err as Error).message}) — test units will run in the code worktree.`,
+        );
+      }
+      if (testerPath)
+        output.appendLine(
+          `▸ SP-${specNumber}: tester snapshot at ${testerPath} (base commit; implementation-in-progress absent by construction).`,
+        );
+    }
     const limit = Math.max(1, Math.floor(cap));
     output.appendLine(
       `▸ SP-${specNumber}: scheduling ${dag.length} unit(s) over cap ${limit} in ${worktreePath}`,
@@ -946,7 +1000,14 @@ export class OrchestratorService {
     // refuses ONLY a change outside this union. A sibling's in-footprint change is in the union
     // whether that sibling is still running OR has already finished — which fixes the SP-6 failure
     // where a FINISHED sibling's legitimate change was misattributed to a running unit and reverted.
-    const unionFootprint = [...new Set(dag.flatMap((u) => u.footprint))];
+    // SP-6/7: role-resolve each unit's footprint into the union — a `code` unit contributes NO
+    // acceptance path (resolveRoleFootprint strips it), a `test` unit contributes its held-out probe.
+    // So the union's acceptance paths come ONLY from their real role:test owners: sibling probes stay
+    // exempt (concurrent held-out authors don't revert each other) while a code-author's acceptance
+    // write — even one it brazenly declared in footprint — is NOT in the union and is caught.
+    const unionFootprint = [
+      ...new Set(dag.flatMap((u) => resolveRoleFootprint(u.role, u.footprint))),
+    ];
     const running = new Map<string, Promise<UnitDone>>();
     const parked = new Set<string>(); // dispatched but suspended awaiting an answer (off the cap)
     let wake: () => void = () => {};
@@ -999,10 +1060,14 @@ export class OrchestratorService {
           // above). The post-tool whole-tree backstop refuses only a change OUTSIDE this union —
           // a sibling's in-footprint change (running OR finished) is always in the union, so it is
           // never misattributed to this unit and reverted (the SP-6 mutual-destruction fix).
+          // SP-6/7 structural independence: a `role: test` unit's cwd is the TESTER snapshot —
+          // the in-progress implementation is not in its tree, by construction.
           this.dispatchUnit(
             u,
             specNumber,
-            worktreePath,
+            (u.role ?? "code") === "test" && testerPath
+              ? testerPath
+              : worktreePath,
             onPark,
             unionFootprint,
           ),
@@ -1181,6 +1246,7 @@ export class OrchestratorService {
         state,
         blockSlice,
         result,
+        testerPath,
       );
       for (const [h, ords] of green) greenByGate.set(h, ords);
     } else if (landed.size > 0) {
@@ -1344,11 +1410,76 @@ export class OrchestratorService {
       fault?: Fault,
     ) => Promise<void>,
     result: SpecRunResult,
+    testerPath?: string,
   ): Promise<Map<string, number[]>> {
     const { output, store } = this.deps;
     const green = new Map<string, number[]>();
     const specDoc = await store.getFile(store.pathForSpecDoc(specNumber));
     const verifs = parseAcVerifications(specDoc?.frontmatter?.ac_verifications);
+
+    // SP-6/7 structural independence: the held-out probes were authored in the TESTER snapshot —
+    // merge them into the code worktree so the gate grades the real implementation with them.
+    // Copy exactly the test units' declared footprints (nothing else can cross over).
+    if (testerPath && testerPath !== worktreePath) {
+      const probeFiles = [
+        ...new Set(
+          [...unitsBySlice.values()]
+            .flat()
+            .filter((u) => (u.role ?? "code") === "test")
+            .flatMap((u) => u.footprint ?? [])
+            .map(normalizeFilePath),
+        ),
+      ];
+      let copied = 0;
+      for (const rel of probeFiles) {
+        try {
+          const src = path.join(testerPath, rel);
+          const dst = path.join(worktreePath, rel);
+          await fs.promises.mkdir(path.dirname(dst), { recursive: true });
+          await fs.promises.copyFile(src, dst);
+          copied++;
+        } catch {
+          // Absent probe (its unit failed / not authored) — the gate's missing-AC path reports it.
+        }
+      }
+      if (copied > 0)
+        output.appendLine(
+          `▸ SP-${specNumber}: merged ${copied} acceptance test(s) from the tester snapshot into the code worktree.`,
+        );
+    }
+
+    // Build gate (SP-6/7): the repo's declared `acceptanceProbe.prepare` (conventions.json) runs
+    // ONCE before the per-AC commands — e.g. compile the test tree so `node --test out-test/…`
+    // has its input. A failure is a real red (the assembled slice does not build): every landed
+    // slice goes requires-attention with the compiler output. Tech-agnostic: no `prepare`
+    // declared ⇒ nothing runs.
+    // The recipe is resolved against the CANONICAL repo first: the verification recipe is the
+    // repo's CURRENT convention (orchestrator config), not spec-branch content — a spec branch
+    // cut before a recipe evolution (e.g. `prepare` being added) must still be graded by today's
+    // recipe, since that is what its merge target enforces. Without this, a stale branch recipe
+    // skips the build and the gate grades whatever compiled output LINGERS in the gitignored
+    // build dir (reset's `clean -fd` preserves it) — a stale-artifact green, the exact
+    // self-deception the build gate exists to prevent.
+    const recipe =
+      (await defaultAcceptanceRecipeResolver(this.deps.canonicalRepo)) ??
+      (await defaultAcceptanceRecipeResolver(worktreePath));
+    if (recipe?.prepare) {
+      output.appendLine(
+        `▸ SP-${specNumber}: build gate — $ ${recipe.prepare}`,
+      );
+      const prep = await this.runPrepare(recipe.prepare, worktreePath);
+      if (!prep.ok) {
+        const diagnosis =
+          `The assembled change does not build: the repo's acceptance prepare step failed.\n` +
+          `$ ${recipe.prepare}\n${prep.output.slice(-4000)}`;
+        for (const s of slices)
+          if (landed.has(s.handle)) await blockSlice(s.handle, diagnosis);
+        output.appendLine(
+          `⚑ SP-${specNumber}: build gate FAILED → landed slices require attention (per-AC runs skipped).`,
+        );
+        return green;
+      }
+    }
 
     if (verifs.length === 0) {
       // No declaration ⇒ the closing gate cannot run. NO SKIP: every landed slice →
@@ -1479,6 +1610,7 @@ export class OrchestratorService {
           .map((r) => `AC #${r.ac}: ${r.evidence}`)
           .join("\n\n");
         let fault: Fault = "both";
+        let rationale = "";
         try {
           const judgment = await judge(
             {
@@ -1489,6 +1621,7 @@ export class OrchestratorService {
             `${why}\n\n${failEvidence}`,
           );
           fault = judgment.fault;
+          rationale = (judgment.rationale ?? "").trim();
           output.appendLine(
             `⚖ ${s.handle}: judged fault = ${judgment.fault} — ${judgment.rationale}`,
           );
@@ -1499,9 +1632,17 @@ export class OrchestratorService {
           );
         }
         for (const n of failedAcs) routes.set(n, fault);
+        // The diagnosis lands on the slice and is INJECTED INTO THE REWORK ROUND's worker prompt
+        // (the slice body travels there) — so it must carry what actually failed: the judge's
+        // rationale and the failing evidence. Without them the re-author starts from zero and the
+        // rework round is the same experiment re-rolled ("see DELIVERY.md" is a dead pointer for
+        // a worker — DELIVERY lives in the thinking space, outside its worktree).
         await blockSlice(
           s.handle,
-          `Closing gate: ${why}. Judged fault: ${fault}. The acceptance criteria were NOT verified green — see DELIVERY.md for per-AC evidence.`,
+          `Closing gate: ${why}. Judged fault: ${fault}${rationale ? ` — ${rationale}` : ""}.` +
+            (failEvidence
+              ? `\n\nFailing evidence:\n${failEvidence.slice(0, 2000)}`
+              : ""),
           fault,
         );
         output.appendLine(
@@ -1624,9 +1765,18 @@ export class OrchestratorService {
     unionFootprint?: string[],
     baseline?: string[],
   ): Promise<WorkerResult> {
+    const isTest = (unit.role ?? "code") === "test";
+    // SP-6/7 structural independence: for a `role: test` unit, `cwd` IS the tester snapshot (a
+    // detached base-commit worktree) — one directory to read AND write, with the in-progress
+    // implementation absent by construction. No read fence, no base-dir split. It has no Bash to
+    // poke the toolchain, so inject the repo's test-framework convention into its prompt.
+    const testConvention = isTest
+      ? await this.resolveTestConvention(cwd)
+      : undefined;
     const prompt = buildWorkerPrompt(unit, specNumber, {
       specBody: this.promptCtx.specBody,
       sliceBody: this.promptCtx.sliceBodies.get(unit.slice),
+      testConvention,
     });
     let success = false;
     let sessionId: string | undefined;
@@ -1665,6 +1815,11 @@ export class OrchestratorService {
         options: {
           cwd,
           permissionMode: "bypassPermissions",
+          // SP-6/7: scope the worker's tools by role. A held-out `role: test` worker loses
+          // Bash/Grep/Glob/Read/web/Task — it cannot see the implementation, other workers' session
+          // transcripts, or the fence source, and cannot route a write through Bash. The restriction
+          // is structural and never announced (the worker stays unaware of the independence boundary).
+          disallowedTools: disallowedToolsForRole(unit.role),
           // Aborting this stops the query the moment the post-tool containment check fires (AC3).
           abortController: abort,
           hooks: {
@@ -1679,24 +1834,33 @@ export class OrchestratorService {
                       tool_name?: string;
                       tool_input?: unknown;
                     };
+                    // Screen an Edit/Write against the unit's ROLE-effective footprint (SP-6/7): a
+                    // `test` unit may only touch its held-out `acceptance/` probe; a `code` unit can
+                    // never touch `acceptance/` — so the two hands can't reach into each other's work.
                     const d = footprintGuard(
                       inp.tool_name ?? "",
                       inp.tool_input,
-                      // Screen an Edit/Write against the unit's ROLE-effective footprint (SP-6/7): a
-                      // `test` unit may only touch its held-out `acceptance/` probe; a `code` unit can
-                      // never touch `acceptance/` — so the two hands can't reach into each other's work.
                       resolveRoleFootprint(unit.role, unit.footprint),
                       cwd,
                     );
-                    if (d.allow) return {};
+                    // SP-6/7 reverse-leak closure: a `role: code` worker must not read the grading
+                    // probes once they've been copied into the code worktree (rework rounds) — deny
+                    // a Read of an acceptance-evidence path, tersely. A test unit needs no read
+                    // fence at all: its cwd is the tester snapshot (nothing to hide in its tree).
+                    const r = !isTest
+                      ? codeReadFence(inp.tool_name ?? "", inp.tool_input, cwd)
+                      : ({ allow: true } as const);
+                    if (d.allow && r.allow) return {};
+                    const deny = !d.allow ? d : r;
+                    if (deny.allow) return {};
                     this.deps.output.appendLine(
-                      `  ⛔ [${unit.id}] denied: ${d.reason.split("\n")[0]}`,
+                      `  ⛔ [${unit.id}] denied: ${deny.reason.split("\n")[0]}`,
                     );
                     return {
                       hookSpecificOutput: {
                         hookEventName: "PreToolUse" as const,
                         permissionDecision: "deny" as const,
-                        permissionDecisionReason: d.reason,
+                        permissionDecisionReason: deny.reason,
                       },
                     };
                   },
@@ -1719,10 +1883,17 @@ export class OrchestratorService {
                     // change to a unit, so a change is a violation only when it falls outside ALL
                     // declared territory. A sibling's in-footprint change — running OR finished — is in
                     // the union and exempt; `baseline` additionally exempts pre-existing dirt.
+                    // SP-6/7: pass THIS unit's own role-effective footprint as its territory, and the
+                    // run-level union as `running`. A non-acceptance sibling change stays exempt (union);
+                    // a held-out acceptance probe is exempt ONLY for the unit that owns it — so a
+                    // code-author can't slip its own grader in through the shared-tree union.
                     const verdict = await this.containmentCheck(
                       cwd,
-                      unionFootprint ?? unit.footprint,
-                      { baseline: baseline ?? [] },
+                      resolveRoleFootprint(unit.role, unit.footprint),
+                      {
+                        running: unionFootprint ?? unit.footprint,
+                        baseline: baseline ?? [],
+                      },
                     );
                     if (verdict.ok) return {};
                     containmentReason = verdict.reason;
@@ -1805,7 +1976,7 @@ export class OrchestratorService {
   private containmentCheck(
     cwd: string,
     footprint: string[],
-    ctx?: { baseline?: string[] },
+    ctx?: { baseline?: string[]; running?: string[] },
   ): Promise<ContainmentResult> {
     return (
       this.deps.containmentCheck ??
@@ -1826,7 +1997,7 @@ export class OrchestratorService {
   private async defaultContainmentCheck(
     cwd: string,
     footprint: string[],
-    ctx?: { baseline?: string[] },
+    ctx?: { baseline?: string[]; running?: string[] },
   ): Promise<ContainmentResult> {
     const porcelainRaw = await this.gitPorcelain(cwd);
     // Atomic-write scaffolding (`<file>.tmp.<pid>.<hash>`) is a transient artifact of editing an
@@ -1837,12 +2008,14 @@ export class OrchestratorService {
       .split("\n")
       .filter((line) => !/\.tmp\.\d+\.[0-9a-f]+$/.test(line))
       .join("\n");
-    // AC4: `footprint` is the run-level UNION of declared footprints, so a sibling's in-footprint
-    // change (running OR finished) is in-bounds; `baseline` (paths already dirty at this unit's
-    // start) exempts pre-existing dirt outside the union. The revert below only ever touches a
-    // true out-of-union change.
+    // SP-6/7: `footprint` is THIS unit's own (role-effective) territory; `running` is the run-level
+    // UNION (every dispatched unit, finished or in-flight). A non-acceptance sibling change is
+    // exempt via the union; a held-out `acceptance/` probe is exempt ONLY via `footprint` (its owner,
+    // the role: test unit) — so a code-author can't author the grader through the shared tree.
+    // `baseline` exempts pre-existing dirt. The revert below only touches a true out-of-bounds change.
     const verdict = footprintContainment(porcelain, footprint, {
       baseline: ctx?.baseline,
+      running: ctx?.running,
     });
     if (!verdict.ok)
       await this.revertPaths(
@@ -1852,10 +2025,48 @@ export class OrchestratorService {
     return verdict;
   }
 
-  /** The worktree diff as `git status --porcelain` text; "" on any git error (degrades to no diff). */
+  /**
+   * Run the repo's acceptance `prepare` step (conventions.json) once in the code worktree — the
+   * build gate before the per-AC probe commands (SP-6/7). Bounded (10 min), non-interactive,
+   * output captured for the requires-attention diagnosis on failure.
+   */
+  private runPrepare(
+    command: string,
+    cwd: string,
+  ): Promise<{ ok: boolean; output: string }> {
+    return new Promise((resolve) => {
+      const proc = spawn("bash", ["-c", command], {
+        cwd,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let out = "";
+      const cap = (d: Buffer) => (out += d.toString());
+      proc.stdout?.on("data", cap);
+      proc.stderr?.on("data", cap);
+      const timer = setTimeout(() => proc.kill("SIGKILL"), 600_000);
+      proc.on("error", (err) => {
+        clearTimeout(timer);
+        resolve({ ok: false, output: `${out}\n${err.message}` });
+      });
+      proc.on("close", (code) => {
+        clearTimeout(timer);
+        resolve({ ok: code === 0, output: out });
+      });
+    });
+  }
+
+  /** The worktree diff as `git status --porcelain` text; "" on any git error (degrades to no diff).
+   *  `--untracked-files=all` lists each NEW file individually — without it git collapses a brand-new
+   *  untracked directory to just the dir (`?? src/acceptance/`), which the containment check can't
+   *  match to a file footprint (`src/acceptance/AC-1.test.ts`), so it wrongly reverts the first file
+   *  written into any new dir — e.g. every held-out `acceptance/` probe (SP-6/7). */
   private gitPorcelain(cwd: string): Promise<string> {
     return new Promise<string>((resolve) => {
-      const proc = spawn("git", ["status", "--porcelain"], { cwd });
+      const proc = spawn(
+        "git",
+        ["status", "--porcelain", "--untracked-files=all"],
+        { cwd },
+      );
       let out = "";
       proc.stdout?.on("data", (d: Buffer) => (out += d.toString()));
       proc.on("error", () => resolve(""));
@@ -1875,6 +2086,26 @@ export class OrchestratorService {
     const porcelain = await this.gitPorcelain(cwd);
     const verdict = footprintContainment(porcelain, []);
     return verdict.ok ? [] : verdict.violations.map((v) => v.file);
+  }
+
+  /**
+   * A concise test-framework hint for a held-out `role: test` worker — which has no Read/Bash to
+   * discover the repo's conventions — derived from the repo's acceptance-probe recipe
+   * (`.tandem/conventions.json`, via {@link defaultAcceptanceRecipeResolver}). Lets the worker author
+   * a runnable test purely from its prompt. Undefined when the repo declares no recipe (best-effort).
+   */
+  private async resolveTestConvention(cwd: string): Promise<string | undefined> {
+    try {
+      const recipe = await defaultAcceptanceRecipeResolver(cwd);
+      if (!recipe) return undefined;
+      return (
+        `author your test file to the \`${recipe.sourcePath}\` convention so this command runs it: ` +
+        `\`${recipe.run}\` (its {spec}/{ac} slots are already filled for your unit's path). Use the ` +
+        `test framework that command implies (e.g. \`node --test\` → node:test, \`pytest\` → pytest).`
+      );
+    } catch {
+      return undefined;
+    }
   }
 
   /**

@@ -1055,7 +1055,11 @@ const TOOL_DEFS = [
         },
         ...THINKING_SPACE_PARAM,
       },
-      required: ["body"],
+      // `body` is optional for a CERTIFY-ONLY call on an EXISTING spec — the `/spec-prepare`
+      // step-7 shape (`write_spec { spec, ac_verifications }`) certifies the body already on
+      // disk without re-sending (and without a read-modify-write race). Creating a spec, or
+      // changing its text, still requires `body`; a body-less call on a missing spec is refused.
+      required: [],
       additionalProperties: false,
     },
   },
@@ -1120,6 +1124,11 @@ const TOOL_DEFS = [
           items: { type: "integer", minimum: 1 },
           description:
             "Re-cut (SP-th4wqd): REPLACE the 1-based AC ordinals this slice delivers. Omit to leave unchanged; pass `[]` to clear.",
+        },
+        contract: {
+          type: "string",
+          description:
+            "Re-cut: REPLACE the slice's design-time contract (SP-6/3 — the shared interface, compilable signatures, injected into every worker's prompt). Omit to leave unchanged. A re-scope that changes the seam must revise the contract here, never by hand-editing frontmatter.",
         },
         work_units: {
           type: "array",
@@ -1446,7 +1455,8 @@ export async function dispatchTool(
       return writeSpec(
         store,
         composedSpecId,
-        asString(args, "body"),
+        // Optional: absent = certify-only against the existing on-disk body (step-7 shape).
+        optString(args, "body"),
         implementsRaw,
         // The closing gate's per-AC declaration (SP-tgzyfy). Forwarded verbatim — writeSpec
         // normalizes + serializes it to the `ac_verifications:` frontmatter; undefined leaves
@@ -1495,6 +1505,7 @@ export async function dispatchTool(
           work_units: Array.isArray(args.work_units)
             ? (args.work_units as Frontmatter["work_units"])
             : undefined,
+          contract: optString(args, "contract"),
         },
       );
     case "write_tep": {
@@ -3228,7 +3239,10 @@ async function uniqueSlug(
 async function writeSpec(
   store: ThinkubeStore,
   spec: string,
-  body: string,
+  /** The full replacement body — or `undefined` for a CERTIFY-ONLY call (`/spec-prepare` step 7's
+   *  `write_spec { spec, ac_verifications }` shape): the spec must already exist, and its on-disk
+   *  body is certified as-is, without the caller re-sending it (no read-modify-write race). */
+  body: string | undefined,
   implementsRef?: string,
   acVerifications?: Record<string, unknown>,
   repoRef?: string,
@@ -3241,10 +3255,15 @@ async function writeSpec(
    */
   audit?: { runner: AuditRunner; secret: Buffer; cwd: string },
 ): Promise<unknown> {
-  const trimmed = body.trim();
-  if (!trimmed) throw new Error("Spec body must not be empty.");
   const rel = store.pathForSpecDoc(spec);
   const existing = await store.getFile(rel);
+  if (body === undefined && existing === undefined) {
+    throw new Error(
+      `write_spec needs a \`body\` to create SP-${spec} — a body-less call only certifies an EXISTING spec's on-disk body (there is nothing at ${store.thinkubeDir}/${rel} yet).`,
+    );
+  }
+  const trimmed = (body ?? existing!.body).trim();
+  if (!trimmed) throw new Error("Spec body must not be empty.");
   // Structural gate (SP-th4wqf AC2): a newly-authored Spec body must carry all
   // four canonical sections (Acceptance Criteria / Constraints / Design / File
   // Structure Plan). Refuse a create whose body is missing any of them, naming
@@ -3278,15 +3297,33 @@ async function writeSpec(
     else delete fm.repo;
   }
   // `ac_verifications:` — the closing gate's per-AC declaration (SP-tgzyfy).
+  //
+  // Gated on CALLER INTENT (`acVerifications !== undefined`), not on body content: a plain
+  // `write_spec({ spec, body })` — the shape `/spec-prepare` step 4 uses to iteratively land a
+  // still-evolving draft AC list into the file mid-interview — must NOT trigger the full
+  // audit-and-sign machinery. That belongs only to step 7's EXPLICIT, deliberate certifying call
+  // (which the skill always shapes as `write_spec { …, ac_verifications: {…} }`), matching the
+  // legacy (signing-off) branch below, which already gates on this same param. Before this fix the
+  // trigger was `acItems.length > 0` — ANY body containing non-placeholder AC bullets — so an
+  // in-progress draft (Design/Constraints not even settled, no `repo:` resolved yet — a real spec
+  // hit this under a code-less Project umbrella) unconditionally spawned a live headless audit
+  // subprocess and BLOCKED the draft save entirely on its result.
+  //
+  // This narrowing does not reopen the provenance hole SP-6/1 closed: `readyGate` re-verifies the
+  // signature against the Spec's LIVE `acRequirementHash` at GATE-check time (not a write-time
+  // stamp), so a later un-certifying body-only edit is still caught there as `invalid-signature` —
+  // leaving an existing signed `ac_verifications` untouched on a draft write is safe by
+  // construction, never a forgeable path to Ready.
   if (audit !== undefined) {
     // ── Signing on (SP-6/1 / TEP-6): run the audit ourselves, sign only what it produced ──────
-    // The agent's `acVerifications` param is *ignored* here — signing a map the agent handed in
-    // would only prove the tool wrote it, not that the auditor ran. So when this Spec sets ACs we
-    // spawn the (injected) verifiability audit, honor its verdict, and sign on pass; an empty AC
+    // The agent's `acVerifications` VALUE is *ignored* here — signing a map the agent handed in
+    // would only prove the tool wrote it, not that the auditor ran; its mere PRESENCE is the
+    // "please certify now" signal (see the gating note above). So when the caller asks to certify
+    // we spawn the (injected) verifiability audit, honor its verdict, and sign on pass; an empty AC
     // set / a failing or errored audit refuses (nothing is persisted, since we throw before the
     // write). Editing a Spec that carries no ACs leaves any existing `ac_verifications` untouched.
     const acItems = acceptanceCriteriaItems(trimmed);
-    if (acItems.length > 0) {
+    if (acVerifications !== undefined && acItems.length > 0) {
       const result = await audit.runner({
         acs: acItems,
         specBody: trimmed,
@@ -3578,7 +3615,24 @@ export async function writeTep(
         teps: projectTeps(thinkingSpaceRoot, p.product, p.id),
       }))
     : [];
-  const dest = resolveTepWritePath(tepId, projects);
+  // If the CALLER's own `thinking_space:` argument already resolved `store` to a
+  // specific project's own store (its root IS `<product>/projects/<id>`), that
+  // project is authoritative for its own TEP ids — a bare "TEP-1" existing in some
+  // OTHER, unrelated project must never veto this write (TEP numbers are scoped
+  // per-project, exactly like Spec numbers are scoped per-TEP; see
+  // `resolveTepWritePath`'s doc for the full rationale).
+  const callerProject = thinkingSpaceRoot
+    ? projects.find(
+        (p) =>
+          path.resolve(store.workspaceRoot) ===
+          path.resolve(thinkingSpaceRoot, p.product, "projects", p.id),
+      )
+    : undefined;
+  const dest = resolveTepWritePath(
+    tepId,
+    projects,
+    callerProject && { product: callerProject.product, id: callerProject.id },
+  );
   if (dest.kind === "refuse") {
     // Ambiguous promotion home — refuse rather than minting a third copy. The
     // message names `promote_tep`, the tool that owns the single-home invariant.

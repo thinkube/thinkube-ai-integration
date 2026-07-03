@@ -140,8 +140,19 @@ export function computePassed(
  * Build the adversarial verifiability-audit prompt — the same judgment the `/spec-prepare` skill
  * runs at step 7, framed for a headless one-shot session that must answer in machine-readable JSON.
  * The auditor flags an AC `needs-reframe` when its verifying actor is a human (no AI evidence is
- * producible) or its check is deploy/merge-circular (it can't be checked before the gate it arms);
- * otherwise `verifiable` with the concrete proof command.
+ * producible), its check is deploy/merge-circular (it can't be checked before the gate it arms),
+ * or it fails **controllability** — the probe cannot establish the AC's preconditions using only
+ * what the Design defines (an undefined arming/config seam); otherwise `verifiable` with the
+ * concrete proof command.
+ *
+ * DRIFT GUARD: this rubric is DUPLICATED in the `/spec-prepare` skill's step 7
+ * (`plugins/tandem-methodology/skills/spec-prepare/SKILL.md` + `reference.md`, "the four
+ * questions") — and THIS copy is the authoritative one, because only this audit's verdicts get
+ * signed into `ac_verifications` (SP-6/1; the skill-level Task pass is interactive/advisory).
+ * They have drifted once already: the controllability question was added to the skill after a
+ * real run lost 4/4 of an AC's tests to an undefined arming seam ("with a secret configured" —
+ * how?), while this prompt kept asking only the first two questions, so the WEAKER rubric held
+ * the signing pen. When you change the questions in either place, change both.
  */
 export function buildAuditPrompt(acs: AuditAc[], specBody?: string): string {
   const acBlock = acs
@@ -157,7 +168,16 @@ export function buildAuditPrompt(acs: AuditAc[], specBody?: string): string {
     "human) reads. Flag a criterion `needs-reframe` when:",
     "  - its verifying actor is a human (it says a person looks/checks/confirms by eye), or",
     "  - its verification is deploy/merge-circular (it can only be checked after the very",
-    "    merge or deploy that the gate it arms gates).",
+    "    merge or deploy that the gate it arms gates), or",
+    "  - it fails CONTROLLABILITY: walk through the probe step by step — can it establish the",
+    "    criterion's preconditions and drive the behaviour using ONLY seams the Spec's Design",
+    "    names? If the criterion hinges on a state the Design never says how to reach (\"with X",
+    "    configured\" but never how one configures it, \"when the feature is enabled\" with no named",
+    "    enablement surface, an unnamed constant the assertion pivots on), the probe author must",
+    "    INVENT that seam and the implementer will invent a DIFFERENT one — a guaranteed red",
+    "    against a correct implementation. That is a Design defect: name the missing seam in `why`",
+    "    (the fix is naming it in the Design — a config env var, an injectable parameter, a setup",
+    "    call — then re-auditing).",
     "When a criterion CAN be judged before merge but no runnable command fits it (a prose / UX /",
     "skill / judgment AC), call it `assessment`: an independent assessor session will read the",
     "delivered artifact and grade it pass/fail with a rationale — this is DISTINCT from",
@@ -231,11 +251,42 @@ export function parseAuditVerdicts(text: string): AuditVerdict[] {
   return out;
 }
 
-/** Extract the last top-level JSON array from arbitrary text (handles a ```json fence or prose
- *  around it). Returns the parsed value, or `null` when no array parses. */
+/** Extract the auditor's top-level JSON array from arbitrary text (handles a ```json fence or
+ *  prose around it). Returns the parsed value, or `null` when no array parses.
+ *
+ *  Ordering matters and was a live bug (the SP-1/1 rebrand certification): the old
+ *  implementation went straight to a scan from the LAST `[` outward and returned the first slice
+ *  that parsed as ANY array — but a verdict's own `run` command can contain bracket-indexing
+ *  that is itself valid JSON (`[0]`, `["activitybar"]`, `packages[""]`), and one of those beat
+ *  the real verdict array every time the audited spec's ACs demanded `node -e`-style commands.
+ *  So: (1) a compliant reply — the prompt demands "ONLY a JSON array" — is tried WHOLE first;
+ *  (2) then the content of a ```fence```; (3) only then the bracket scan, and a scan candidate
+ *  must contain at least one OBJECT element (verdicts are objects; `parseAuditVerdicts` drops
+ *  everything else anyway), so an indexing fragment inside a command string can never win. */
 function extractJsonArray(text: string): unknown {
   if (!text) return null;
-  // Scan from the last `[` outward so a fenced/last array wins over an example earlier in prose.
+  // (1) The compliant happy path: the whole (trimmed) reply IS the array.
+  const whole = text.trim();
+  if (whole.startsWith("[")) {
+    try {
+      const v = JSON.parse(whole);
+      if (Array.isArray(v)) return v;
+    } catch {
+      /* fall through to the fence / scan paths */
+    }
+  }
+  // (2) A fenced reply: take the LAST ``` block (the answer, not an example quoted earlier).
+  const fences = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)];
+  for (let i = fences.length - 1; i >= 0; i--) {
+    try {
+      const v = JSON.parse(fences[i][1].trim());
+      if (Array.isArray(v)) return v;
+    } catch {
+      /* not this fence */
+    }
+  }
+  // (3) Prose around the array: scan from the last `[` outward (a trailing real answer beats an
+  // example earlier in prose), but only accept an array carrying at least one object element.
   const starts: number[] = [];
   for (let i = 0; i < text.length; i++) if (text[i] === "[") starts.push(i);
   for (let s = starts.length - 1; s >= 0; s--) {
@@ -245,7 +296,11 @@ function extractJsonArray(text: string): unknown {
       if (text[e] !== "]") continue;
       try {
         const v = JSON.parse(text.slice(start, e + 1));
-        if (Array.isArray(v)) return v;
+        if (
+          Array.isArray(v) &&
+          v.some((el) => el !== null && typeof el === "object")
+        )
+          return v;
       } catch {
         /* try a shorter close */
       }
@@ -307,6 +362,10 @@ export interface AcceptanceRecipe {
   sourcePath: string;
   /** How the closing gate runs it (the auditor fills this into `ac_verifications.run`). */
   run: string;
+  /** Optional BUILD step the closing gate runs ONCE (per slice completion) before the per-AC `run`
+   *  commands — e.g. `npx tsc -p tsconfig.test.json` for a compiled language whose `run` targets
+   *  compiled output. A repo whose probes run from source (pytest, cargo test) declares none. */
+  prepare?: string;
 }
 
 /** Fill `{spec}`/`{ac}` in an acceptance-probe template. `spec` is sanitized to a path-safe token
@@ -343,8 +402,13 @@ export async function defaultAcceptanceRecipeResolver(
       p.sourcePath.trim() &&
       typeof p.run === "string" &&
       p.run.trim()
-    )
-      return { sourcePath: p.sourcePath.trim(), run: p.run.trim() };
+    ) {
+      const prepare =
+        typeof p.prepare === "string" && p.prepare.trim()
+          ? p.prepare.trim()
+          : undefined;
+      return { sourcePath: p.sourcePath.trim(), run: p.run.trim(), prepare };
+    }
     return undefined;
   } catch {
     return undefined;
@@ -457,13 +521,21 @@ export function createSdkAuditRunner(deps: SdkAuditDeps = {}): AuditRunner {
       };
 
     const verdicts = parseAuditVerdicts(resultText || assistantText);
-    if (!verdicts.length)
+    if (!verdicts.length) {
+      // Evidence-fidelity: carry WHAT the auditor actually replied (head snippet + session id)
+      // so a parse failure is a ten-second read, not transcript archaeology — diagnosing the
+      // SP-1/1 recurrence required digging the reply out of ~/.claude/projects by hand.
+      const reply = (resultText || assistantText).trim();
+      const snippet = reply
+        ? ` Reply began: ${JSON.stringify(reply.slice(0, 200))}${reply.length > 200 ? "…" : ""}`
+        : " The audit session returned no text at all.";
       return {
         verdicts: [],
         passed: false,
         sessionId,
-        error: "audit produced no parseable verdicts",
+        error: `audit produced no parseable verdicts (session ${sessionId ?? "unknown"}).${snippet}`,
       };
+    }
 
     // The auditor JUDGES only — verdict + env per AC. Authoring a local verifiable AC's `run`
     // command (from the repo's held-out acceptance-probe recipe, or a whole-suite fallback) is a

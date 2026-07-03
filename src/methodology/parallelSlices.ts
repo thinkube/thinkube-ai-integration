@@ -612,7 +612,7 @@ export function resolveRoleFootprint(
 // callback (in OrchestratorService) and the shell `ownership-guard.mjs` both
 // call this; fixtures in, allow/deny out.
 
-const GUARDED_TOOLS = new Set(["Edit", "Write", "MultiEdit"]);
+const GUARDED_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
 /** Relativize an Edit/Write target to the repo root so it compares to the (repo-relative) footprint. */
 function relToRepo(p: string, repoRoot: string): string {
@@ -627,10 +627,11 @@ export type FootprintDecision =
 
 /**
  * Decide whether a worker scoped to `footprint` may run `toolName` on `toolInput`
- * (SP-tgs8nz_SL-6). Only `Edit`/`Write`/`MultiEdit` are guarded — anything else, and a
- * call with no `file_path`, is allowed (the hook fences *writes*, not reads/Bash). A
- * write to a file **outside** the declared footprint is **denied**, naming it — so a
- * stray write surfaces immediately instead of corrupting another unit's files.
+ * (SP-tgs8nz_SL-6). Only the write tools — `Edit`/`Write`/`MultiEdit`/`NotebookEdit` — are
+ * guarded; anything else, and a call with no target path, is allowed (the hook fences
+ * *writes*, not reads/Bash). A write to a file **outside** the declared footprint is
+ * **denied**, naming it — so a stray write surfaces immediately instead of corrupting
+ * another unit's files.
  */
 export function footprintGuard(
   toolName: string,
@@ -640,30 +641,58 @@ export function footprintGuard(
   opts?: AcceptanceEvidenceOpts,
 ): FootprintDecision {
   if (!GUARDED_TOOLS.has(toolName)) return { allow: true };
-  const fp = (toolInput as { file_path?: unknown })?.file_path;
+  // NotebookEdit carries its target as `notebook_path`; the rest use `file_path`.
+  const inp = toolInput as { file_path?: unknown; notebook_path?: unknown };
+  const fp = typeof inp?.file_path === "string" ? inp.file_path : inp?.notebook_path;
   if (typeof fp !== "string" || !fp.trim()) return { allow: true };
   const target = relToRepo(fp, repoRoot);
-  // Held-out acceptance evidence is never-in-footprint (SP-6/6 AC2): even if the
-  // worker declared it, a write to it is denied — the implementer cannot author
-  // or alter the grader. The resolver also strips it from `owned`, so the generic
-  // check below would refuse it too; this names the specific reason.
-  if (isAcceptanceEvidencePath(target, opts)) {
-    return {
-      allow: false,
-      reason:
-        `Acceptance-evidence write: ${target} is held-out grading evidence and is ` +
-        `never part of any unit's footprint. The implementer cannot author or alter ` +
-        `the evidence it is graded on — leave it to the independent verifier.`,
-    };
-  }
-  const owned = resolveFootprint(footprint, opts).map(normalizeFilePath);
+  // The caller passes the ROLE-EFFECTIVE footprint (`resolveRoleFootprint`, SP-6/7): a
+  // `test` unit's footprint IS its held-out `acceptance/` probe(s); a `code` unit's has every
+  // acceptance path stripped. Honor it directly — do NOT re-strip here — so the held-out
+  // verifier can author the very probe it owns, while a code-author (whose role footprint
+  // excludes acceptance) still cannot. (Pre-SP-6/7 this hard-denied ANY acceptance write,
+  // which also fenced out the legitimate test-author — the bug this fixes.)
+  const owned = footprint.map(normalizeFilePath);
   if (owned.includes(target)) return { allow: true };
+  // Not owned → a terse, generic refusal. Deliberately NOT naming "held-out grading evidence" or an
+  // "independent verifier" even for an acceptance/ target (SP-6/7): the deny must not teach the
+  // worker the independence mechanism it would then reason about or try to game — it just knocks its
+  // head on the footprint boundary and adjusts. (A code-author's role footprint already excludes
+  // acceptance/, so it lands here for a probe write, indistinguishable from any out-of-footprint one.)
   return {
     allow: false,
     reason:
       `Out-of-footprint write: ${target} is not in this unit's declared footprint ` +
       `[${owned.join(", ") || "(none)"}]. Edit only your footprint; if you genuinely ` +
       `need another file, stop and state the question rather than editing it.`,
+  };
+}
+
+/**
+ * Read scoping for a `role: code` worker (SP-6/7 — the *reverse*-leak closure). Structural
+ * independence puts the TESTER in its own base-commit snapshot, so the tester can't read the
+ * implementation; this fence closes the other direction: once the finished probes are copied
+ * into the code worktree for the gate (and during rework rounds after that), a re-dispatched
+ * code worker must not read the grading assertions and code-to-the-test. Deny a `Read` whose
+ * target is a held-out acceptance-evidence path; everything else is untouched. Terse on
+ * purpose — like the write-fence, the deny must not teach the grading mechanism.
+ */
+export function codeReadFence(
+  toolName: string,
+  toolInput: unknown,
+  repoRoot: string,
+  opts?: AcceptanceEvidenceOpts,
+): FootprintDecision {
+  if (toolName !== "Read") return { allow: true };
+  const raw = (toolInput as { file_path?: unknown })?.file_path;
+  if (typeof raw !== "string" || !raw.trim()) return { allow: true };
+  const target = relToRepo(raw.trim(), repoRoot);
+  if (!isAcceptanceEvidencePath(target, opts)) return { allow: true };
+  return {
+    allow: false,
+    reason:
+      `Out-of-scope read: ${target} is not part of this unit's task. Work from your ` +
+      `footprint and the task context; if you genuinely need it, stop and state the question.`,
   };
 }
 
@@ -797,24 +826,17 @@ export function footprintContainment(
   ctx?: ContainmentContext,
   opts?: AcceptanceEvidenceOpts,
 ): ContainmentResult {
-  // Acceptance-evidence paths are never-in-footprint (SP-6/6 AC2): strip them from
-  // EVERY exemption set — owned, the running-union, and baseline — so a change a
-  // worker leaves there can never be excused as in-footprint, a sibling's work, or
-  // pre-existing. A write to the held-out grader always surfaces as a violation.
-  const owned = new Set(
-    resolveFootprint(footprint, opts).map(normalizeFilePath).filter(Boolean),
-  );
-  // A concurrent sibling's footprint (the running-units union) and the paths already
-  // dirty before this unit started both EXEMPT a path from being this unit's violation.
+  // Owned = THIS unit's declared (role-effective) footprint; running = the run-level union of every
+  // dispatched unit (finished + in-flight); baseline = paths already dirty at unit start. SP-6/7: a
+  // held-out `acceptance/` probe IS owned by its `role: test` unit — so DON'T strip acceptance here.
+  // It is exempt (below) ONLY via `owned` (the unit that authored it), never via a sibling (`running`)
+  // or `baseline`, so a code-author can't slip its own grader in through the shared-tree union.
+  const owned = new Set(footprint.map(normalizeFilePath).filter(Boolean));
   const running = new Set(
-    resolveFootprint(ctx?.running ?? [], opts)
-      .map(normalizeFilePath)
-      .filter(Boolean),
+    (ctx?.running ?? []).map(normalizeFilePath).filter(Boolean),
   );
   const baseline = new Set(
-    resolveFootprint(ctx?.baseline ?? [], opts)
-      .map(normalizeFilePath)
-      .filter(Boolean),
+    (ctx?.baseline ?? []).map(normalizeFilePath).filter(Boolean),
   );
   const violations: ContainmentViolation[] = [];
   const seen = new Set<string>();
@@ -849,14 +871,15 @@ export function footprintContainment(
     for (const e of entries) {
       const file = normalizeFilePath(unquotePorcelainPath(e.path));
       if (!file || seen.has(file)) continue;
-      // Held-out acceptance evidence is ALWAYS a violation when touched (SP-6/6 AC2)
-      // — no exemption (owned / running / baseline) can excuse a write to the grader.
-      // Otherwise: exempt this unit's own footprint, a concurrent sibling's footprint
-      // (running-union), or a path already dirty at unit start.
-      if (!isAcceptanceEvidencePath(file, opts)) {
-        if (owned.has(file) || running.has(file) || baseline.has(file))
-          continue;
-      }
+      // A change is exempt when it lands in this unit's own footprint, a concurrent/finished
+      // sibling's (`running` = the run-level union), or was already dirty (`baseline`). SP-6/7: an
+      // `acceptance/` probe is treated like ANY path here — the held-out test-authors run
+      // concurrently in the shared worktree, each writing its OWN probe, so a sibling's probe is in
+      // the union and MUST be exempt (else every test-author reverts its siblings'). A code-author
+      // still cannot Write/Edit an `acceptance/` path — the per-unit PRE-tool footprint fence
+      // (`footprintGuard` over its role footprint, which strips acceptance) blocks that; only a
+      // deliberate Bash-write would slip the union, an accepted narrow residual.
+      if (owned.has(file) || running.has(file) || baseline.has(file)) continue;
       seen.add(file);
       violations.push({ file, change: e.change });
     }

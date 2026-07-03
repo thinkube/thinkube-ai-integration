@@ -31,6 +31,10 @@ function specWtName(specNumber: string): string {
   const [tep, sp] = specNumber.split("/");
   return sp ? `TEP-${tep}_SP-${sp}` : `SP-${specNumber}`;
 }
+/** Worktree directory leaf for a Spec's TESTER snapshot (SP-6/7 structural independence). */
+export function testerWtName(specNumber: string): string {
+  return `${specWtName(specNumber)}-test`;
+}
 
 export interface WorktreeEntry {
   /** Absolute path of the worktree's working directory. */
@@ -170,15 +174,18 @@ export function planWorktree(
 const KANBAN_SERVER = "thinkube-kanban";
 
 /**
- * Inject `THINKUBE_THINKING_SPACE_ROOT` into the kanban server's env in a parsed
- * `.mcp.json` (SP-tgpwbm AC7), so a freshly-created worktree's Claude-Code-spawned
- * kanban MCP finds the central sidecar thinking space. Pure: takes the parsed config,
- * returns a new config with the value set (other env preserved). A no-op when
- * the kanban server isn't present. The value is machine-specific and stays an
- * uncommitted local edit — never committed (like THINKUBE_FOLDERS). */
-export function mcpWithThinkingSpaceRoot(
+ * Inject the machine-local kanban env into a parsed `.mcp.json` (SP-tgpwbm AC7,
+ * generalized by SP-6/10): sets `THINKUBE_THINKING_SPACE_ROOT` and/or
+ * `THINKUBE_APPROVAL_DIR` on the kanban server's env — one variable per provided
+ * field — so a Claude-Code-spawned kanban MCP finds the central sidecar thinking
+ * space and the always-on approval store. Pure: takes the parsed config, returns
+ * a new config with the values set (all other env and servers preserved). A
+ * config with no kanban server entry is returned unchanged. The values are
+ * machine-specific and stay an uncommitted local edit — never committed (like
+ * THINKUBE_FOLDERS). */
+export function mcpWithKanbanEnv(
   config: unknown,
-  thinkingSpaceRoot: string,
+  env: { thinkingSpaceRoot?: string; approvalDir?: string },
 ): Record<string, unknown> {
   const cfg =
     config && typeof config === "object" ? { ...(config as object) } : {};
@@ -191,13 +198,26 @@ export function mcpWithThinkingSpaceRoot(
   const server = nextServers[KANBAN_SERVER];
   if (server && typeof server === "object") {
     const s = server as { env?: Record<string, unknown>; [k: string]: unknown };
-    nextServers[KANBAN_SERVER] = {
-      ...s,
-      env: { ...(s.env ?? {}), THINKUBE_THINKING_SPACE_ROOT: thinkingSpaceRoot },
-    };
+    const nextEnv: Record<string, unknown> = { ...(s.env ?? {}) };
+    if (env.thinkingSpaceRoot !== undefined)
+      nextEnv.THINKUBE_THINKING_SPACE_ROOT = env.thinkingSpaceRoot;
+    if (env.approvalDir !== undefined)
+      nextEnv.THINKUBE_APPROVAL_DIR = env.approvalDir;
+    nextServers[KANBAN_SERVER] = { ...s, env: nextEnv };
   }
   (cfg as { mcpServers?: unknown }).mcpServers = nextServers;
   return cfg as Record<string, unknown>;
+}
+
+/**
+ * Delegating alias for {@link mcpWithKanbanEnv} (the pre-SP-6/10 single-variable
+ * shape), kept so existing call sites compile unchanged. Pure.
+ */
+export function mcpWithThinkingSpaceRoot(
+  config: unknown,
+  thinkingSpaceRoot: string,
+): Record<string, unknown> {
+  return mcpWithKanbanEnv(config, { thinkingSpaceRoot });
 }
 
 /**
@@ -351,6 +371,7 @@ export class WorktreeService {
     specNumber: string,
     baseDir?: string,
     thinkingSpaceRoot?: string,
+    approvalDir?: string,
   ): Promise<string> {
     const branch = specBranchName(specNumber);
     // Reuse an existing worktree for this Spec rather than failing on "already
@@ -387,9 +408,14 @@ export class WorktreeService {
       }
     }
 
-    // Thinking Space-connect the worktree: inject THINKUBE_THINKING_SPACE_ROOT into its .mcp.json so
-    // the Claude-Code-spawned kanban MCP finds the central sidecar thinking space (AC7).
-    if (thinkingSpaceRoot) await this.injectThinkingSpaceRoot(worktreePath, thinkingSpaceRoot);
+    // Machine-locally connect the worktree: inject THINKUBE_THINKING_SPACE_ROOT
+    // (the central sidecar thinking space, AC7) and THINKUBE_APPROVAL_DIR (the
+    // always-on approval store, SP-6/10) into its .mcp.json kanban-server env.
+    if (thinkingSpaceRoot !== undefined || approvalDir !== undefined)
+      await this.injectKanbanEnv(worktreePath, {
+        thinkingSpaceRoot,
+        approvalDir,
+      });
     // Provision the fresh worktree by running the repo's declared "Worktree setup"
     // recipe (repo-conventions) via runBounded, so a fresh checkout — which has no
     // gitignored deps — can run its tooling. Language-agnostic: this replaces the old
@@ -400,13 +426,105 @@ export class WorktreeService {
   }
 
   /**
-   * Set `THINKUBE_THINKING_SPACE_ROOT` in the worktree's `.mcp.json` kanban-server env.
-   * Best-effort and machine-local — the edit stays uncommitted (never committed,
-   * like THINKUBE_FOLDERS). A missing `.mcp.json` is left untouched.
+   * Create (or re-point) the Spec's TESTER worktree (SP-6/7 structural independence): a
+   * **detached** checkout at the Spec branch's current committed HEAD — every base file is
+   * present, the code workers' *uncommitted modifications* are absent **by construction**
+   * (committed earlier slices, being part of the branch, are legitimately visible). The
+   * held-out `role: test` workers run with this as cwd: they read and write in ONE
+   * directory, and there is simply nothing implementation-in-progress to read. On reuse the
+   * tree is hard-reset to the branch's current HEAD, so every run grades a fresh snapshot.
+   * Detached (no branch): nothing is ever committed from it — the orchestrator copies the
+   * finished probes into the code worktree before the closing gate runs them.
    */
-  private async injectThinkingSpaceRoot(
+  async createTester(
+    canonicalRepo: string,
+    specNumber: string,
+    baseDir?: string,
+  ): Promise<string> {
+    const branch = specBranchName(specNumber);
+    const ref = (await this.refExists(canonicalRepo, `refs/heads/${branch}`))
+      ? branch
+      : "HEAD";
+    const { stdout: shaRaw } = await execFileAsync(
+      "git",
+      ["-C", canonicalRepo, "rev-parse", ref],
+      { timeout: 5000 },
+    );
+    const sha = shaRaw.trim();
+    const root =
+      baseDir ??
+      path.join(
+        path.dirname(canonicalRepo),
+        `${path.basename(canonicalRepo)}-worktrees`,
+      );
+    const wtPath = path.join(root, testerWtName(specNumber));
+    const existing = (await this.list(canonicalRepo)).find(
+      (e) => path.resolve(e.path) === path.resolve(wtPath),
+    );
+    if (existing) {
+      // Reuse = re-snapshot: hard-reset the detached tree to the branch's CURRENT commit and
+      // drop leftovers from a prior run (`clean -fd`, no -x — gitignored provisioning like
+      // node_modules survives). The tester always authors against a fresh base.
+      await execFileAsync("git", ["-C", wtPath, "reset", "--hard", sha], {
+        timeout: 15000,
+      });
+      await execFileAsync("git", ["-C", wtPath, "clean", "-fd"], {
+        timeout: 15000,
+      });
+      return wtPath;
+    }
+    await fs.mkdir(path.dirname(wtPath), { recursive: true });
+    try {
+      await execFileAsync(
+        "git",
+        ["-C", canonicalRepo, "worktree", "add", "--detach", wtPath, sha],
+        { timeout: 15000 },
+      );
+    } catch (err) {
+      // Race / pre-existing dir now registered — reuse it if git knows it, else surface.
+      const now = (await this.list(canonicalRepo)).find(
+        (e) => path.resolve(e.path) === path.resolve(wtPath),
+      );
+      if (!now) throw err;
+    }
+    return wtPath;
+  }
+
+  /**
+   * Reset a worktree to its branch's committed state (SP-6/7 lifecycle): `reset --hard` +
+   * `clean -fd` (no `-x` — gitignored provisioning like `node_modules`/`out-test` survives),
+   * then re-inject the machine-local kanban env (thinking-space root + approval dir) the
+   * reset reverted. Used at (re)dispatch so stale, uncommitted output from a prior run can
+   * never linger under a new contract; committed work lives on the branch and survives.
+   */
+  async reset(
     worktreePath: string,
-    thinkingSpaceRoot: string,
+    thinkingSpaceRoot?: string,
+    approvalDir?: string,
+  ): Promise<void> {
+    await execFileAsync("git", ["-C", worktreePath, "reset", "--hard"], {
+      timeout: 15000,
+    });
+    await execFileAsync("git", ["-C", worktreePath, "clean", "-fd"], {
+      timeout: 15000,
+    });
+    if (thinkingSpaceRoot !== undefined || approvalDir !== undefined)
+      await this.injectKanbanEnv(worktreePath, {
+        thinkingSpaceRoot,
+        approvalDir,
+      });
+  }
+
+  /**
+   * Set the machine-local kanban env (`THINKUBE_THINKING_SPACE_ROOT` /
+   * `THINKUBE_APPROVAL_DIR` — one variable per provided field) in the worktree's
+   * `.mcp.json` kanban-server env. Best-effort and machine-local — the edit stays
+   * uncommitted (never committed, like THINKUBE_FOLDERS). A missing `.mcp.json`
+   * is left untouched.
+   */
+  private async injectKanbanEnv(
+    worktreePath: string,
+    env: { thinkingSpaceRoot?: string; approvalDir?: string },
   ): Promise<void> {
     const mcpPath = path.join(worktreePath, ".mcp.json");
     let parsed: unknown;
@@ -415,7 +533,7 @@ export class WorktreeService {
     } catch {
       return; // no .mcp.json to thinking space-connect
     }
-    const next = mcpWithThinkingSpaceRoot(parsed, thinkingSpaceRoot);
+    const next = mcpWithKanbanEnv(parsed, env);
     await fs.writeFile(mcpPath, JSON.stringify(next, null, 2) + "\n", "utf8");
   }
 
@@ -465,6 +583,18 @@ export class WorktreeService {
       ["-C", canonicalRepo, "worktree", "remove", "--force", wt.path],
       { timeout: 10000 },
     );
+    // Best-effort: retire the Spec's TESTER snapshot too (SP-6/7). Detached + never committed
+    // from, so nothing can be lost; a failure must never block the accept cleanup.
+    const tester = (await this.list(canonicalRepo)).find(
+      (e) => path.basename(e.path) === testerWtName(specNumber),
+    );
+    if (tester) {
+      await execFileAsync(
+        "git",
+        ["-C", canonicalRepo, "worktree", "remove", "--force", tester.path],
+        { timeout: 10000 },
+      ).catch(() => undefined);
+    }
     if (opts.assumeMerged) {
       // The branch is merged (work is on the remote base) and the worktree is now gone,
       // so drop BOTH the local ref and the remote branch — the cleanup the merge no

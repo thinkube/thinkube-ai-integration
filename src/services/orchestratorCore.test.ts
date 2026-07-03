@@ -23,6 +23,7 @@ import {
   readyFrontier,
   requiresSatisfied,
   buildWorkerPrompt,
+  disallowedToolsForRole,
   stripAcceptanceCriteria,
   stripSatisfies,
   extractNeedsInput,
@@ -941,6 +942,44 @@ test("runAcVerifications: exit 0 = pass, non-zero = fail, attributed per-AC, in 
   assert.match(results[1].evidence, /exit 1/);
 });
 
+test("runAcVerifications: a FAILING check's evidence carries the failing assertion, not just the summary counts", async () => {
+  // The evidence feeds the rework round's worker prompt and the human's DELIVERY read —
+  // "# fail 1" alone forces log archaeology (the SP-6/3 round-2 diagnosis). The node:test
+  // TAP failure block (`not ok` + its YAML diagnostic) must survive into the evidence.
+  const tap = [
+    "TAP version 13",
+    "not ok 2 - a content-bound approval clears the gate after an edit",
+    "  ---",
+    "  failureType: 'testCodeFailure'",
+    "  error: 'SP-1/1 AC 2 has no runnable ac_verifications entry'",
+    "  ...",
+    "1..2",
+    "# tests 2",
+    "# pass 1",
+    "# fail 1",
+  ].join("\n");
+  const exec: AcExec = async () => ({ code: 1, output: tap });
+  const [r] = await runAcVerifications([{ ac: 4, run: "probe-4" }], "/wt", exec);
+  assert.equal(r.pass, false);
+  assert.match(r.evidence, /not ok 2 - a content-bound approval/);
+  assert.match(r.evidence, /no runnable ac_verifications entry/);
+  assert.match(r.evidence, /# fail 1/);
+  // A PASSING check keeps the lean tail-only shape (no failure-block extraction) — with a
+  // realistic long output, the head of the run never appears, only the trailing summary.
+  const longOk = [
+    "TAP version 13",
+    ...Array.from({ length: 30 }, (_, i) => `ok ${i + 1} - case ${i + 1}`),
+    "1..30",
+    "# tests 30",
+    "# pass 30",
+    "# fail 0",
+  ].join("\n");
+  const ok: AcExec = async () => ({ code: 0, output: longOk });
+  const [g] = await runAcVerifications([{ ac: 1, run: "probe-1" }], "/wt", ok);
+  assert.match(g.evidence, /# pass 30/);
+  assert.doesNotMatch(g.evidence, /ok 1 - case 1\b/);
+});
+
 test("runAcVerifications: an un-runnable check is RED, never silently green (no skip)", async () => {
   const exec: AcExec = async () => {
     throw new Error("command not found");
@@ -1265,8 +1304,11 @@ test("SP-6/7 AC1: a test unit KEEPS the Acceptance Criteria + satisfies; a code 
   assert.match(tp, /Acceptance Criteria/);
   assert.match(tp, /foo must round-trip losslessly/);
   assert.match(tp, /satisfies/);
-  // …and it is framed as the held-out test-author.
-  assert.match(tp, /HELD-OUT TEST-AUTHOR/);
+  // …and it is framed NEUTRALLY (SP-6/7): asked to write tests against the interface, but NOT told it
+  // is a "held-out"/"independent verifier" or that a code-author exists — an unaware worker can't
+  // reason about or game the independence boundary (that is enforced structurally by tool-scoping).
+  assert.match(tp, /Write automated test/i);
+  assert.doesNotMatch(tp, /held-out|independent verifier/i);
 
   const codeUnit: SchedUnit = {
     ...testUnit,
@@ -1279,6 +1321,78 @@ test("SP-6/7 AC1: a test unit KEEPS the Acceptance Criteria + satisfies; a code 
   assert.doesNotMatch(cp, /foo must round-trip losslessly/);
   assert.doesNotMatch(cp, /satisfies/i);
   assert.doesNotMatch(cp, /HELD-OUT TEST-AUTHOR/);
+});
+
+test("SP-6/7: a test worker loses the roam/evasion tools but keeps Read/Glob (its cwd is the impl-free snapshot)", () => {
+  // Structural independence: the tester's tree simply lacks the modifications, so Read/Glob are
+  // unrestricted. The secondary control removes Bash/Grep (the roam / absolute-path vectors) and
+  // Web/Task. A code worker keeps the full set.
+  const denied = disallowedToolsForRole("test");
+  for (const t of ["Bash", "Grep", "WebFetch", "WebSearch", "Task"])
+    assert.ok(denied.includes(t), `test worker denies ${t}`);
+  for (const t of ["Read", "Glob", "Write", "Edit", "MultiEdit"])
+    assert.ok(!denied.includes(t), `test worker keeps ${t}`);
+  assert.deepEqual(disallowedToolsForRole("code"), []);
+  assert.deepEqual(disallowedToolsForRole(undefined), []);
+});
+
+test("SP-6/7: a test worker's prompt states the snapshot workspace + redirect-aware terminate-on-denial", () => {
+  const unit: SchedUnit = {
+    id: "SP-6_SL-1#eu-1",
+    slice: "SP-6_SL-1",
+    footprint: ["src/acceptance/SP-6_3_AC-1.test.ts"],
+    requires: [],
+    shape: "fan-out",
+    role: "test",
+  };
+  const tp = buildWorkerPrompt(unit, "6/3", {
+    specBody: "## Acceptance Criteria\n\n- [ ] x",
+  });
+  // ONE directory, stated plainly: a snapshot taken before this feature's changes; modules named
+  // in the contract may not exist yet — import them by the contract's paths.
+  assert.match(tp, /SNAPSHOT of the codebase/i);
+  assert.match(tp, /may not exist in this snapshot yet/i);
+  assert.match(tp, /import them by the exact path\/name the contract gives/i);
+  // No base-dir split anywhere (the old read-here/write-there model is gone).
+  assert.doesNotMatch(tp, /base directory|READ-ONLY reference/i);
+  // Terminate-on-denial, redirect-aware: never brute-force; follow a redirecting denial; stop
+  // only at a genuine dead-end.
+  assert.match(tp, /do NOT brute-force/i);
+  assert.match(tp, /follow it and carry on/i);
+  // A code worker gets no snapshot workspace block…
+  const cp = buildWorkerPrompt(
+    { ...unit, role: "code" },
+    "6/3",
+    { specBody: "## Acceptance Criteria\n\n- [ ] x" },
+  );
+  assert.doesNotMatch(cp, /SNAPSHOT of the codebase/i);
+  // …but the terminate-on-denial instruction applies to EVERY worker.
+  assert.match(cp, /do NOT brute-force/i);
+});
+
+test("SP-6/7: the test convention is injected for a test worker (it has no Bash to discover it)", () => {
+  const unit: SchedUnit = {
+    id: "SP-6_SL-1#eu-1",
+    slice: "SP-6_SL-1",
+    footprint: ["src/acceptance/SP-6_3_AC-1.test.ts"],
+    requires: [],
+    shape: "fan-out",
+    role: "test",
+  };
+  const convention = "author your test to run via `node --test out-test/acceptance/…`";
+  const tp = buildWorkerPrompt(unit, "6/3", {
+    specBody: "## Acceptance Criteria\n\n- [ ] x",
+    testConvention: convention,
+  });
+  assert.match(tp, /Test convention:/);
+  assert.match(tp, /node --test/);
+  // A code worker gets no convention block (it isn't withheld its tools).
+  const cp = buildWorkerPrompt(
+    { ...unit, role: "code" },
+    "6/3",
+    { specBody: "## Acceptance Criteria\n\n- [ ] x", testConvention: convention },
+  );
+  assert.doesNotMatch(cp, /Test convention:/);
 });
 
 test("SP-6/7 AC1: role defaults to code — an unset role withholds the ACs", () => {

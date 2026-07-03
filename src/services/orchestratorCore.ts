@@ -672,10 +672,33 @@ export function stripSatisfies(body: string): string {
  * KEPT so its probe (under the reserved `acceptance/` path) can grade the exact criteria, black-box.
  * Pure → unit-tested.
  */
+/**
+ * Tools DENIED to a worker by role (SP-6/7). Independence is STRUCTURAL — a `role: test` worker's
+ * cwd is the Spec's TESTER worktree, a base-commit snapshot where the code workers' in-progress
+ * modifications simply do not exist — so its Read/Glob are unrestricted (there is nothing to hide in
+ * its tree; it needs the base code to write a well-integrated test). The tool denial is the
+ * SECONDARY control (the maintainer's layering: inform → structure → fence):
+ *   • **Bash** — the roam vector (`cd` into the code worktree / other repos / session transcripts);
+ *   • **Grep** — pathless content-search outside its tree via an absolute path;
+ *   • **WebFetch / WebSearch / Task** — no need, and Task could spawn an unfenced sub-agent.
+ * A `code` worker keeps the full set (its footprint fence stops it authoring the `acceptance/`
+ * grader, and `codeReadFence` stops it reading copied-in probes during rework). Pure → the caller
+ * passes the result as the SDK query's `disallowedTools`.
+ */
+export function disallowedToolsForRole(role?: "code" | "test"): string[] {
+  return role === "test"
+    ? ["Bash", "Grep", "WebFetch", "WebSearch", "Task"]
+    : [];
+}
+
 export function buildWorkerPrompt(
   unit: SchedUnit,
   specNumber: string,
-  context?: { specBody?: string; sliceBody?: string },
+  context?: {
+    specBody?: string;
+    sliceBody?: string;
+    testConvention?: string;
+  },
 ): string {
   const fp = unit.footprint.join(", ") || "(no declared footprint)";
   // Files a sibling unit produces that THIS unit reads — the contract-first dependency.
@@ -693,17 +716,31 @@ export function buildWorkerPrompt(
       ? `\nContract dependency: this unit CONSUMES ${consumes.join(", ")} — a sibling unit produces ${consumes.length > 1 ? "these files" : "this file"}. Import ${consumes.length > 1 ? "their" : "its"} contract (types/exports/shape); do NOT re-invent it. If ${consumes.length > 1 ? "they don't exist" : "it doesn't exist"} yet, code to the contract the spec/slice describes.\n`
       : "";
   const isTest = (unit.role ?? "code") === "test";
-  const task =
-    unit.shape === "mechanize"
+  // SP-6/7: a `test` unit's task is framed NEUTRALLY — "write tests asserting these behaviours
+  // against this interface." It is deliberately NOT told it is a held-out verifier, that a code-author
+  // exists, that ACs were stripped from anyone, or that a fence exists: an unaware worker can't reason
+  // about or game the independence boundary. Its independence is STRUCTURAL — its cwd is a base-commit
+  // snapshot that simply does not contain the in-progress implementation — so it writes its test from
+  // the snapshot's base code + the injected contract + criteria + test convention.
+  const task = isTest
+    ? `Write automated test(s) at [${fp}]${unit.note ? ` that assert: ${unit.note.replace(/\s*\.?\s*$/, "")}` : " asserting the behaviours in the Acceptance criteria below"}. Exercise ONLY the public interface in the SPEC CONTRACT below (write to that interface — do not assume any particular internal implementation).`
+    : unit.shape === "mechanize"
       ? `This is a MECHANIZE unit: author ONE transform and apply it across all of [${fp}] — do not hand-edit each object.`
       : unit.shape === "fan-out"
         ? `This is a FAN-OUT unit over [${fp}].${unit.note ? ` Task: ${unit.note}` : ""}`
         : `This is a SERIAL unit — do its steps in order over [${fp}].${unit.note ? ` Task: ${unit.note}` : ""}`;
-  // SP-6/7 AC1: a `test` unit is the held-out verifier. Frame it explicitly — its job is to author the
-  // acceptance probe under the reserved `acceptance/` path (its footprint), grading the ACs embedded
-  // below, black-box (it must NOT read or couple to the implementation the code-author writes in parallel).
-  const roleBlock = isTest
-    ? `\nYou are the HELD-OUT TEST-AUTHOR (the independent verifier) for this slice. Author the acceptance probe at your footprint (a reserved \`acceptance/\` path) that GRADES the slice's \`## Acceptance Criteria\` (embedded below). Target the INTENT — the criteria + design — BLACK-BOX: do NOT read or couple to the implementation code (a code-author writes that in parallel). Drive it through the SLICE CONTRACT below (its public exports/signatures); your probe is the independent evidence the closing gate grades on, so it must fail if the intent is not met.\n`
+  // The test convention (framework + how the file is run), injected so a test unit — which has no
+  // Bash to poke the toolchain — can author a runnable test straight from its prompt (SP-6/7).
+  const conventionBlock =
+    isTest && context?.testConvention?.trim()
+      ? `\nTest convention: ${context.testConvention.trim()}\n`
+      : "";
+  // SP-6/7 — the tester's workspace, stated PLAINLY (inform first): ONE directory — its cwd is a
+  // snapshot of the codebase taken before this feature's changes (structural independence: the
+  // in-progress implementation is not in its tree, so there's no read-here/write-there split to
+  // confuse and nothing to fence). Modules named in the contract may not exist yet — expected.
+  const workspaceBlock = isTest
+    ? `\nYour working directory is a SNAPSHOT of the codebase taken before this feature's changes. Read anything here you need — the test harness, helpers, existing tests, import/type conventions — and write your test file(s) at your footprint (${fp}) using paths relative to the working directory. The modules named in the SPEC CONTRACT may not exist in this snapshot yet (the feature is being built); that's expected — import them by the exact path/name the contract gives and write your tests against the contract + the criteria below. They resolve when the feature is assembled.\n`
     : "";
   // SP-6/3: the Spec-wide design-time CONTRACT — the shared interface (union of every slice's
   // declared contract) every unit (code AND held-out test, in ANY slice) builds against. Injected
@@ -735,19 +772,24 @@ export function buildWorkerPrompt(
   const hasCtx = specBlock || sliceBlock;
   return (
     `You are an autonomous Tandem worker for execution unit ${unit.id} of slice ${unit.slice}.\n` +
-    `Implement THIS unit only — touch only its footprint: ${fp}.\n` +
+    `Do only THIS unit's work — write only within its footprint: ${fp}.\n` +
     (hasCtx
       ? `The thinking space/specs dir is NOT in this worktree; your spec + slice are embedded below — use them, don't search the filesystem for specs/.\n`
       : `(Read the parent spec/slice for context if available — note the specs dir may not be in this worktree.)\n`) +
     `\n${task}\n` +
-    roleBlock +
     contractBlock +
+    conventionBlock +
+    workspaceBlock +
     consumesBlock +
     specBlock +
     sliceBlock +
     `\nWork autonomously to the intent (goal / design / behaviour) described above — build what "correct" means here. Make reasonable engineering decisions and do NOT ask for confirmation. ` +
     `Do NOT commit, run git, or move the thinking space card — the orchestrator owns git and the gate. ` +
-    `Only if you hit a genuine decision you cannot make from the spec/slice/codebase, output a single final message that begins with ${NEEDS_INPUT_SENTINEL} followed by your question, then stop — never guess.`
+    // Terminate-on-denial (SP-6/7), redirect-aware: never BRUTE-FORCE a boundary (the drive to finish
+    // is what turns a blocked worker into one grinding through Bash / alternate paths), but a denial
+    // that redirects to a better source is followed, and only a genuine dead-end stops the worker.
+    `\nIf the SYSTEM denies a tool call, do NOT brute-force around it — no retrying, no routing through another tool, no alternate path to defeat the constraint. If the denial's message points you to a better source or way of working, follow it and carry on. Only if you genuinely cannot proceed from the spec / slice / contract / codebase, output a single final message beginning with ${NEEDS_INPUT_SENTINEL} that quotes the blocker, then stop. ` +
+    `Likewise, if you hit a genuine decision you cannot make from that context, output a single final message that begins with ${NEEDS_INPUT_SENTINEL} followed by your question, then stop — never guess, never brute-force a boundary.`
   );
 }
 
@@ -1271,15 +1313,27 @@ const defaultAcExec: AcExec = (run, cwd) =>
 
 /** Format one verification's evidence: the command, its exit code, and a clipped output tail. */
 function acEvidence(run: string, code: number | null, output: string): string {
-  const tail = output
-    .split("\n")
-    .map((l) => l.replace(/\s+$/, ""))
+  const lines = output.split("\n").map((l) => l.replace(/\s+$/, ""));
+  const tail = lines
     .filter((l, i, a) => l.length > 0 || i < a.length - 1)
     .slice(-8)
     .join("\n")
     .trim();
   const head = `$ ${run} → exit ${code ?? "null"}`;
-  return tail ? `${head}\n${clip(tail, 600)}` : head;
+  // On a FAILURE, the summary counts alone are useless for the rework round (the
+  // "# fail 1" tail says nothing about WHAT failed) — so carry the first failing
+  // assertion block too: from the first `not ok` line through its YAML diagnostic
+  // (name, error, failureType), capped. This is what the re-authoring worker and
+  // the human read; without it every red is "see the logs" archaeology.
+  let failDetail = "";
+  if (code !== 0) {
+    const at = lines.findIndex((l) => /^\s*not ok /.test(l));
+    if (at !== -1) failDetail = lines.slice(at, at + 14).join("\n").trim();
+  }
+  const body = [failDetail ? clip(failDetail, 900) : "", tail ? clip(tail, 600) : ""]
+    .filter(Boolean)
+    .join("\n");
+  return body ? `${head}\n${body}` : head;
 }
 
 /**

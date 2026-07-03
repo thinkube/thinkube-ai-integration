@@ -11,6 +11,7 @@ import {
   validateParallelGroup,
   validateDag,
   footprintGuard,
+  codeReadFence,
   acquireClaim,
   releaseClaim,
   reconcileOwnership,
@@ -904,35 +905,92 @@ test("resolveFootprint: a footprint with no evidence paths is returned unchanged
   assert.deepEqual(resolveFootprint([]), []);
 });
 
-test("footprintGuard: a write to an acceptance-evidence path is DENIED even when the unit declared it", () => {
-  // The implementer cannot author or alter the grader: a write to a held-out
-  // evidence path is refused even though the unit listed it in its footprint.
+test("footprintGuard: a CODE-author cannot write the held-out probe (acceptance stripped from its role footprint)", () => {
+  // resolveRoleFootprint("code", …) strips acceptance, so a code unit never owns the probe:
+  // footprintGuard denies its write. The reason is TERSE/generic (out-of-footprint) — it must NOT
+  // name "grading evidence"/"independent verifier", so the worker isn't taught the fence to game it.
+  const owned = resolveRoleFootprint("code", [
+    "tests/acceptance/SP-6.test.ts",
+    "src/a.ts",
+  ]);
   const d = footprintGuard(
     "Write",
     { file_path: "tests/acceptance/SP-6.test.ts" },
-    ["tests/acceptance/SP-6.test.ts", "src/a.ts"],
+    owned,
     "/wt",
   );
   assert.equal(d.allow, false);
   if (d.allow) return;
   assert.match(d.reason, /tests\/acceptance\/SP-6\.test\.ts/);
-  // The reason names this as held-out grading evidence, not a generic out-of-footprint.
-  assert.match(d.reason, /evidence/i);
+  assert.match(d.reason, /out-of-footprint/i);
+  assert.doesNotMatch(d.reason, /grading evidence|independent verifier|held-out/i);
 });
 
-test("footprintGuard: an absolute path under the worktree to acceptance evidence is denied", () => {
+test("codeReadFence (SP-6/7 reverse-leak): a code worker cannot Read an acceptance probe; everything else passes", () => {
+  const wt = "/home/u/repos/ext-worktrees/SP-6_3"; // the cwd (repoRoot)
+  // A Read of a held-out probe (relative or absolute under the worktree) → denied, tersely —
+  // the reason must not teach the grading mechanism.
+  const rel = codeReadFence("Read", { file_path: "src/acceptance/SP-6_3_AC-1.test.ts" }, wt);
+  assert.equal(rel.allow, false);
+  if (rel.allow) return;
+  assert.match(rel.reason, /out-of-scope read/i);
+  assert.doesNotMatch(rel.reason, /grading|held-out|independent|probe|evidence/i);
+  assert.equal(
+    codeReadFence("Read", { file_path: `${wt}/src/acceptance/SP-6_3_AC-2.test.ts` }, wt).allow,
+    false,
+  );
+  // Ordinary source, tests, config → readable.
+  assert.equal(codeReadFence("Read", { file_path: "src/services/approvalToken.ts" }, wt).allow, true);
+  assert.equal(codeReadFence("Read", { file_path: `${wt}/tsconfig.test.json` }, wt).allow, true);
+  // Only Read is screened here — writes are the write-fence's job.
+  assert.equal(codeReadFence("Write", { file_path: "src/acceptance/x.test.ts" }, wt).allow, true);
+  assert.equal(codeReadFence("Glob", { pattern: "src/**/*" }, wt).allow, true);
+});
+
+test("footprintGuard: NotebookEdit is a guarded write tool (notebook_path screened like file_path)", () => {
+  // In-footprint notebook edit → allowed; out-of-footprint → denied.
+  assert.equal(
+    footprintGuard("NotebookEdit", { notebook_path: "nb/owned.ipynb" }, ["nb/owned.ipynb"], "/wt")
+      .allow,
+    true,
+  );
   const d = footprintGuard(
-    "Edit",
-    { file_path: "/wt/tests/acceptance/SP-6.test.ts" },
-    ["tests/acceptance/SP-6.test.ts"],
+    "NotebookEdit",
+    { notebook_path: "nb/other.ipynb" },
+    ["nb/owned.ipynb"],
     "/wt",
   );
   assert.equal(d.allow, false);
 });
 
-test("footprintContainment: a CREATE of an acceptance-evidence file is always a violation (the worker authored its grader)", () => {
-  // AC2 core: the worker wrote the held-out evidence it is judged on — a containment
-  // violation that aborts the unit to requires-attention, never a self-authored green.
+test("footprintGuard: the HELD-OUT test-author MAY write its own probe (its role footprint IS the probe)", () => {
+  // SP-6/7: resolveRoleFootprint("test", …) keeps only the acceptance paths — the test-author owns
+  // its probe, so the guard allows the very write a code-author is denied.
+  const owned = resolveRoleFootprint("test", ["tests/acceptance/SP-6.test.ts"]);
+  assert.equal(
+    footprintGuard(
+      "Write",
+      { file_path: "tests/acceptance/SP-6.test.ts" },
+      owned,
+      "/wt",
+    ).allow,
+    true,
+  );
+  // Absolute path under the worktree, same result.
+  assert.equal(
+    footprintGuard(
+      "Edit",
+      { file_path: "/wt/tests/acceptance/SP-6.test.ts" },
+      owned,
+      "/wt",
+    ).allow,
+    true,
+  );
+});
+
+test("footprintContainment: a CODE-author's CREATE of an acceptance file is a violation (authored its grader)", () => {
+  // A code unit (owned = src/a.ts) that leaves a probe in the tree wrote the held-out evidence it is
+  // judged on — a containment violation that aborts to requires-attention, never a self-authored green.
   const r = expectViolation(
     footprintContainment("?? tests/acceptance/SP-6.test.ts\n", ["src/a.ts"]),
   );
@@ -942,28 +1000,25 @@ test("footprintContainment: a CREATE of an acceptance-evidence file is always a 
   assert.match(r.reason, /tests\/acceptance\/SP-6\.test\.ts/);
 });
 
-test("footprintContainment: a write to acceptance evidence violates even if the unit DECLARED it in footprint", () => {
-  // The path is never-in-footprint: `resolveFootprint` strips it, so listing it as
-  // owned can't excuse the change — the modify still surfaces as a violation.
-  const r = expectViolation(
-    footprintContainment(" M tests/acceptance/SP-6.test.ts\n", [
-      "tests/acceptance/SP-6.test.ts",
-    ]),
-  );
-  assert.equal(r.violations[0].file, "tests/acceptance/SP-6.test.ts");
-  assert.equal(r.violations[0].change, "modify");
+test("footprintContainment: the test-author's OWN probe (in its footprint) is NOT a violation", () => {
+  // SP-6/7: the held-out verifier OWNS its acceptance probe — authoring it is legitimate, not a breach.
+  const r = footprintContainment(" M tests/acceptance/SP-6.test.ts\n", [
+    "tests/acceptance/SP-6.test.ts",
+  ]);
+  assert.equal(r.ok, true);
 });
 
-test("footprintContainment: no exemption (running / baseline) can excuse an acceptance-evidence change", () => {
-  // Even if the held-out path were claimed as a concurrent sibling's footprint or
-  // a pre-existing baseline change, a write to it is ALWAYS a violation here.
-  const r = expectViolation(
-    footprintContainment(" M tests/acceptance/SP-6.test.ts\n", ["src/a.ts"], {
-      running: ["tests/acceptance/SP-6.test.ts"],
-      baseline: ["tests/acceptance/SP-6.test.ts"],
-    }),
+test("footprintContainment: a SIBLING test-author's acceptance probe (in the union) is exempt — concurrent held-out authors don't revert each other", () => {
+  // SP-6/7: the four held-out test-authors run concurrently in the shared worktree, each writing its
+  // OWN probe. So from unit X's post-tool diff, a SIBLING's probe (in the run-level `running` union)
+  // must be exempt — else every test-author reverts its siblings' probes (only one survives). An
+  // acceptance path is treated like any other: exempt via owned OR running OR baseline.
+  const r = footprintContainment(
+    " M tests/acceptance/SP-6_AC-3.test.ts\n" + " M tests/acceptance/SP-6_AC-4.test.ts\n",
+    ["tests/acceptance/SP-6_AC-2.test.ts"], // this unit owns AC-2
+    { running: ["tests/acceptance/SP-6_AC-3.test.ts", "tests/acceptance/SP-6_AC-4.test.ts"] },
   );
-  assert.equal(r.violations[0].file, "tests/acceptance/SP-6.test.ts");
+  assert.equal(r.ok, true, "siblings' probes (in the union) are not reverted");
 });
 
 test("footprintContainment: a non-evidence change beside an evidence change reports both correctly", () => {
@@ -985,21 +1040,28 @@ test("footprintContainment: a non-evidence change beside an evidence change repo
   );
 });
 
-test("footprintContainment: an override predicate marks a custom evidence path never-in-footprint", () => {
-  // The opts override flows through to containment: a `__grader__/` write violates
-  // even when declared owned, while a now-ordinary `acceptance/` edit is in-footprint.
+test("footprintContainment: an override predicate flows through — custom evidence is owner-only exempt", () => {
+  // The opts override redefines the evidence shape (`__grader__/`). Under SP-6/7, evidence is exempt
+  // ONLY for the unit that OWNS it: a NON-owner (owned = src/a.ts) touching `__grader__/` violates,
+  // while its OWNER (declared it) may author it. Meanwhile the default `acceptance/` is, under this
+  // override, an ordinary owned file.
   const opts = {
     isAcceptanceEvidence: (f: string) => f.includes("__grader__/"),
   };
   const r = expectViolation(
+    footprintContainment(" M x/__grader__/g.ts\n", ["src/a.ts"], undefined, opts),
+  );
+  assert.equal(r.violations[0].file, "x/__grader__/g.ts");
+  // The OWNER of the grader (declared it in footprint) may author it — no violation.
+  assert.equal(
     footprintContainment(
       " M x/__grader__/g.ts\n",
       ["x/__grader__/g.ts"],
       undefined,
       opts,
-    ),
+    ).ok,
+    true,
   );
-  assert.equal(r.violations[0].file, "x/__grader__/g.ts");
   // Under the override, `acceptance/` is just a normal owned file → no violation.
   assert.equal(
     footprintContainment(
