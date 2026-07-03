@@ -22,6 +22,12 @@ interface KanbanDeps {
   github: GitHubService;
   output: vscode.OutputChannel;
   extensionUri: vscode.Uri;
+  /**
+   * globalStorage-derived directory the Approve affordance mints approvals
+   * into (SP-10 arming). Threaded to KanbanPanel.open so Approve is available
+   * whenever the panel opens; absent, the panel reports it unavailable.
+   */
+  approvalStorageDir?: string;
 }
 
 export function registerKanbanCommands(
@@ -61,6 +67,7 @@ async function openKanban(deps: KanbanDeps): Promise<void> {
         extensionUri: deps.extensionUri,
         adapter: new InMemoryAdapter(),
         output: deps.output,
+        approvalStorageDir: deps.approvalStorageDir,
       });
     } catch (err) {
       deps.output.appendLine(`[openKanban] failed: ${(err as Error).message}`);

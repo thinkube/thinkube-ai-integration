@@ -174,15 +174,18 @@ export function planWorktree(
 const KANBAN_SERVER = "thinkube-kanban";
 
 /**
- * Inject `THINKUBE_THINKING_SPACE_ROOT` into the kanban server's env in a parsed
- * `.mcp.json` (SP-tgpwbm AC7), so a freshly-created worktree's Claude-Code-spawned
- * kanban MCP finds the central sidecar thinking space. Pure: takes the parsed config,
- * returns a new config with the value set (other env preserved). A no-op when
- * the kanban server isn't present. The value is machine-specific and stays an
- * uncommitted local edit — never committed (like THINKUBE_FOLDERS). */
-export function mcpWithThinkingSpaceRoot(
+ * Inject the machine-local kanban env into a parsed `.mcp.json` (SP-tgpwbm AC7,
+ * generalized by SP-6/10): sets `THINKUBE_THINKING_SPACE_ROOT` and/or
+ * `THINKUBE_APPROVAL_DIR` on the kanban server's env — one variable per provided
+ * field — so a Claude-Code-spawned kanban MCP finds the central sidecar thinking
+ * space and the always-on approval store. Pure: takes the parsed config, returns
+ * a new config with the values set (all other env and servers preserved). A
+ * config with no kanban server entry is returned unchanged. The values are
+ * machine-specific and stay an uncommitted local edit — never committed (like
+ * THINKUBE_FOLDERS). */
+export function mcpWithKanbanEnv(
   config: unknown,
-  thinkingSpaceRoot: string,
+  env: { thinkingSpaceRoot?: string; approvalDir?: string },
 ): Record<string, unknown> {
   const cfg =
     config && typeof config === "object" ? { ...(config as object) } : {};
@@ -195,13 +198,26 @@ export function mcpWithThinkingSpaceRoot(
   const server = nextServers[KANBAN_SERVER];
   if (server && typeof server === "object") {
     const s = server as { env?: Record<string, unknown>; [k: string]: unknown };
-    nextServers[KANBAN_SERVER] = {
-      ...s,
-      env: { ...(s.env ?? {}), THINKUBE_THINKING_SPACE_ROOT: thinkingSpaceRoot },
-    };
+    const nextEnv: Record<string, unknown> = { ...(s.env ?? {}) };
+    if (env.thinkingSpaceRoot !== undefined)
+      nextEnv.THINKUBE_THINKING_SPACE_ROOT = env.thinkingSpaceRoot;
+    if (env.approvalDir !== undefined)
+      nextEnv.THINKUBE_APPROVAL_DIR = env.approvalDir;
+    nextServers[KANBAN_SERVER] = { ...s, env: nextEnv };
   }
   (cfg as { mcpServers?: unknown }).mcpServers = nextServers;
   return cfg as Record<string, unknown>;
+}
+
+/**
+ * Delegating alias for {@link mcpWithKanbanEnv} (the pre-SP-6/10 single-variable
+ * shape), kept so existing call sites compile unchanged. Pure.
+ */
+export function mcpWithThinkingSpaceRoot(
+  config: unknown,
+  thinkingSpaceRoot: string,
+): Record<string, unknown> {
+  return mcpWithKanbanEnv(config, { thinkingSpaceRoot });
 }
 
 /**
@@ -355,6 +371,7 @@ export class WorktreeService {
     specNumber: string,
     baseDir?: string,
     thinkingSpaceRoot?: string,
+    approvalDir?: string,
   ): Promise<string> {
     const branch = specBranchName(specNumber);
     // Reuse an existing worktree for this Spec rather than failing on "already
@@ -391,9 +408,14 @@ export class WorktreeService {
       }
     }
 
-    // Thinking Space-connect the worktree: inject THINKUBE_THINKING_SPACE_ROOT into its .mcp.json so
-    // the Claude-Code-spawned kanban MCP finds the central sidecar thinking space (AC7).
-    if (thinkingSpaceRoot) await this.injectThinkingSpaceRoot(worktreePath, thinkingSpaceRoot);
+    // Machine-locally connect the worktree: inject THINKUBE_THINKING_SPACE_ROOT
+    // (the central sidecar thinking space, AC7) and THINKUBE_APPROVAL_DIR (the
+    // always-on approval store, SP-6/10) into its .mcp.json kanban-server env.
+    if (thinkingSpaceRoot !== undefined || approvalDir !== undefined)
+      await this.injectKanbanEnv(worktreePath, {
+        thinkingSpaceRoot,
+        approvalDir,
+      });
     // Provision the fresh worktree by running the repo's declared "Worktree setup"
     // recipe (repo-conventions) via runBounded, so a fresh checkout — which has no
     // gitignored deps — can run its tooling. Language-agnostic: this replaces the old
@@ -471,29 +493,38 @@ export class WorktreeService {
   /**
    * Reset a worktree to its branch's committed state (SP-6/7 lifecycle): `reset --hard` +
    * `clean -fd` (no `-x` — gitignored provisioning like `node_modules`/`out-test` survives),
-   * then re-inject the machine-local thinking-space env the reset reverted. Used at
-   * (re)dispatch so stale, uncommitted output from a prior run can never linger under a new
-   * contract; committed work lives on the branch and survives.
+   * then re-inject the machine-local kanban env (thinking-space root + approval dir) the
+   * reset reverted. Used at (re)dispatch so stale, uncommitted output from a prior run can
+   * never linger under a new contract; committed work lives on the branch and survives.
    */
-  async reset(worktreePath: string, thinkingSpaceRoot?: string): Promise<void> {
+  async reset(
+    worktreePath: string,
+    thinkingSpaceRoot?: string,
+    approvalDir?: string,
+  ): Promise<void> {
     await execFileAsync("git", ["-C", worktreePath, "reset", "--hard"], {
       timeout: 15000,
     });
     await execFileAsync("git", ["-C", worktreePath, "clean", "-fd"], {
       timeout: 15000,
     });
-    if (thinkingSpaceRoot)
-      await this.injectThinkingSpaceRoot(worktreePath, thinkingSpaceRoot);
+    if (thinkingSpaceRoot !== undefined || approvalDir !== undefined)
+      await this.injectKanbanEnv(worktreePath, {
+        thinkingSpaceRoot,
+        approvalDir,
+      });
   }
 
   /**
-   * Set `THINKUBE_THINKING_SPACE_ROOT` in the worktree's `.mcp.json` kanban-server env.
-   * Best-effort and machine-local — the edit stays uncommitted (never committed,
-   * like THINKUBE_FOLDERS). A missing `.mcp.json` is left untouched.
+   * Set the machine-local kanban env (`THINKUBE_THINKING_SPACE_ROOT` /
+   * `THINKUBE_APPROVAL_DIR` — one variable per provided field) in the worktree's
+   * `.mcp.json` kanban-server env. Best-effort and machine-local — the edit stays
+   * uncommitted (never committed, like THINKUBE_FOLDERS). A missing `.mcp.json`
+   * is left untouched.
    */
-  private async injectThinkingSpaceRoot(
+  private async injectKanbanEnv(
     worktreePath: string,
-    thinkingSpaceRoot: string,
+    env: { thinkingSpaceRoot?: string; approvalDir?: string },
   ): Promise<void> {
     const mcpPath = path.join(worktreePath, ".mcp.json");
     let parsed: unknown;
@@ -502,7 +533,7 @@ export class WorktreeService {
     } catch {
       return; // no .mcp.json to thinking space-connect
     }
-    const next = mcpWithThinkingSpaceRoot(parsed, thinkingSpaceRoot);
+    const next = mcpWithKanbanEnv(parsed, env);
     await fs.writeFile(mcpPath, JSON.stringify(next, null, 2) + "\n", "utf8");
   }
 

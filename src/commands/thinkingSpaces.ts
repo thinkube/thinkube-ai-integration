@@ -48,6 +48,12 @@ interface ThinkingSpaceDeps {
   provider: ThinkingSpaceNavigatorProvider;
   launcher: LauncherService;
   sessionLinks: SessionLinkService;
+  /**
+   * globalStorage-derived directory the Approve affordance mints approvals
+   * into (SP-10 arming). Threaded to KanbanPanel.open so Approve is available
+   * whenever the panel opens; absent, the panel reports it unavailable.
+   */
+  approvalStorageDir?: string;
 }
 
 /**
@@ -91,17 +97,20 @@ export function registerThinkingSpaceCommands(
     vscode.commands.registerCommand("thinkube.thinkingSpace.refresh", () =>
       deps.provider.refresh(),
     ),
-    vscode.commands.registerCommand("thinkube.thinkingSpace.open", (r: RepoEntry) =>
-      openThinkingSpaceFor(context, deps, r),
+    vscode.commands.registerCommand(
+      "thinkube.thinkingSpace.open",
+      (r: RepoEntry) => openThinkingSpaceFor(context, deps, r),
     ),
     // Spec-scoped thinking space: a single Spec's slices + DAG graph (SP-tgs8nz). Invoked
     // by clicking a Spec in the Specs view.
     vscode.commands.registerCommand(
       "thinkube.specs.openKanban",
-      (r: RepoEntry, specId: string) => openThinkingSpaceFor(context, deps, r, specId),
+      (r: RepoEntry, specId: string) =>
+        openThinkingSpaceFor(context, deps, r, specId),
     ),
-    vscode.commands.registerCommand("thinkube.thinkingSpace.enable", (r: RepoEntry) =>
-      enableHere(deps, r),
+    vscode.commands.registerCommand(
+      "thinkube.thinkingSpace.enable",
+      (r: RepoEntry) => enableHere(deps, r),
     ),
     vscode.commands.registerCommand(
       "thinkube.thinkingSpace.newClaudeSession",
@@ -115,8 +124,9 @@ export function registerThinkingSpaceCommands(
       "thinkube.thinkingSpace.resumeClaudeSession",
       (r: RepoEntry) => resumeClaudeSession(deps, r),
     ),
-    vscode.commands.registerCommand("thinkube.thinkingSpace.showConfiguredOnly", () =>
-      applyConfiguredOnly(context, deps.provider, true),
+    vscode.commands.registerCommand(
+      "thinkube.thinkingSpace.showConfiguredOnly",
+      () => applyConfiguredOnly(context, deps.provider, true),
     ),
     vscode.commands.registerCommand("thinkube.thinkingSpace.showAll", () =>
       applyConfiguredOnly(context, deps.provider, false),
@@ -243,6 +253,7 @@ async function openThinkingSpaceFor(
     extensionUri: deps.extensionUri,
     adapter,
     output: deps.output,
+    approvalStorageDir: deps.approvalStorageDir,
     // A card's "detail" is its slice file open in the editor.
     openDetail: async (id: string) => {
       const m = /^TEP-(\d+)_SP-(\d+)_SL-(\d+)$/.exec(id);
@@ -310,7 +321,10 @@ async function openThinkingSpaceFor(
   });
 }
 
-async function enableHere(deps: ThinkingSpaceDeps, r: RepoEntry): Promise<void> {
+async function enableHere(
+  deps: ThinkingSpaceDeps,
+  r: RepoEntry,
+): Promise<void> {
   if (r.enabled) {
     vscode.window.showInformationMessage(
       `${r.name} already has a Tandem thinking space.`,
