@@ -52,8 +52,7 @@ export interface TepApprovalRefusal {
  *  names the blocking TEP and its status. Mirrors `implementsPromoteCheck`'s
  *  `{ ok } | { ok; refuse; message }` shape. */
 export type TepApprovalResult =
-  | { ok: true }
-  | { ok: false; refuse: TepApprovalRefusal; message: string };
+  { ok: true } | { ok: false; refuse: TepApprovalRefusal; message: string };
 
 /**
  * Decide whether a Spec may move to **Ready**, given its `implements:` ref and
@@ -124,6 +123,11 @@ export interface ImplementingSpec {
   /** The Spec's `accepted:` stamp (ISO timestamp from `accept_spec`), or
    *  undefined/empty when the human hasn't accepted it yet. */
   accepted?: string;
+  /** The Spec's `superseded:` stamp (ISO timestamp from `supersede_spec`, SP-6/14),
+   *  or undefined/empty when it hasn't been superseded. Presence removes the Spec
+   *  from `openSpecs`/completeness exactly as `accepted:` does — a superseded Spec
+   *  is deliberately not being built, so it no longer blocks its TEP. */
+  superseded?: string;
 }
 
 /**
@@ -134,11 +138,13 @@ export interface TepCompleteResult {
   /** The TEP these specs implement, canonicalized to `TEP-<id>` (qualified refs
    *  keep their `<namespace>:` prefix) — echoed for self-contained messaging. */
   tep: string;
-  /** True iff **every** implementing Spec is `accepted`. A TEP with no
-   *  implementing Specs is **not** complete — there is nothing delivered. */
+  /** True iff **every** implementing Spec is resolved — `accepted` OR
+   *  `superseded` (SP-6/14). A TEP with no implementing Specs is **not**
+   *  complete — there is nothing delivered. An all-superseded (zero-accepted)
+   *  TEP therefore reports `complete: true`. */
   complete: boolean;
-  /** The `id`s of implementing Specs that are not yet `accepted`, in input
-   *  order. Empty exactly when `complete` is true. */
+  /** The `id`s of implementing Specs that are still open — neither `accepted`
+   *  nor `superseded` — in input order. Empty exactly when `complete` is true. */
   openSpecs: string[];
 }
 
@@ -146,6 +152,16 @@ export interface TepCompleteResult {
  *  non-empty string. */
 function isAccepted(spec: ImplementingSpec): boolean {
   return typeof spec.accepted === "string" && spec.accepted.trim().length > 0;
+}
+
+/** Has this Spec been superseded? True iff its `superseded:` stamp is a
+ *  non-empty trimmed string (the exact mirror of {@link isAccepted}). A
+ *  superseded Spec is deliberately not being built, so it is excluded from
+ *  `openSpecs`/completeness (SP-6/14). */
+export function isSuperseded(spec: ImplementingSpec): boolean {
+  return (
+    typeof spec.superseded === "string" && spec.superseded.trim().length > 0
+  );
 }
 
 /**
@@ -174,7 +190,7 @@ export function tepComplete(
   const tep = ref ? formatImplements(ref.namespace, ref.id) : `TEP-${tepId}`;
 
   const openSpecs = implementingSpecs
-    .filter((s) => !isAccepted(s))
+    .filter((s) => !isAccepted(s) && !isSuperseded(s))
     .map((s) => s.id);
   // No implementing specs ⇒ nothing delivered ⇒ not complete. Otherwise complete
   // exactly when no spec is left open.
