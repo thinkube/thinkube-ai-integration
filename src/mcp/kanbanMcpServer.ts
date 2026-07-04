@@ -887,6 +887,45 @@ const TOOL_DEFS = [
     },
   },
   {
+    name: "supersede_spec",
+    description:
+      'Mark a Spec as **superseded** — a deliberate, reason-carrying "not building this" state (SP-6/14). Distinct from `accepted:` (done) and from the view-only `archived:` flag; a superseded Spec is REMOVED from its TEP\'s `openSpecs`/completeness (unlike archived), so an abandoned Spec no longer blocks its TEP. REFUSED with an error naming `reason` when the reason is blank/whitespace-only (mirrors the slice Retire transition). On success stamps `superseded:` (ISO timestamp) + `superseded_reason:` on the Spec doc, leaving the body and every other frontmatter key unchanged; never writes an `accepted:` key. Reversible via `unsupersede_spec`.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        spec: {
+          type: "string",
+          description: "The Spec id (SP-{id}) to supersede.",
+        },
+        reason: {
+          type: "string",
+          description:
+            "Why this Spec is being superseded — required (a blank/whitespace reason is refused), recorded as `superseded_reason:`.",
+        },
+        ...THINKING_SPACE_PARAM,
+      },
+      required: ["spec", "reason"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "unsupersede_spec",
+    description:
+      "Reverse `supersede_spec` (SP-6/14): delete BOTH `superseded:` and `superseded_reason:` from the Spec's frontmatter, returning it to its TEP's `openSpecs`/completeness. Mirrors how `move_slice` deletes the `accepted:` key when reopening a Done slice — content-preserving, leaving the body and all other frontmatter keys unchanged.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        spec: {
+          type: "string",
+          description: "The Spec id (SP-{id}) to un-supersede.",
+        },
+        ...THINKING_SPACE_PARAM,
+      },
+      required: ["spec"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "create_slice",
     description:
       "Create a new slice under a Spec in the canonical shape. The server allocates the SL number (per-Spec, archive-aware) and serializes the file (frontmatter + `# title` heading + detail body) — callers never pick numbers or format files. Refused when the parent Spec is missing or has an empty `## Acceptance Criteria` (the → Ready gate, enforced at creation). Title limit: 70 chars — detail belongs in the body.",
@@ -1316,6 +1355,27 @@ export async function dispatchTool(
       writeGate(name);
       return writeLock.runExclusive(thinkingSpaceHandle, () =>
         acceptSpec(
+          store,
+          typeof args.spec === "number"
+            ? String(args.spec)
+            : asString(args, "spec"),
+        ),
+      );
+    case "supersede_spec":
+      writeGate(name);
+      return writeLock.runExclusive(thinkingSpaceHandle, () =>
+        supersedeSpec(
+          store,
+          typeof args.spec === "number"
+            ? String(args.spec)
+            : asString(args, "spec"),
+          asString(args, "reason"),
+        ),
+      );
+    case "unsupersede_spec":
+      writeGate(name);
+      return writeLock.runExclusive(thinkingSpaceHandle, () =>
+        unsupersedeSpec(
           store,
           typeof args.spec === "number"
             ? String(args.spec)
@@ -1902,6 +1962,8 @@ export async function getProject(
       implByTep.get(ref.id)!.push({
         id: specHandle(spec),
         accepted: typeof fm?.accepted === "string" ? fm.accepted : undefined,
+        superseded:
+          typeof fm?.superseded === "string" ? fm.superseded : undefined,
       });
       // Slices inherit membership from their spec.
       for (const rel of await store.listSlices(spec)) {
@@ -1940,6 +2002,8 @@ export async function getProject(
     implByTep.get(tep)!.push({
       id: specHandle(spec),
       accepted: typeof fm?.accepted === "string" ? fm.accepted : undefined,
+      superseded:
+        typeof fm?.superseded === "string" ? fm.superseded : undefined,
     });
     for (const rel of await projStore.listSlices(spec)) {
       const m = SLICE_PATH_RE.exec(rel);
@@ -2078,6 +2142,8 @@ async function implementingSpecsOfTep(
         out.push({
           id: specHandle(spec),
           accepted: typeof fm?.accepted === "string" ? fm.accepted : undefined,
+          superseded:
+            typeof fm?.superseded === "string" ? fm.superseded : undefined,
         });
       }
     }
@@ -2589,6 +2655,65 @@ async function acceptSpec(
   return { ok: true, spec, accepted };
 }
 
+/**
+ * Mark a Spec as superseded (SP-6/14) — a deliberate, reason-carrying "not
+ * building this" transition. Mirrors {@link acceptSpec}'s read-modify-write
+ * through `ThinkubeStore.writeFile` (dispatched under the same write-gate +
+ * write-lock). Refuses a blank/whitespace reason (an error whose message names
+ * `reason`, mirroring the slice Retire transition); on success stamps
+ * `superseded:` (a fresh ISO timestamp) and `superseded_reason:`, leaving the
+ * body and every other pre-existing frontmatter key untouched and never writing
+ * an `accepted:` key.
+ */
+async function supersedeSpec(
+  store: ThinkubeStore,
+  spec: string,
+  reason: string,
+): Promise<unknown> {
+  if (typeof reason !== "string" || reason.trim().length === 0) {
+    throw new Error(
+      "supersede_spec requires a non-empty `reason` — superseding a Spec must " +
+        "record why it is deliberately not being built. Provide a reason and retry.",
+    );
+  }
+  const specRel = store.pathForSpecDoc(spec);
+  const specDoc = await store.getFile(specRel);
+  if (!specDoc) {
+    throw new Error(`No spec at ${specRel} — nothing to supersede.`);
+  }
+  const superseded = new Date().toISOString();
+  await store.writeFile(
+    specRel,
+    { ...specDoc.frontmatter, superseded, superseded_reason: reason },
+    specDoc.body,
+  );
+  return { ok: true, spec, superseded, superseded_reason: reason };
+}
+
+/**
+ * Reverse {@link supersedeSpec} (SP-6/14): delete BOTH `superseded` and
+ * `superseded_reason` from the Spec's frontmatter, returning it to
+ * `tepComplete`'s `openSpecs`. Mirrors how `move_slice` deletes the `accepted:`
+ * key when reopening a Done slice — content-preserving.
+ */
+async function unsupersedeSpec(
+  store: ThinkubeStore,
+  spec: string,
+): Promise<unknown> {
+  const specRel = store.pathForSpecDoc(spec);
+  const specDoc = await store.getFile(specRel);
+  if (!specDoc) {
+    throw new Error(`No spec at ${specRel} — nothing to un-supersede.`);
+  }
+  const {
+    superseded: _s,
+    superseded_reason: _r,
+    ...rest
+  } = specDoc.frontmatter ?? {};
+  await store.writeFile(specRel, rest as Frontmatter, specDoc.body);
+  return { ok: true, spec };
+}
+
 /** Card-title character limit for `create_slice` (detail belongs in the body). */
 const TITLE_MAX = 70;
 
@@ -2831,6 +2956,21 @@ export async function createSlice(
   if (!specDoc) {
     throw new Error(
       `No spec at ${store.thinkubeDir}/${store.pathForSpecDoc(args.spec)} — run /spec-prepare ${args.spec} first.`,
+    );
+  }
+  // Superseded gate (SP-6/14): a retired Spec is not advanceable — `create_slice`
+  // IS the spec→Ready path, so a non-empty `superseded:` stamp refuses here (you
+  // don't build what you've deliberately superseded). Reversible via
+  // `unsupersede_spec`. Checked before the approval/AC gates so the refusal names
+  // the actual blocker.
+  const supersededStamp = specDoc.frontmatter?.superseded;
+  if (
+    typeof supersededStamp === "string" &&
+    supersededStamp.trim().length > 0
+  ) {
+    throw new Error(
+      `SP-${args.spec} is superseded (${supersededStamp}) and cannot be sliced or ` +
+        `advanced to Ready. Run unsupersede_spec ${args.spec} first if you mean to build it.`,
     );
   }
   // Human-approval gate (SP-6/3): the outermost door of → Ready, checked FIRST —

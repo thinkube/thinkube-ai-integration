@@ -70,6 +70,13 @@ export type SpecNode =
       accepted: boolean;
       /** Hidden from the default nav; revealed (marked) under "Show archived" (TEP-tg86v7). */
       archived: boolean;
+      /** The Spec carries a non-empty `superseded:` stamp (SP-6/14) — a deliberate
+       *  "not building this" state, distinct from done and from archived. Drives the
+       *  muted `circle-slash` icon + `spec-superseded` contextValue. */
+      superseded: boolean;
+      /** The `superseded_reason:` recorded at supersede time (SP-6/14), shown in the
+       *  "superseded · <reason>" description. Undefined when not superseded. */
+      supersededReason?: string;
     }
   | { kind: "delivered"; slice: DeliveredSlice }
   | { kind: "implements"; link: ImplementsLink }
@@ -283,6 +290,13 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
     const doc = await store.getFile(rel);
     const archived = doc?.frontmatter?.archived === true;
     if (archived && !this.showArchived) return undefined;
+    const supersededStamp = doc?.frontmatter?.superseded;
+    const superseded =
+      typeof supersededStamp === "string" && supersededStamp.trim().length > 0;
+    const supersededReason =
+      typeof doc?.frontmatter?.superseded_reason === "string"
+        ? doc.frontmatter.superseded_reason
+        : undefined;
     const { delivered, hasOpenWork } = await this.specRollup(store, n, coords);
     const implRaw =
       typeof doc?.frontmatter?.implements === "string"
@@ -320,6 +334,8 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
       hasOpenWork,
       accepted: doc?.frontmatter?.accepted != null,
       archived,
+      superseded,
+      supersededReason,
     };
   }
 
@@ -384,17 +400,30 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
         ? vscode.TreeItemCollapsibleState.Collapsed
         : vscode.TreeItemCollapsibleState.None,
     );
-    item.description = node.archived ? `archived · ${node.title}` : node.title;
+    // Status precedence (superseded > archived > accepted > open) drives the row's
+    // label prefix, icon, and contextValue from a single pure classifier (SP-6/14).
+    const state = specDisplayState(node);
+    const label =
+      state === "superseded"
+        ? `superseded · ${node.supersededReason ?? node.title}`
+        : node.archived
+          ? `archived · ${node.title}`
+          : node.title;
+    item.description = label;
     // Hover shows the full title (the spec's description), not the file path.
-    item.tooltip = node.archived ? `archived · ${node.title}` : node.title;
+    item.tooltip = label;
     item.iconPath = specStatusIcon(node);
-    // Archived specs get a distinct contextValue so Unarchive (not Archive, nor
-    // the worktree actions) shows on them (TEP-tg86v7).
-    item.contextValue = node.archived
-      ? "spec-archived"
-      : node.hasOpenWork
-        ? "spec-open"
-        : "spec-done";
+    // Superseded / archived specs get a distinct contextValue so the right
+    // reversal action (Unsupersede / Unarchive), not the worktree actions, shows
+    // (SP-6/14, TEP-tg86v7).
+    item.contextValue =
+      state === "superseded"
+        ? "spec-superseded"
+        : node.archived
+          ? "spec-archived"
+          : node.hasOpenWork
+            ? "spec-open"
+            : "spec-done";
     // Click a Spec → open its scoped kanban + DAG graph (SP-tgs8nz).
     item.command = {
       command: "thinkube.specs.openKanban",
@@ -405,26 +434,57 @@ export class SpecsProvider implements vscode.TreeDataProvider<SpecNode> {
   }
 }
 
-/** Status-at-a-glance icon for a Spec (SP-tgn2pd): archived keeps the archive
- *  affordance; otherwise accepted = green check, open work = blue, and a Spec
- *  with neither (not started / no open work) = a neutral outline. */
+/**
+ * Pure display classifier for a Spec (SP-6/14): collapses the three orthogonal
+ * facts — `superseded`, `archived`, `accepted` — into a single lifecycle state
+ * with precedence **superseded > archived > accepted > open**. Returns the STRING
+ * LITERAL (never a `vscode.ThemeIcon`), so `specStatusIcon` / `contextValue` /
+ * the row description all derive from ONE source of truth and can't diverge.
+ */
+export function specDisplayState(node: {
+  superseded: boolean;
+  accepted: boolean;
+  archived: boolean;
+}): "superseded" | "accepted" | "open" | "archived" {
+  if (node.superseded) return "superseded";
+  if (node.archived) return "archived";
+  if (node.accepted) return "accepted";
+  return "open";
+}
+
+/** Status-at-a-glance icon for a Spec (SP-tgn2pd / SP-6/14), derived from
+ *  {@link specDisplayState}: superseded = a muted `circle-slash` (mirroring the
+ *  TEP provider); archived keeps the archive affordance; accepted = green check;
+ *  open work = blue; a Spec with neither (not started / no open work) = a neutral
+ *  outline. */
 function specStatusIcon(node: {
+  superseded: boolean;
   archived: boolean;
   accepted: boolean;
   hasOpenWork: boolean;
 }): vscode.ThemeIcon {
-  if (node.archived) return new vscode.ThemeIcon("archive");
-  if (node.accepted)
-    return new vscode.ThemeIcon(
-      "pass-filled",
-      new vscode.ThemeColor("charts.green"),
-    );
-  if (node.hasOpenWork)
-    return new vscode.ThemeIcon(
-      "circle-filled",
-      new vscode.ThemeColor("charts.blue"),
-    );
-  return new vscode.ThemeIcon("circle-outline");
+  switch (specDisplayState(node)) {
+    case "superseded":
+      return new vscode.ThemeIcon(
+        "circle-slash",
+        new vscode.ThemeColor("disabledForeground"),
+      );
+    case "archived":
+      return new vscode.ThemeIcon("archive");
+    case "accepted":
+      return new vscode.ThemeIcon(
+        "pass-filled",
+        new vscode.ThemeColor("charts.green"),
+      );
+    default:
+      // "open" — distinguish in-flight work (blue) from not-yet-started (outline).
+      return node.hasOpenWork
+        ? new vscode.ThemeIcon(
+            "circle-filled",
+            new vscode.ThemeColor("charts.blue"),
+          )
+        : new vscode.ThemeIcon("circle-outline");
+  }
 }
 
 /** An "implements TEP-{id}" row under a Spec; clicking opens the proposal. */

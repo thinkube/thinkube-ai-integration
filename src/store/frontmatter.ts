@@ -151,6 +151,17 @@ export interface Frontmatter {
   created?: string;
   /** Spec-level: ISO timestamp the human accepted the Spec (set by `accept_spec`, TEP-0010). */
   accepted?: string;
+  /** Spec-level: ISO timestamp the Spec was superseded (set by `supersede_spec`,
+   *  SP-6/14). Its PRESENCE (a non-empty string) means the Spec is superseded — a
+   *  deliberate "not building this" state, orthogonal to `accepted:` and to the
+   *  view-only `archived:` flag. Unlike `archived`, a superseded Spec is removed
+   *  from `tepComplete`'s `openSpecs`/completeness. Cleared by `unsupersede_spec`.
+   *  Mirrors the shape of `accepted:` (a dedicated spec-level fact, not a `status:`). */
+  superseded?: string;
+  /** Spec-level: the human reason recorded when a Spec is superseded
+   *  (set alongside `superseded` by `supersede_spec`, SP-6/14). Cleared by
+   *  `unsupersede_spec`. */
+  superseded_reason?: string;
   /** Spec/TEP-level: hidden from the nav by default when true; a manual, reversible
    *  flag (TEP-tg86v7). Distinct from a slice's `status: archived` thinking space column. */
   archived?: boolean;
