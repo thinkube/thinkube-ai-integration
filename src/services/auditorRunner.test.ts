@@ -234,12 +234,33 @@ test("cluster / assessment / needs-reframe verdicts are left untouched by comman
   assert.equal(verdicts[2].run, undefined);
 });
 
-test("SP-6/7 AC6: a run already pointing at an acceptance/ path is kept as-is", async () => {
+test("a declared recipe overrides even an acceptance-pointing auditor command (fabrication guard)", async () => {
+  // The auditor is a headless model that fabricates plausible acceptance paths with the WRONG
+  // runner / build-dir (seen on SP-6/15: `npx mocha dist/acceptance/…` in a `node --test out-test/…`
+  // repo). Because ACCEPTANCE_EVIDENCE_RE matched that string, the old ordering kept it and skipped
+  // the recipe — silently defeating the per-AC independence the recipe turns on. The recipe must win.
+  const verdicts = [
+    V(1, "npm run compile && npx mocha dist/acceptance/SP-6_15_AC-1.test.js", "local"),
+  ];
+  await deriveVerificationCommands(verdicts, {
+    cwd: "/repo",
+    specId: "6/15",
+    resolveAcceptanceRecipe: async () => ({
+      sourcePath: "src/acceptance/SP-{spec}_AC-{ac}.test.ts",
+      run: "node --test out-test/acceptance/SP-{spec}_AC-{ac}.test.js",
+    }),
+    resolveLocalRun: async () => "npm test",
+  });
+  assert.equal(verdicts[0].run, "node --test out-test/acceptance/SP-6_15_AC-1.test.js");
+  assert.equal(verdicts[0].env, "local");
+});
+
+test("SP-6/7 AC6: with NO recipe, an acceptance-pointing command is kept (not clobbered by the whole-suite fallback)", async () => {
   const verdicts = [V(1, "node --test out-test/acceptance/SP-6.test.js", "local")];
   await deriveVerificationCommands(verdicts, {
     cwd: "/repo",
     specId: "9",
-    resolveAcceptanceRecipe: async () => ({ sourcePath: "x", run: "SHOULD-NOT-APPLY" }),
+    resolveAcceptanceRecipe: async () => undefined,
     resolveLocalRun: async () => "npm test",
   });
   assert.equal(verdicts[0].run, "node --test out-test/acceptance/SP-6.test.js");

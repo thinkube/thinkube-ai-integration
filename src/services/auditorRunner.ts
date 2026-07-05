@@ -446,11 +446,21 @@ export async function deriveVerificationCommands(
   const recipe = await resolveAcceptanceRecipe(opts.cwd);
   for (const v of verdicts) {
     if (v.verdict !== "verifiable" || v.env === "cluster") continue;
-    if (v.run && ACCEPTANCE_EVIDENCE_RE.test(v.run)) continue;
+    // A declared recipe is deterministic + AUTHORITATIVE — fill from it FIRST, overriding any
+    // model-authored `run`, even one that superficially points at an `acceptance/` path. The
+    // auditor is a headless model that fabricates the runner + build dir (seen: `npx mocha
+    // dist/acceptance/…` in a `node --test out-test/…` repo), and ACCEPTANCE_EVIDENCE_RE cannot
+    // tell a fabricated acceptance path from a real probe — so letting the regex keep the model's
+    // command silently defeats the very per-AC independence the recipe is meant to turn on.
     if (recipe && opts.specId) {
       v.run = fillProbeTemplate(recipe.run, opts.specId, v.ordinal);
       v.env = "local";
-    } else if (localRun) {
+      continue;
+    }
+    // No recipe (the repo hasn't opted in): keep an auditor command already pointing at a held-out
+    // acceptance/ path as-is; otherwise fall back to the repo's whole-suite command.
+    if (v.run && ACCEPTANCE_EVIDENCE_RE.test(v.run)) continue;
+    if (localRun) {
       v.run = localRun;
       v.env = "local";
     }
