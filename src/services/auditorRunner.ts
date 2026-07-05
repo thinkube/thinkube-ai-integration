@@ -487,6 +487,19 @@ export function createSdkAuditRunner(deps: SdkAuditDeps = {}): AuditRunner {
     let sawSuccess = false;
 
     try {
+      // The kanban MCP server is spawned rooted in the session's cwd. For a rejected
+      // project-member that cwd is an ephemeral working-repo worktree the orchestrator
+      // RESETS on a fresh run (remove + re-add → new inode) and accept later removes.
+      // If that happens while this long-lived server is still alive, its process.cwd()
+      // is a dangling reference and the SDK spawn below dies with `ENOENT: uv_cwd`
+      // BEFORE it ever applies our `cwd` option (Node reads the parent cwd first).
+      // Repair it to the audit's already-resolved good cwd so the audit survives a
+      // worktree that moved under us (TEP-6). `req.cwd` is verified to exist upstream.
+      try {
+        process.cwd();
+      } catch {
+        process.chdir(req.cwd);
+      }
       const query = await loadQuery();
       for await (const msg of query({
         prompt,

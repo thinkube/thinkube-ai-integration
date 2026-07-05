@@ -1323,6 +1323,26 @@ export async function dispatchTool(
   ctx: HandlerContext,
   writeGate: (n: string) => void,
 ): Promise<unknown> {
+  // The MCP server is a long-lived subprocess rooted in the session's launch cwd. For a
+  // rejected project-member that cwd is an ephemeral working-repo worktree the orchestrator
+  // RESETS on a fresh run (remove + re-add → new inode) and accept later removes — leaving
+  // this server's process.cwd() a dangling reference that makes every child-process spawn
+  // (the verifiability audit, probes) die with `ENOENT: uv_cwd`. Recover to the stable
+  // thinking-space root before dispatching so a worktree that moved under us can't wedge the
+  // whole server (TEP-6). Per-spawn callers still pass their own precise cwd on top of this.
+  try {
+    process.cwd();
+  } catch {
+    const safe = ctx.env.thinkingSpaceRoot;
+    if (safe) {
+      try {
+        process.chdir(safe);
+      } catch {
+        /* no better fallback — the per-call cwd option is the last line of defense */
+      }
+    }
+  }
+
   if (name === "list_thinking_spaces") return listThinkingSpaces(ctx);
   if (name === "list_tags") return listTags(ctx);
   if (name === "list_products") return listProducts(ctx);
