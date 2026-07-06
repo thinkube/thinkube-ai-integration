@@ -7,7 +7,7 @@
 // the single source of truth.
 //
 // The **Approve** button is the UI action only the maintainer can take: the webview posts to
-// this host class, which mints `mintApproval(subjectKey, approvalContentHash(current body),
+// this host class, which mints `mintApproval(subjectKey, specApprovalHash(raw file text),
 // Date.now(), loadOrCreateApprovalSecret(deps.storageDir))` and delivers it via
 // `createApprovalStore(deps.storageDir).put(subjectKey, token)` — the side-channel the gate
 // (`create_slice` / spec→Ready in the MCP server, which self-locates the same directory from its
@@ -15,8 +15,9 @@
 // never handles it.
 //
 // Content-binding drives the panel's state machine: every render recomputes
-// `approvalContentHash` of the current body and re-verifies the stored token against it, so the
-// moment the document is edited a prior approval stops verifying and the panel re-arms Approve
+// `specApprovalHash` of the current raw file (body only) and re-verifies the stored token against
+// it, so the moment the document is edited a prior approval stops verifying and the panel re-arms
+// Approve
 // ("changed since approval — re-approve"). Time is not a factor: a content-matching approval stays
 // "approved" however long the human took — only an edit (via the file watcher) re-arms Approve.
 //
@@ -28,13 +29,12 @@ import * as vscode from "vscode";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
-  approvalContentHash,
   loadOrCreateApprovalSecret,
   mintApproval,
   verifyApproval,
 } from "../../services/approvalToken";
 import { createApprovalStore } from "../../services/approvalStore";
-import { parseFrontmatter } from "../../store/frontmatter";
+import { specApprovalHash } from "../../services/specApprovalHash";
 
 // markdown-it ships no bundled types; load it untyped (the extension is CommonJS) — same
 // convention as `commands/orchestrate.ts`. `html: false` so raw HTML in the reviewed document is
@@ -134,12 +134,12 @@ export class ReviewPanel {
    */
   private approve(): void {
     try {
-      // Hash the BODY only (frontmatter parsed out) — exactly what `create_slice`'s gate hashes
-      // (`approvalContentHash(specDoc.body)`). Hashing the raw file, frontmatter included, minted a
-      // token the gate could never verify — a mint/verify mismatch that stayed latent while the gate
-      // shipped dark, until SP-17 armed it (TEP-6 mechanism 6).
-      const raw = fs.readFileSync(this.docPath, "utf8");
-      const contentHash = approvalContentHash(parseFrontmatter(raw).body);
+      // Hash the BODY only, via the shared `specApprovalHash` helper fed the RAW file — the same
+      // body bytes `create_slice`'s gate hashes from `specDoc.body`. Hashing the raw file,
+      // frontmatter included, minted a token the gate could never verify — a mint/verify mismatch
+      // that stayed latent while the gate shipped dark, until SP-17 armed it (TEP-6 mechanism 6).
+      // Routing the mint through the one helper makes that divergence impossible.
+      const contentHash = specApprovalHash(fs.readFileSync(this.docPath, "utf8"));
       const secret = loadOrCreateApprovalSecret(this.deps.storageDir);
       const token = mintApproval(
         this.subjectKey,
@@ -182,7 +182,7 @@ export class ReviewPanel {
       return;
     }
 
-    const contentHash = approvalContentHash(parseFrontmatter(raw).body);
+    const contentHash = specApprovalHash(raw);
     const state = this.evaluate(contentHash);
     this.postUpdate(state, contentHash, md.render(raw));
   }
