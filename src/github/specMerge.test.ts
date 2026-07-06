@@ -13,6 +13,8 @@ function ops(over: Partial<PrOps> = {}): PrOps {
     unmergedCommits: async () => 0,
     openPr: async () => {},
     merge: async () => "",
+    // Default mergeable so existing count=1 tests reach `merge` on the first poll (SP-13).
+    mergeable: async () => true,
     ...over,
   };
 }
@@ -162,7 +164,11 @@ test("no PR, nothing ahead, remote branch GONE → already-merged idempotent re-
     output: "",
     alreadyMerged: true,
   });
-  assert.equal(openCalled, false, "an already-merged Spec must not re-open a PR");
+  assert.equal(
+    openCalled,
+    false,
+    "an already-merged Spec must not re-open a PR",
+  );
 });
 
 test("ahead branch whose openPr fails (rejected push / gh) → throws, not silently dropped", async () => {
@@ -227,20 +233,138 @@ test("the ahead-count probe failing → throws (never mis-classified as no-pr)",
   );
 });
 
-test("a PR exists but the merge is rejected → throws, not swallowed", async () => {
+test("mergeable false×K then true → merges after exactly K sleeps (AC1)", async () => {
+  // The race fix: a fresh PR reports not-mergeable-yet for the first few polls, then
+  // settles. The bounded retry must ride that out and land it — exactly K sleeps for K
+  // false polls, and `merge` runs once when it finally goes mergeable.
+  const K = 2;
+  let polls = 0;
+  let sleeps = 0;
+  let mergeCalls = 0;
+  const res = await mergeSpecPr(
+    "tg8dsb",
+    "/repo",
+    ops({
+      openPrCount: async () => 1,
+      mergeable: async () => {
+        polls += 1;
+        return polls > K; // false for the first K polls, then true
+      },
+      merge: async () => {
+        mergeCalls += 1;
+        return "Merged PR #11";
+      },
+    }),
+    {
+      sleep: async () => {
+        sleeps += 1;
+      },
+      maxAttempts: 5,
+    },
+  );
+  assert.deepEqual(res, {
+    branch: "spec/SP-tg8dsb",
+    merged: true,
+    opened: false,
+    output: "Merged PR #11",
+  });
+  assert.equal(sleeps, K, "one sleep per not-mergeable-yet poll");
+  assert.equal(
+    mergeCalls,
+    1,
+    "merge fires exactly once, after it becomes mergeable",
+  );
+});
+
+test("mergeable always false → bounded failure with exactly maxAttempts-1 sleeps, merge never runs (AC2)", async () => {
+  const N = 3;
+  let sleeps = 0;
+  let mergeCalled = false;
   await assert.rejects(
     mergeSpecPr(
       "tg8dsb",
       "/repo",
       ops({
         openPrCount: async () => 1,
+        mergeable: async () => false, // never settles (real conflicts)
         merge: async () => {
-          throw Object.assign(new Error("merge failed"), {
-            stderr: "Pull request is not mergeable",
-          });
+          mergeCalled = true;
+          return "should not happen";
         },
       }),
+      {
+        sleep: async () => {
+          sleeps += 1;
+        },
+        maxAttempts: N,
+      },
     ),
-    /gh pr merge spec\/SP-tg8dsb failed: Pull request is not mergeable/,
+    /mergeable/i,
   );
+  assert.equal(
+    sleeps,
+    N - 1,
+    "one sleep between each of the N bounded attempts",
+  );
+  assert.equal(
+    mergeCalled,
+    false,
+    "a PR that never becomes mergeable must never be merged",
+  );
+});
+
+test("mergeable true on the first poll → merges with zero sleeps (AC3)", async () => {
+  let sleeps = 0;
+  let mergeCalls = 0;
+  const res = await mergeSpecPr(
+    "tg8dsb",
+    "/repo",
+    ops({
+      openPrCount: async () => 1,
+      mergeable: async () => true,
+      merge: async () => {
+        mergeCalls += 1;
+        return "Merged PR #12";
+      },
+    }),
+    {
+      sleep: async () => {
+        sleeps += 1;
+      },
+    },
+  );
+  assert.deepEqual(res, {
+    branch: "spec/SP-tg8dsb",
+    merged: true,
+    opened: false,
+    output: "Merged PR #12",
+  });
+  assert.equal(sleeps, 0, "a mergeable PR waits for nothing");
+  assert.equal(mergeCalls, 1);
+});
+
+test("mergeable, but merge races to already-merged → success, never a bounded failure (preserved)", async () => {
+  // The idempotent-race branch must still take precedence: the PR passes the mergeable
+  // poll, then `gh pr merge` throws already-merged (a concurrent accept landed it). That
+  // is an alreadyMerged success, not a /mergeable/ failure.
+  const res = await mergeSpecPr(
+    "tg8dsb",
+    "/repo",
+    ops({
+      openPrCount: async () => 1,
+      mergeable: async () => true,
+      merge: async () => {
+        throw Object.assign(new Error("merge failed"), {
+          stderr: "Pull request has already been merged",
+        });
+      },
+    }),
+  );
+  assert.deepEqual(res, {
+    branch: "spec/SP-tg8dsb",
+    merged: true,
+    opened: false,
+    output: "Pull request has already been merged",
+    alreadyMerged: true,
+  });
 });
