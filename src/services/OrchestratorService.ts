@@ -74,6 +74,14 @@ import {
   type ContainmentResult,
 } from "../methodology/parallelSlices";
 import { defaultAcceptanceRecipeResolver } from "./auditorRunner";
+// Closing-gate full-suite regression backstop (SP-6/18): pure primitives that resolve the repo's
+// whole-suite command, read a completed run into a verdict, and fail-closed-block every green-eligible
+// landed slice on a red suite. The DECISION lives there; the closing gate wires the runner seam.
+import {
+  resolveRegressionCommand,
+  regressionGateVerdict,
+  applyRegressionGate,
+} from "./regressionGate";
 import {
   startSession,
   appendSession,
@@ -115,6 +123,15 @@ export interface OrchestratorDeps {
     verifs: AcVerification[],
     cwd: string,
   ) => Promise<AcResult[]>;
+  /** Run the repo's declared WHOLE-SUITE regression command in the assembled worktree (SP-6/18) —
+   *  the closing gate's fail-closed backstop, run AFTER the per-AC grade. Returns the completed run's
+   *  exit `code` + captured `output`; the pure `regressionGateVerdict`/`applyRegressionGate` turn a
+   *  non-zero exit into a block of every green-eligible landed slice. Defaults to the same bash runner
+   *  the `prepare` build gate uses; tests inject a fake so a red suite is drivable without a cluster. */
+  runRegression?: (
+    command: string,
+    cwd: string,
+  ) => Promise<{ code: number; output: string }>;
   /** Grade an `env: "assessment"` AC (SP-6/7 AC3) by dispatching a fresh INDEPENDENT assessor session
    *  (never the implementing worker), returning pass/fail + rationale from the AC + intent + delivered
    *  artifact. The closing gate hands it to `runAcVerifications` so a prose/UX/skill AC no runnable
@@ -1719,6 +1736,69 @@ export class OrchestratorService {
         output.appendLine(
           `⚑ ${s.handle}: closing gate red → requires-attention.`,
         );
+      }
+    }
+
+    // ── Full-suite regression backstop (SP-6/18) ──────────────────────────
+    // After the per-AC grade builds `green` (the green-eligible set), run the repo's declared
+    // WHOLE-SUITE command in the assembled worktree and FAIL CLOSED on a red suite: every remaining
+    // green slice is removed from the commit set and flagged requires-attention. This catches the
+    // behavioural breaks + prior-spec drift the import-only author-time gate cannot see — no change
+    // reaches Done over a red tree. It is SELF-GRADED on purpose (`regression ≠ acceptance`): it asks
+    // "did anything else break", not "did the worker prove intent" — independence stays the per-AC
+    // grade's job above. The command is resolved from the recipe's `selfVerify` (the repo's
+    // build-and-run-all convention) + the worktree `package.json`; nothing declared ⇒ no-command ⇒
+    // skipped (nothing to regress), mirroring the `prepare` gate. The runner is the injectable
+    // `runRegression` seam (default: the same bash runner `prepare` uses).
+    if (green.size > 0) {
+      let packageJsonText: string | undefined;
+      try {
+        packageJsonText = await fs.promises.readFile(
+          path.join(worktreePath, "package.json"),
+          "utf8",
+        );
+      } catch {
+        packageJsonText = undefined; // no package.json ⇒ fall through to the recipe/no-command path
+      }
+      const regressionCommand = resolveRegressionCommand({
+        conventionsCommand: recipe?.selfVerify,
+        packageJsonText,
+      });
+      let run: { command: string; code: number; output: string } | undefined;
+      if (regressionCommand) {
+        output.appendLine(
+          `▸ SP-${specNumber}: regression backstop — $ ${regressionCommand}`,
+        );
+        const runner =
+          this.deps.runRegression ??
+          (async (cmd: string, cwd: string) => {
+            const res = await this.runPrepare(cmd, cwd);
+            return { code: res.ok ? 0 : 1, output: res.output };
+          });
+        const res = await runner(regressionCommand, worktreePath);
+        run = {
+          command: regressionCommand,
+          code: res.code,
+          output: res.output,
+        };
+      }
+      const decision = applyRegressionGate({
+        verdict: regressionGateVerdict(run),
+        landedSlices: [...green.keys()],
+      });
+      if (decision.blocked.length > 0) {
+        output.appendLine(
+          `⚑ SP-${specNumber}: regression backstop RED → ${decision.blocked.length} green-eligible slice(s) blocked (fail-closed).`,
+        );
+        for (const b of decision.blocked) {
+          green.delete(b.slice); // remove from the commit set
+          await blockSlice(b.slice, b.diagnosis);
+          output.appendLine(
+            `⚑ ${b.slice}: whole-suite regression red → requires-attention.`,
+          );
+        }
+      } else if (decision.ran) {
+        output.appendLine(`✓ SP-${specNumber}: regression backstop green.`);
       }
     }
 

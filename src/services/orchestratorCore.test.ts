@@ -1420,14 +1420,16 @@ test("SP-6/7 AC1: a test unit KEEPS the Acceptance Criteria + satisfies; a code 
   assert.doesNotMatch(cp, /HELD-OUT TEST-AUTHOR/);
 });
 
-test("SP-6/7: a test worker loses the roam/evasion tools but keeps Read/Glob (its cwd is the impl-free snapshot)", () => {
+test("SP-6/16: a test worker loses Bash/Web/Task but KEEPS Grep + Read/Glob (its cwd is the impl-free snapshot)", () => {
   // Structural independence: the tester's tree simply lacks the modifications, so Read/Glob are
-  // unrestricted. The secondary control removes Bash/Grep (the roam / absolute-path vectors) and
-  // Web/Task. A code worker keeps the full set.
+  // unrestricted. The secondary control removes Bash (the roam / absolute-path vector) and Web/Task.
+  // SP-6/16 RESTORED `Grep` for test workers (it is now scoped to the worker's own cwd snapshot, not
+  // denied), so the SP-6/7-era assertion that `Grep` is denied is stale — correct it here so the
+  // assembled suite is green under SP-6/18's regression backstop. A code worker keeps the full set.
   const denied = disallowedToolsForRole("test");
-  for (const t of ["Bash", "Grep", "WebFetch", "WebSearch", "Task"])
+  for (const t of ["Bash", "WebFetch", "WebSearch", "Task"])
     assert.ok(denied.includes(t), `test worker denies ${t}`);
-  for (const t of ["Read", "Glob", "Write", "Edit", "MultiEdit"])
+  for (const t of ["Grep", "Read", "Glob", "Write", "Edit", "MultiEdit"])
     assert.ok(!denied.includes(t), `test worker keeps ${t}`);
   assert.deepEqual(disallowedToolsForRole("code"), []);
   assert.deepEqual(disallowedToolsForRole(undefined), []);

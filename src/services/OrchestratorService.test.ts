@@ -238,7 +238,9 @@ function makeDeps(
         rel === SPEC_DOC
           ? {
               frontmatter: {
-                ...(specVerifs === null ? {} : { ac_verifications: specVerifs }),
+                ...(specVerifs === null
+                  ? {}
+                  : { ac_verifications: specVerifs }),
                 ...(opts.superseded ? { superseded: opts.superseded } : {}),
               },
               body: "",
@@ -348,7 +350,9 @@ test("SP-6/14: a superseded Spec is NOT orchestrated — dispatchSpec refuses be
     {
       "teps/TEP-1/SP-1/SL-1.md": {
         status: "ready",
-        work_units: [{ footprint: ["src/a.ts"], execution: "fan-out", note: "do a" }],
+        work_units: [
+          { footprint: ["src/a.ts"], execution: "fan-out", note: "do a" },
+        ],
       },
     },
     { superseded: "2026-07-04T00:00:00.000Z" },
@@ -546,6 +550,72 @@ test("dispatchSpec: all-green per-AC plan → satisfied ordinals checked, all sl
     ["1/1"],
     "a committed Spec tears down its worktree",
   );
+});
+
+test("SP-6/18: a red whole-suite regression backstop blocks a green-eligible slice (fail-closed)", async () => {
+  // A green-eligible slice (its per-AC grade passes) must STILL not reach Done when the closing
+  // gate's whole-suite regression backstop runs red — the collateral-break detection SP-6/18 adds
+  // after the per-AC grade. The command resolves from the worktree `package.json`'s `scripts.test`
+  // (→ `npm test`); the run itself is the injected `runRegression` seam, returning a non-zero exit.
+  const wt = fs.mkdtempSync(path.join(os.tmpdir(), "tk-orch-regr-"));
+  fs.writeFileSync(
+    path.join(wt, "package.json"),
+    JSON.stringify({ scripts: { test: "node --test out-test/" } }),
+  );
+  const { deps, calls } = makeDeps({
+    "teps/TEP-1/SP-1/SL-1.md": {
+      status: "ready",
+      files: ["src/a.ts"],
+      satisfies: [1],
+    },
+  });
+  // Point the worktree at the real dir carrying the package.json (so the command resolves).
+  deps.worktrees = {
+    create: async () => {
+      calls.created++;
+      return wt;
+    },
+  } as unknown as OrchestratorDeps["worktrees"];
+  // Inject a RED whole-suite run — the backstop must fail-closed and block the green-eligible slice.
+  let regressionRuns = 0;
+  let ranCommand = "";
+  deps.runRegression = async (command: string) => {
+    regressionRuns++;
+    ranCommand = command;
+    return {
+      code: 1,
+      output: "FAIL src/services/orchestratorCore.test.ts (a prior-spec red)",
+    };
+  };
+
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
+
+  assert.equal(regressionRuns, 1, "the whole-suite command ran once at close");
+  assert.equal(
+    ranCommand,
+    "npm test",
+    "resolved from the worktree package.json test script",
+  );
+  assert.deepEqual(r.advanced, [], "no slice advances over a red suite");
+  assert.deepEqual(
+    r.attention,
+    ["TEP-1_SP-1_SL-1"],
+    "the green-eligible slice → requires-attention (fail-closed)",
+  );
+  assert.equal(r.committed, false, "nothing commits over a red tree");
+  assert.equal(calls.committed, 0, "the green slice never reached its commit");
+  assert.deepEqual(
+    calls.checked,
+    [],
+    "no AC ordinal is ticked for a blocked slice",
+  );
+  assert.match(
+    calls.attentionReasons.join("\n"),
+    /regression/i,
+    "the requires-attention diagnosis names the regression backstop",
+  );
+
+  fs.rmSync(wt, { recursive: true, force: true });
 });
 
 test("dispatchSpec: a malformed DAG (cycle) is rejected — nothing dispatched", async () => {
