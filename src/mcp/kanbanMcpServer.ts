@@ -100,6 +100,16 @@ import {
   findUncoveredImporters,
   type RepoFile,
 } from "../services/retiredSymbolFootprint";
+// Author-time test-impact footprint gate (SP-6/18): the pure, injectable check that refuses a slice
+// whose change's TEST blast-radius isn't in scope — an existing test that imports a changed SOURCE
+// file must be folded into the footprint (a unit test) or retired (a held-out probe). Mirrors the
+// retired-symbol wiring: `create_slice` / the `update_slice` re-cut feed it the tracked source files
+// + the source (non-test) footprint entries as `changedFiles`; the DECISION (what's a test, how a
+// specifier resolves, the violation shape + refusal tokens) is owned there and never re-spelled here.
+import {
+  findUncoveredTests,
+  buildTestImpactRefusal,
+} from "../services/testImpactFootprint";
 import {
   CONTROL_DIR_ENV,
   serializeControlRequest,
@@ -948,7 +958,7 @@ const TOOL_DEFS = [
   {
     name: "create_slice",
     description:
-      "Create a new slice under a Spec in the canonical shape. The server allocates the SL number (per-Spec, archive-aware) and serializes the file (frontmatter + `# title` heading + detail body) — callers never pick numbers or format files. Refused when the parent Spec is missing or has an empty `## Acceptance Criteria` (the → Ready gate, enforced at creation). Declare any exported symbols the slice removes/narrows in `retires:` — the server refuses the slice unless every existing importer of a retired symbol is already inside its footprint (SP-6/15). Title limit: 70 chars — detail belongs in the body.",
+      "Create a new slice under a Spec in the canonical shape. The server allocates the SL number (per-Spec, archive-aware) and serializes the file (frontmatter + `# title` heading + detail body) — callers never pick numbers or format files. Refused when the parent Spec is missing or has an empty `## Acceptance Criteria` (the → Ready gate, enforced at creation). Declare any exported symbols the slice removes/narrows in `retires:` — the server refuses the slice unless every existing importer of a retired symbol is already inside its footprint (SP-6/15). The server also refuses a slice whose changed SOURCE files have existing test importers outside its footprint (SP-6/18) — fold each impacted unit test into the footprint, or retire each held-out acceptance probe. Title limit: 70 chars — detail belongs in the body.",
     inputSchema: {
       type: "object",
       properties: {
@@ -3412,6 +3422,14 @@ export async function createSlice(
     declaredFiles,
   );
 
+  // Test-impact footprint gate (SP-6/18). LAST of the footprint gates: compute `changedFiles` from
+  // the SOURCE (non-test) footprint entries and refuse the slice if any EXISTING test importing one
+  // of them sits outside `declaredFiles`. A UNIT test is folded into the footprint; a HELD-OUT probe
+  // is retired. No source footprint entry ⇒ short-circuit (no scan). Decision owned by
+  // `findUncoveredTests`; this handler only supplies the repo files + turns a non-empty verdict into
+  // the refusal (mirroring the retired-symbol gate above).
+  assertTestImpactFootprinted(store.workspaceRoot, declaredFiles);
+
   const sliceNumber = await store.nextSliceNumber(args.spec);
   const uid = await uniqueSlug(store, args.spec, title);
   const fm: Frontmatter = {
@@ -3901,6 +3919,46 @@ function assertRetiredSymbolsFootprinted(
   );
 }
 
+/** A footprint entry is a TEST iff (normalized) it is under `src/acceptance/` or ends in a
+ *  `.test.[cm]?[jt]sx?` extension — the SAME rule the pure `findUncoveredTests` applies to a repo
+ *  file. Its complement (the SOURCE files) is the change's `changedFiles`. Kept a one-liner here so
+ *  the wiring can split the footprint without re-importing the detector's internals. */
+function isTestFootprintPath(p: string): boolean {
+  const n = p.replace(/\\/g, "/").replace(/^\.\//, "");
+  return n.startsWith("src/acceptance/") || /\.test\.[cm]?[jt]sx?$/.test(n);
+}
+
+/**
+ * Author-time test-impact footprint gate (SP-6/18). After the footprint/contract-first/retired-symbol
+ * gates, refuse a slice whose change's TEST blast-radius isn't in scope: `changedFiles` are the
+ * SOURCE (non-test) footprint entries, and any EXISTING test that imports one of them but is NOT in
+ * the footprint is a violation. The verdict is the pure `findUncoveredTests` (repo files injected,
+ * decision owned there); a NON-EMPTY result TOTALLY refuses the write with `buildTestImpactRefusal`'s
+ * per-violation lines — a UNIT test is folded into the footprint (the code-author updates it), a
+ * HELD-OUT probe is retired in a deletion unit (never pulled into a code footprint, TEP-6 mechanism
+ * 5). No source footprint entry ⇒ no blast radius ⇒ short-circuit with no scan and no disk read.
+ */
+function assertTestImpactFootprinted(
+  repoRoot: string,
+  footprintPaths: string[],
+): void {
+  const changedFiles = footprintPaths.filter((p) => !isTestFootprintPath(p));
+  if (changedFiles.length === 0) return; // no source change ⇒ no test blast radius, no scan
+  const violations = findUncoveredTests({
+    changedFiles,
+    footprintPaths,
+    repoFiles: readRepoSourceFiles(repoRoot),
+  });
+  if (violations.length === 0) return;
+  throw new Error(
+    `Refusing the slice: the change's test blast-radius is not in scope — existing test(s) import a ` +
+      `source file this slice changes, and no work unit owns them, so they would break at the closing ` +
+      `gate OUTSIDE any worker's footprint. Fold each UNIT test into the slice's \`files\` / a ` +
+      `work_unit \`footprint\`; retire each HELD-OUT probe in a deletion unit (never footprint a ` +
+      `held-out probe):\n${buildTestImpactRefusal(violations)}`,
+  );
+}
+
 /** Normalize a raw `ac_verifications` map (AC ordinal → declaration) into the canonical
  *  `{ run, env? }` frontmatter shape, dropping entries without a non-empty `run` or a positive
  *  integer ordinal, and sorting the keys by ordinal for a stable, low-diff write. */
@@ -4000,6 +4058,21 @@ export async function updateSlice(
     if (retires.length) base.retires = retires;
     else delete base.retires;
     nextFm = base;
+  }
+
+  // Test-impact footprint gate (SP-6/18). On a re-cut (the footprint fields were replaced), refuse
+  // the re-cut whose changed SOURCE files have existing test importers OUTSIDE the post-re-cut
+  // footprint — the same door `create_slice` runs, taken over the RESULTING frontmatter so a re-cut
+  // that widens the footprint to fold in the impacted test is accepted. A pure metadata update (no
+  // re-cut) leaves the footprint untouched and skips the gate.
+  if (reCut) {
+    const base: Frontmatter = { ...(nextFm ?? parsed.frontmatter ?? {}) };
+    const wus = (base.work_units ?? []) as { footprint?: string[] }[];
+    const footprintPaths = [
+      ...(Array.isArray(base.files) ? (base.files as string[]) : []),
+      ...wus.flatMap((wu) => wu?.footprint ?? []),
+    ];
+    assertTestImpactFootprinted(store.workspaceRoot, footprintPaths);
   }
 
   // Body: optional. When provided, the heading guard (SP-4) applies — a body whose
