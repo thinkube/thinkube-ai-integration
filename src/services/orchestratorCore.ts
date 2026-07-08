@@ -813,8 +813,13 @@ export function buildWorkerPrompt(
     /** SP-12: the repo-declared, non-mutating build-and-test command a CODE-author runs to
      *  self-verify (read from `.tandem/conventions.json`'s top-level `selfVerify`). Rendered as the
      *  VERIFICATION BLOCK for code units when set; omitted entirely (block + `SELF-VERIFY` marker)
-     *  when absent/blank. A test unit renders none of the SP-12 blocks. */
+     *  when absent/blank. A test unit renders none of the SP-12 blocks. Ignored when
+     *  {@link oracleAvailable} is set — the oracle replaces the self-run command. */
     selfVerifyCommand?: string;
+    /** Tests-first (2026-07-08): the black-box verify oracle is wired for this code unit. The
+     *  VERIFICATION BLOCK then instructs the worker to verify EXCLUSIVELY via the `verify` tool
+     *  (never running builds/tests itself), and the prohibitions extend to every test file. */
+    oracleAvailable?: boolean;
     /** SP-6/16 Part A: the repo's canonical example test CONTENT — the file declared as a repo-relative
      *  `testExample` in `.tandem/conventions.json`, its content read by `defaultAcceptanceRecipeResolver`.
      *  Rendered VERBATIM under the `EXAMPLE TEST` marker into a `role: "test"` prompt ONLY; omitted
@@ -894,14 +899,24 @@ export function buildWorkerPrompt(
   //  3. HELD-OUT PROHIBITION (unconditional) — the held-out `acceptance/` probes are the closing
   //     gate's to grade; the worker must not build or run them.
   const selfVerify = context?.selfVerifyCommand?.trim();
-  const verifyBlock =
-    !isTest && selfVerify
+  const oracle = !isTest && !!context?.oracleAvailable;
+  // Tests-first (2026-07-08): with the oracle wired, the coder's ONLY feedback channel is the
+  // `verify` tool — it compiles the current work together with the slice's acceptance checks in
+  // an isolated runner and returns structured results (compile errors / per-check pass-fail).
+  // The worker never builds or runs anything itself, so it needs no local toolchain and has no
+  // reason to touch test files or shared build config.
+  const verifyBlock = oracle
+    ? `\n──── VERIFY (your only feedback channel) ────\nAfter editing, call the \`verify\` tool (mcp__oracle__verify). It builds your current work together with this slice's acceptance checks in an isolated runner and returns the results: compile errors, or per-check PASS/FAIL with the failing assertion. Iterate until everything passes. Do NOT run builds or tests yourself — the tool is faster and authoritative. A failure the tool marks as "not your code" is being handled elsewhere; keep implementing to the SPEC CONTRACT.\n`
+    : !isTest && selfVerify
       ? `\n──── SELF-VERIFY (after editing your files, run this non-mutating build-and-test command to check your work) ────\n${selfVerify}\n`
       : "";
   const prohibitionsBlock = !isTest
     ? `\nSTANDING PROHIBITIONS (do not breach these to self-verify):\n` +
       `- Stay inside your declared footprint. Never edit a file outside it — shared build/config (\`tsconfig*.json\`, other tsconfig files, etc.) included. The footprint guard hard-aborts and reverts an out-of-footprint write; do not improvise into shared build config to make tests run.\n` +
-      `- The held-out \`acceptance/\` probes are graded by the closing gate, not by you: do not build or run them.\n`
+      (oracle
+        ? `- Test authorship is not your role: never create, edit, read or run ANY test file (\`*.test.*\`, anything under \`acceptance/\`). Verification happens ONLY through the \`verify\` tool.\n` +
+          `- Never run package managers or build/test commands (\`npm install\`, \`npm test\`, \`tsc\`, …) — the worktree has no toolchain for you, by design; the \`verify\` tool is the whole feedback loop.\n`
+        : `- The held-out \`acceptance/\` probes are graded by the closing gate, not by you: do not build or run them.\n`)
     : "";
   // The worker runs in a worktree of the CODE repo — the thinking space/specs dir is NOT there. Embed the
   // spec + slice so it has full context inline rather than hunting the filesystem for a spec it cannot
@@ -2005,6 +2020,11 @@ export interface DeliveryReportInput {
    *  paired with its unit id by the orchestrator. Rendered under `## Discoveries & recommendations`
    *  (both unit and text); empty/omitted ⇒ the literal "none reported". */
   discoveries?: { unit: string; text: string }[];
+  /** Repair window (2026-07-08): the `prepare` build failure that stopped the closing gate before
+   *  ANY AC could run — command + bounded raw output. Rendered as a first-class
+   *  `## Build failed before verification` section right after `## What happened`, so the one
+   *  failure that blocks every criterion never renders as a blank "all ACs not run / no evidence". */
+  buildFailure?: { command: string; output: string };
   /** SP-11/2 — the run's state-derived exit set ({@link deliveryExitState}). When present,
    *  `buildDeliveryReport` renders the `## Next` section as numbered bold-label lines
    *  (`N. **<label>** — <hint>`) from it; omitted ⇒ the hard-coded Next text remains
@@ -2040,10 +2060,27 @@ export function buildDeliveryReport(i: DeliveryReportInput): string {
     .map((d) => d?.text)
     .filter((t): t is string => !!t && !!t.trim());
   const whatHappened = failed
-    ? diagTexts.length
-      ? diagTexts.join("\n\n")
-      : "The closing gate did not pass. The acceptance criteria below record which criteria are red; the evidence appendix carries the raw runner output for why."
+    ? i.buildFailure
+      ? "The assembled change did not build, so verification never started — every acceptance criterion below reads *not run* because of the single build failure shown next, not because of individual criterion failures."
+      : diagTexts.length
+        ? diagTexts.join("\n\n")
+        : "The closing gate did not pass. The acceptance criteria below record which criteria are red; the evidence appendix carries the raw runner output for why."
     : `Delivered ${i.advanced.length} slice(s) to Done across ${i.units.length} execution unit(s), committed to \`${branch}\`${i.sha ? ` at \`${i.sha}\`` : ""}.`;
+
+  // ── ## Build failed before verification (repair window, 2026-07-08) ───────────
+  // The one failure that blocks EVERY criterion gets first-class, raw-output billing.
+  const buildFailSection = i.buildFailure
+    ? [
+        "## Build failed before verification",
+        "",
+        `\`$ ${i.buildFailure.command}\``,
+        "",
+        "```",
+        i.buildFailure.output.trim() || "(no output captured)",
+        "```",
+        "",
+      ]
+    : [];
 
   // ── ## Acceptance criteria — criterion text + verdict, or the ordinal table ───
   const resultFor = new Map(i.acResults.map((r) => [r.ac, r]));
@@ -2190,6 +2227,7 @@ export function buildDeliveryReport(i: DeliveryReportInput): string {
     "",
     whatHappened,
     "",
+    ...buildFailSection,
     ...acSection,
     "",
     ...discSection,
