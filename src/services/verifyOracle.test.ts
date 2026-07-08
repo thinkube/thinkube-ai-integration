@@ -132,6 +132,7 @@ function makeWorld(over: {
   prepareOut?: string;
   probeCodes?: Record<string, number>;
   maxInvocations?: number;
+  contentTag?: string;
 } = {}): FakeWorld {
   const w: FakeWorld = { copies: [], removals: [], resets: 0, execs: [], deps: undefined! };
   w.deps = {
@@ -156,6 +157,7 @@ function makeWorld(over: {
     copyIn: async (fromRoot, rel) => void w.copies.push(`${fromRoot}:${rel}`),
     removeIn: async (rel) => void w.removals.push(rel),
     maxInvocations: over.maxInvocations,
+    readFile: async (root, rel) => `${root}:${rel}:${over.contentTag ?? "v1"}`,
   };
   return w;
 }
@@ -215,4 +217,45 @@ test("oracle: the invocation cap yields `exhausted` and runs nothing further", a
   const r = await oracle.verify();
   assert.equal(r.kind, "exhausted");
   assert.equal(w.execs.length, execsBefore, "an exhausted round runs no commands");
+});
+
+// ── confirmGreen (mandatory-verify + gate confirmation) ──────────────────────
+
+test("confirmGreen: a green round then confirm with UNCHANGED state confirms WITHOUT re-running", async () => {
+  const w = makeWorld(); // all probes pass → green
+  const oracle = createVerifyOracle(w.deps);
+  const first = await oracle.verify();
+  assert.equal(first.kind, "results");
+  const execsAfterVerify = w.execs.length;
+  const g = await oracle.confirmGreen();
+  assert.equal(g.green, true);
+  assert.equal(w.execs.length, execsAfterVerify, "confirm-skip: no commands re-run when state is identical");
+});
+
+test("confirmGreen: a green round then confirm with DRIFTED state re-runs", async () => {
+  const w = makeWorld();
+  const oracle = createVerifyOracle(w.deps);
+  await oracle.verify();
+  const execsBefore = w.execs.length;
+  // Drift the verified content (the readFile tag changes) → the state hash differs → re-run.
+  w.deps.readFile = async (root, rel) => `${root}:${rel}:v2-drifted`;
+  const g = await oracle.confirmGreen();
+  assert.ok(w.execs.length > execsBefore, "drift forces a fresh round");
+  assert.equal(g.green, true, "the fresh round is still green");
+});
+
+test("confirmGreen: with NO prior round it runs a fresh round and reports its greenness", async () => {
+  const w = makeWorld({ probeCodes: { "node --test out-test/acceptance/SP-17_1_AC-2.test.js": 1 } });
+  const oracle = createVerifyOracle(w.deps);
+  const g = await oracle.confirmGreen();
+  assert.ok(w.execs.length > 0, "a round ran");
+  assert.equal(g.green, false, "a red probe → not green");
+});
+
+test("confirmGreen: a red round never confirms green", async () => {
+  const w = makeWorld({ prepareCode: 2, prepareOut: "src/services/x.ts(1,1): error TS1005" });
+  const oracle = createVerifyOracle(w.deps);
+  await oracle.verify(); // build-failed
+  const g = await oracle.confirmGreen();
+  assert.equal(g.green, false);
 });

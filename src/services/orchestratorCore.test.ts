@@ -1824,7 +1824,7 @@ test("SP-6/16: a test worker loses Bash/Web/Task but KEEPS Grep + Read/Glob (its
   // unrestricted. The secondary control removes Bash (the roam / absolute-path vector) and Web/Task.
   // SP-6/16 RESTORED `Grep` for test workers (it is now scoped to the worker's own cwd snapshot, not
   // denied), so the SP-6/7-era assertion that `Grep` is denied is stale — correct it here so the
-  // assembled suite is green under SP-6/18's regression backstop. A code worker keeps the full set.
+  // A code worker keeps the full tool set.
   const denied = disallowedToolsForRole("test");
   for (const t of ["Bash", "WebFetch", "WebSearch", "Task"])
     assert.ok(denied.includes(t), `test worker denies ${t}`);
