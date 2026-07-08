@@ -88,15 +88,16 @@ test("probeEvidence: a pass is the exit line only; a failure carries the first f
   assert.match(failed, /expected 'sonnet' got undefined/);
 });
 
-test("formatVerifyReply: a test-side build fault tells the coder it is not theirs and leaks no probe source", () => {
+test("formatVerifyReply: a boundary build fault points at contract conformance without asserting fault, and leaks no probe source", () => {
   const msg = formatVerifyReply({
     kind: "build-failed",
     testFault: true,
     errorFiles: ["src/acceptance/SP-17_1_AC-1.test.ts"],
     output: "const SECRET_PROBE_SOURCE = …",
   });
-  assert.match(msg, /not your code/i);
-  assert.match(msg, /NOT yours to fix/);
+  assert.match(msg, /boundary between your implementation and this slice's checks/i);
+  assert.match(msg, /SIGNATURE BY SIGNATURE/);
+  assert.doesNotMatch(msg, /not your code|yours to fix/i, "never asserts whose fault it is — location is not fault");
   assert.match(msg, /SP-17_1_AC-1\.test\.ts/);
   assert.doesNotMatch(msg, /SECRET_PROBE_SOURCE/, "probe text never reaches the coder");
 });

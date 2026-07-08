@@ -158,10 +158,13 @@ export function formatVerifyReply(r: VerifyResult): string {
   }
   if (r.kind === "build-failed") {
     if (r.testFault) {
+      // Location is NOT fault: an error inside a check file occurs both when the check is
+      // wrong AND when the implementation drifted from the SPEC CONTRACT the check was
+      // written to (a dropped field, a renamed export). Never assert whose fault it is.
       return [
-        "BUILD FAILED — in the acceptance probes, not your code. This is being routed for review; it is NOT yours to fix and does not count against you.",
-        "Keep implementing to the CONTRACT. Files at fault: " +
-          r.errorFiles.join(", "),
+        `BUILD FAILED at the boundary between your implementation and this slice's checks (in: ${r.errorFiles.join(", ")}).`,
+        "The checks are written to the SPEC CONTRACT. Compare your exports against the contract SIGNATURE BY SIGNATURE — every field, every optional marker, every name — the most common cause is an implementation that drifted from the contract. Fix any drift and verify again.",
+        "If your implementation already matches the contract exactly, say so explicitly in your final summary and stop — the mismatch will be reviewed on the other side.",
       ].join("\n");
     }
     return ["BUILD FAILED — compile errors:", clip(r.output, 4000)].join("\n");

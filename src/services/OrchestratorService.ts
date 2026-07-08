@@ -85,6 +85,7 @@ import { defaultAcceptanceRecipeResolver } from "./auditorRunner";
 import {
   createVerifyOracle,
   formatVerifyReply,
+  classifyPrepareFailure,
   runnerPath,
   type VerifyOracle,
 } from "./verifyOracle";
@@ -1694,8 +1695,38 @@ export class OrchestratorService {
           command: recipe.prepare,
           output: prep.output.slice(-4000),
         };
-        for (const s of slices)
-          if (landed.has(s.handle)) await blockSlice(s.handle, diagnosis);
+        // Triangulate the fault (2026-07-08, live-run finding): when the compile errors are
+        // located in the slice's check files, LOCATION IS NOT FAULT — the check may be wrong,
+        // or the implementation may have drifted from the SPEC CONTRACT the check was written
+        // to (the first live run shipped a coder that dropped a contract field, and the probe
+        // that faithfully used it "failed"). Route through the SP-6/9 contract-aware judge so
+        // the rework re-dispatches only the faulting role instead of blocking everything blind.
+        const probeFootprints = [...unitsBySlice.values()]
+          .flat()
+          .filter((u) => (u.role ?? "code") === "test")
+          .flatMap((u) => u.footprint);
+        const cls = classifyPrepareFailure(prep.output, probeFootprints);
+        for (const s of slices) {
+          if (!landed.has(s.handle)) continue;
+          let fault: Fault | undefined;
+          if (cls.errorFiles.length > 0 && this.deps.judgeFailure) {
+            try {
+              const contract = (unitsBySlice.get(s.handle) ?? [])[0]?.contract;
+              const j = await this.deps.judgeFailure(
+                { id: `${s.handle}#build`, slice: s.handle, role: undefined },
+                diagnosis,
+                contract,
+              );
+              fault = j.fault;
+              output.appendLine(
+                `⚖ ${s.handle}: build-failure fault judged → ${j.fault} (${j.rationale.split("\n")[0]})`,
+              );
+            } catch {
+              /* judge unavailable → unrouted block, as before */
+            }
+          }
+          await blockSlice(s.handle, diagnosis, fault);
+        }
         output.appendLine(
           `⚑ SP-${specNumber}: build gate FAILED → landed slices require attention (per-AC runs skipped).`,
         );
