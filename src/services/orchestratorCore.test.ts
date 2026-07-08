@@ -1797,10 +1797,13 @@ test("SP-6/7 AC1: a test unit KEEPS the Acceptance Criteria + satisfies; a code 
   assert.match(tp, /Acceptance Criteria/);
   assert.match(tp, /foo must round-trip losslessly/);
   assert.match(tp, /satisfies/);
-  // …and it is framed NEUTRALLY (SP-6/7): asked to write tests against the interface, but NOT told it
-  // is a "held-out"/"independent verifier" or that a code-author exists — an unaware worker can't
-  // reason about or game the independence boundary (that is enforced structurally by tool-scoping).
-  assert.match(tp, /Write automated test/i);
+  // …and it is told the TRUTH, plainly (honest brief, 2026-07-08): it is the test author writing
+  // up front, the implementation does not exist yet, a separate implementer builds to the same
+  // contract after. Transparency about the process — never "you are the held-out grader" (which
+  // would invite gaming) and never the implementer's code (independence is structural).
+  assert.match(tp, /TEST AUTHOR/i);
+  assert.match(tp, /implementation does not exist yet/i);
+  assert.match(tp, /implementer will build/i);
   assert.doesNotMatch(tp, /held-out|independent verifier/i);
 
   const codeUnit: SchedUnit = {
@@ -1831,7 +1834,7 @@ test("SP-6/16: a test worker loses Bash/Web/Task but KEEPS Grep + Read/Glob (its
   assert.deepEqual(disallowedToolsForRole(undefined), []);
 });
 
-test("SP-6/7: a test worker's prompt states the snapshot workspace + redirect-aware terminate-on-denial", () => {
+test("tests-first: a test worker is told it writes tests up front + redirect-aware terminate-on-denial", () => {
   const unit: SchedUnit = {
     id: "SP-6_SL-1#eu-1",
     slice: "SP-6_SL-1",
@@ -1843,11 +1846,11 @@ test("SP-6/7: a test worker's prompt states the snapshot workspace + redirect-aw
   const tp = buildWorkerPrompt(unit, "6/3", {
     specBody: "## Acceptance Criteria\n\n- [ ] x",
   });
-  // ONE directory, stated plainly: a snapshot taken before this feature's changes; modules named
-  // in the contract may not exist yet — import them by the contract's paths.
-  assert.match(tp, /SNAPSHOT of the codebase/i);
-  assert.match(tp, /may not exist in this snapshot yet/i);
-  assert.match(tp, /import them by the exact path\/name the contract gives/i);
+  // Honest tests-first workspace (2026-07-08): it is told plainly it writes the tests FIRST and
+  // the implementation does not exist yet — not an obscure "snapshot" framing.
+  assert.match(tp, /writing the tests FIRST/i);
+  assert.match(tp, /does not exist in your working directory yet/i);
+  assert.match(tp, /Import the contract's modules by the exact path\/name it gives/i);
   // No base-dir split anywhere (the old read-here/write-there model is gone).
   assert.doesNotMatch(tp, /base directory|READ-ONLY reference/i);
   // Terminate-on-denial, redirect-aware: never brute-force; follow a redirecting denial; stop
@@ -1858,7 +1861,7 @@ test("SP-6/7: a test worker's prompt states the snapshot workspace + redirect-aw
   const cp = buildWorkerPrompt({ ...unit, role: "code" }, "6/3", {
     specBody: "## Acceptance Criteria\n\n- [ ] x",
   });
-  assert.doesNotMatch(cp, /SNAPSHOT of the codebase/i);
+  assert.doesNotMatch(cp, /writing the tests FIRST/i);
   // …but the terminate-on-denial instruction applies to EVERY worker.
   assert.match(cp, /do NOT brute-force/i);
 });

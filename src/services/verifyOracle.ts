@@ -203,6 +203,9 @@ export interface VerifyOracleDeps {
   removeIn: (rel: string) => Promise<void>;
   /** Invocation budget before the oracle reports `exhausted` (default 20). */
   maxInvocations?: number;
+  /** Read one repo-relative file's content (for the green record's state hash). When
+   *  omitted, rounds still run but no green record is kept (confirmGreen always re-runs). */
+  readFile?: (root: string, rel: string) => Promise<string | Buffer>;
   log?: (line: string) => void;
 }
 
@@ -211,6 +214,15 @@ export interface VerifyOracle {
   verify(): Promise<VerifyResult>;
   /** Invocations consumed so far. */
   invocations(): number;
+  /** MANDATORY-GREEN enforcement (2026-07-08): true only when the checks are green for the
+   *  CURRENT state. If the last round was green and the verified content (coder delta +
+   *  probes) hashes identically, the green record is confirmed WITHOUT re-running; any
+   *  drift — or no green record — runs a fresh round and returns its verdict. The worker's
+   *  self-reported success counts for nothing; this is the unit's completion condition,
+   *  and the closing gate accepts the same record instead of re-running the per-AC checks. */
+  confirmGreen(): Promise<{ green: boolean; result: VerifyResult }>;
+  /** The last round's green record (result + state hash), if any. */
+  last(): { green: boolean; stateHash?: string; result: VerifyResult } | undefined;
 }
 
 /**
@@ -223,6 +235,40 @@ export function createVerifyOracle(deps: VerifyOracleDeps): VerifyOracle {
   const log = deps.log ?? (() => {});
   let used = 0;
   let queue: Promise<unknown> = Promise.resolve();
+  let lastRecord:
+    | { green: boolean; stateHash?: string; result: VerifyResult }
+    | undefined;
+
+  // Content hash of exactly what a round verifies: the coder's overlay delta (from the code
+  // worktree) + the probe sources (from the tester worktree), path-sorted. Deterministic and
+  // cheap; undefined when no readFile was injected (then green records never confirm-skip).
+  const stateHash = async (
+    entries: OverlayEntry[],
+  ): Promise<string | undefined> => {
+    if (!deps.readFile) return undefined;
+    const { createHash } = await import("crypto");
+    const h = createHash("sha256");
+    const items = [
+      ...entries
+        .filter((e) => !e.deleted)
+        .map((e) => ({ root: deps.codeWorktree, rel: e.path })),
+      ...entries.filter((e) => e.deleted).map((e) => ({ root: "", rel: `DEL:${e.path}` })),
+      ...deps.probeFiles.map((rel) => ({ root: deps.testerWorktree, rel })),
+    ].sort((a, b) => a.rel.localeCompare(b.rel));
+    for (const it of items) {
+      h.update(it.rel);
+      h.update("\0");
+      if (it.root) {
+        try {
+          h.update(await deps.readFile(it.root, it.rel));
+        } catch {
+          h.update("<unreadable>");
+        }
+      }
+      h.update("\0");
+    }
+    return h.digest("hex");
+  };
 
   const round = async (): Promise<VerifyResult> => {
     if (used >= max) return { kind: "exhausted", invocations: used };
@@ -230,6 +276,7 @@ export function createVerifyOracle(deps: VerifyOracleDeps): VerifyOracle {
     // 1. Fresh runner at the coder's base commit, then overlay the coder's dirty delta.
     await deps.resetRunner();
     const entries = parsePorcelain(await deps.porcelain(deps.codeWorktree));
+    const hash = await stateHash(entries);
     for (const e of entries) {
       if (e.deleted) await deps.removeIn(e.path);
       else await deps.copyIn(deps.codeWorktree, e.path);
@@ -245,12 +292,14 @@ export function createVerifyOracle(deps: VerifyOracleDeps): VerifyOracle {
         log(
           `  [oracle] build failed (${cls.testFault ? "test-side" : "code-side"}): ${cls.errorFiles.join(", ") || "no file located"}`,
         );
-        return {
+        const failed: VerifyResult = {
           kind: "build-failed",
           testFault: cls.testFault,
           errorFiles: cls.errorFiles,
           output: clip(b.output, 6000),
         };
+        lastRecord = { green: false, stateHash: hash, result: failed };
+        return failed;
       }
     }
     // 4. Run the slice's runnable probes.
@@ -267,16 +316,43 @@ export function createVerifyOracle(deps: VerifyOracleDeps): VerifyOracle {
     log(
       `  [oracle] round ${used}/${max}: ${results.filter((r) => r.pass).length}/${results.length} pass`,
     );
-    return { kind: "results", results };
+    const out: VerifyResult = { kind: "results", results };
+    lastRecord = {
+      green: results.length > 0 && results.every((r) => r.pass),
+      stateHash: hash,
+      result: out,
+    };
+    return out;
+  };
+
+  const enqueue = <T>(fn: () => Promise<T>): Promise<T> => {
+    const next = queue.then(fn, fn);
+    queue = next.catch(() => undefined);
+    return next;
   };
 
   return {
-    verify(): Promise<VerifyResult> {
-      const next = queue.then(round, round);
-      queue = next.catch(() => undefined);
-      return next;
-    },
+    verify: () => enqueue(round),
     invocations: () => used,
+    confirmGreen: () =>
+      enqueue(async () => {
+        // Confirm-skip: last round green AND the verified content is byte-identical.
+        if (lastRecord?.green && lastRecord.stateHash) {
+          const entries = parsePorcelain(await deps.porcelain(deps.codeWorktree));
+          const now = await stateHash(entries);
+          if (now && now === lastRecord.stateHash) {
+            log("  [oracle] green confirmed (state unchanged) — no re-run.");
+            return { green: true, result: lastRecord.result };
+          }
+          log("  [oracle] state drifted since last green — re-running.");
+        }
+        const result = await round();
+        // An exhausted budget can never confirm green (the stale record does not speak
+        // for the current state).
+        if (result.kind === "exhausted") return { green: false, result };
+        return { green: lastRecord?.green === true, result };
+      }),
+    last: () => lastRecord,
   };
 }
 

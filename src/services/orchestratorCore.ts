@@ -843,14 +843,15 @@ export function buildWorkerPrompt(
       ? `\nContract dependency: this unit CONSUMES ${consumes.join(", ")} — a sibling unit produces ${consumes.length > 1 ? "these files" : "this file"}. Import ${consumes.length > 1 ? "their" : "its"} contract (types/exports/shape); do NOT re-invent it. If ${consumes.length > 1 ? "they don't exist" : "it doesn't exist"} yet, code to the contract the spec/slice describes.\n`
       : "";
   const isTest = (unit.role ?? "code") === "test";
-  // SP-6/7: a `test` unit's task is framed NEUTRALLY — "write tests asserting these behaviours
-  // against this interface." It is deliberately NOT told it is a held-out verifier, that a code-author
-  // exists, that ACs were stripped from anyone, or that a fence exists: an unaware worker can't reason
-  // about or game the independence boundary. Its independence is STRUCTURAL — its cwd is a base-commit
-  // snapshot that simply does not contain the in-progress implementation — so it writes its test from
-  // the snapshot's base code + the injected contract + criteria + test convention.
+  // Tests-first, honest brief (2026-07-08): the tester is told the TRUTH, plainly — it is
+  // writing the acceptance tests UP FRONT, before the implementation exists, to the shared
+  // contract; a separate implementer builds to that same contract afterward. This reverses the
+  // old "framed neutrally / keep it unaware" theory, which only left workers improvising against
+  // a situation they didn't understand. Independence stays STRUCTURAL — the tester's cwd is a
+  // pre-feature snapshot that never contains the implementer's work — but it is a fact stated,
+  // not a secret kept: transparency about the process never exposes the graded content.
   const task = isTest
-    ? `Write automated test(s) at [${fp}]${unit.note ? ` that assert: ${unit.note.replace(/\s*\.?\s*$/, "")}` : " asserting the behaviours in the Acceptance criteria below"}. Exercise ONLY the public interface in the SPEC CONTRACT below (write to that interface — do not assume any particular internal implementation).`
+    ? `You are the TEST AUTHOR for this slice. Write the acceptance test(s) at [${fp}] UP FRONT — the implementation does not exist yet; a separate implementer will build to the same SPEC CONTRACT after you. ${unit.note ? `Assert: ${unit.note.replace(/\s*\.?\s*$/, "")}.` : "Assert the behaviours in the Acceptance criteria below."} Exercise ONLY the public interface in the SPEC CONTRACT below — write to that interface, do not assume any particular internal implementation.`
     : unit.shape === "mechanize"
       ? `This is a MECHANIZE unit: author ONE transform and apply it across all of [${fp}] — do not hand-edit each object.`
       : unit.shape === "fan-out"
@@ -872,12 +873,12 @@ export function buildWorkerPrompt(
     isTest && context?.exampleTest?.trim()
       ? `\n──── EXAMPLE TEST (the repo's canonical test idiom — mirror its structure / fixtures / assertions; do NOT reuse its subject) ────\n${context.exampleTest}\n`
       : "";
-  // SP-6/7 — the tester's workspace, stated PLAINLY (inform first): ONE directory — its cwd is a
-  // snapshot of the codebase taken before this feature's changes (structural independence: the
-  // in-progress implementation is not in its tree, so there's no read-here/write-there split to
-  // confuse and nothing to fence). Modules named in the contract may not exist yet — expected.
+  // The tester's workspace, stated PLAINLY and HONESTLY (tests-first): it is writing the tests
+  // BEFORE the implementation, so the contract's modules are not on disk yet — that is expected,
+  // not an error to fix. Independence is structural (its cwd is a pre-feature snapshot; it never
+  // sees the implementer's in-progress work) and stated as fact.
   const workspaceBlock = isTest
-    ? `\nYour working directory is a SNAPSHOT of the codebase taken before this feature's changes. Read anything here you need — the test harness, helpers, existing tests, import/type conventions — and write your test file(s) at your footprint (${fp}) using paths relative to the working directory. The modules named in the SPEC CONTRACT may not exist in this snapshot yet (the feature is being built); that's expected — import them by the exact path/name the contract gives and write your tests against the contract + the criteria below. They resolve when the feature is assembled.\n`
+    ? `\nYou are writing the tests FIRST: the implementation named in the SPEC CONTRACT does not exist in your working directory yet — that is expected and correct, NOT an error to fix or an implementation to hunt for. Your working directory is the codebase as it stands BEFORE this feature. Read anything here you need — the test harness, helpers, existing tests, import/type conventions — and write your test file(s) at your footprint (${fp}) using paths relative to the working directory. Import the contract's modules by the exact path/name it gives; they resolve once the implementer builds to the same contract. Write your tests purely from the contract + the criteria below — do not wait for or look for the implementation.\n`
     : "";
   // SP-6/3: the Spec-wide design-time CONTRACT — the shared interface (union of every slice's
   // declared contract) every unit (code AND held-out test, in ANY slice) builds against. Injected
@@ -906,16 +907,16 @@ export function buildWorkerPrompt(
   // The worker never builds or runs anything itself, so it needs no local toolchain and has no
   // reason to touch test files or shared build config.
   const verifyBlock = oracle
-    ? `\n──── VERIFY (your only feedback channel) ────\nAfter editing, call the \`verify\` tool (mcp__oracle__verify). It builds your current work together with this slice's acceptance checks in an isolated runner and returns the results: compile errors, or per-check PASS/FAIL with the failing assertion. Iterate until everything passes. Do NOT run builds or tests yourself — the tool is faster and authoritative. A failure the tool marks as "not your code" is being handled elsewhere; keep implementing to the SPEC CONTRACT.\n`
+    ? `\n──── HOW VERIFICATION WORKS HERE (read this) ────\nA separate test author has already written this slice's acceptance checks, up front, against the SPEC CONTRACT below. You cannot see those checks — that is deliberate, and you do not need to. To check your work, call the \`verify\` tool (mcp__oracle__verify): it runs those checks against your CURRENT code in an isolated runner and returns the results — compile errors, or per-check PASS/FAIL with the failing line. That is your ENTIRE feedback loop; iterate until everything passes. Because \`verify\` exists you never write tests, never run builds or test commands, and never look for the check files — there is nothing to gain and those tools are switched off for you. If \`verify\` reports a failure at the boundary between your code and the checks, the usual cause is your code drifting from the contract: compare your exports against the SPEC CONTRACT signature by signature and fix the drift.\n`
     : !isTest && selfVerify
       ? `\n──── SELF-VERIFY (after editing your files, run this non-mutating build-and-test command to check your work) ────\n${selfVerify}\n`
       : "";
   const prohibitionsBlock = !isTest
-    ? `\nSTANDING PROHIBITIONS (do not breach these to self-verify):\n` +
-      `- Stay inside your declared footprint. Never edit a file outside it — shared build/config (\`tsconfig*.json\`, other tsconfig files, etc.) included. The footprint guard hard-aborts and reverts an out-of-footprint write; do not improvise into shared build config to make tests run.\n` +
+    ? `\nYOUR LANE (these are the rules of the setup above, not obstacles to route around):\n` +
+      `- Edit only within your declared footprint. Files outside it — shared build/config (\`tsconfig*.json\`, other tsconfig files) included — belong to others; the guard reverts an out-of-footprint write.\n` +
       (oracle
-        ? `- Test authorship is not your role: never create, edit, read or run ANY test file (\`*.test.*\`, anything under \`acceptance/\`). Verification happens ONLY through the \`verify\` tool.\n` +
-          `- Never run package managers or build/test commands (\`npm install\`, \`npm test\`, \`tsc\`, …) — the worktree has no toolchain for you, by design; the \`verify\` tool is the whole feedback loop.\n`
+        ? `- Writing tests is the test author's job, not yours: never create, edit, read or run ANY test file (\`*.test.*\`, anything under \`acceptance/\`). Your work is the implementation; verification is the \`verify\` tool.\n` +
+          `- Never run package managers or build/test commands (\`npm install\`, \`npm test\`, \`tsc\`, …). The worktree has no toolchain for you by design — \`verify\` is the whole feedback loop, and reaching for these is denied.\n`
         : `- The held-out \`acceptance/\` probes are graded by the closing gate, not by you: do not build or run them.\n`)
     : "";
   // The worker runs in a worktree of the CODE repo — the thinking space/specs dir is NOT there. Embed the
