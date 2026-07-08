@@ -333,15 +333,11 @@ function runTokenToSource(token: string): string {
 }
 
 /**
- * AC4 (SP-6/6 — the worker cannot grade itself). A declared AC verification is a
- * worker-authored **self-tick** when its `run` command reaches a path inside some
- * dispatched unit's footprint: the implementing (or test-authoring) worker could
- * write the very file whose green it is graded on, so its result is NOT independent
- * evidence and must never count as the grade. Held-out acceptance evidence is
- * never-in-footprint — `parallelSlices.resolveFootprint` strips it from `workerOwned`
- * — so a verification that runs only that evidence is independent and grades. Pure:
- * tokenize the run command, normalize each (possibly compiled) target to its `src/`
- * source, and test membership in the worker-owned set.
+ * A `run` command **references** a worker-owned path: some whitespace token, normalized to its
+ * `src/` source, lands inside a dispatched unit's footprint. This is the broad detector — it cannot
+ * tell a grep/`[ -e … ]` *read* of the deliverable from an execution of a worker-authored script,
+ * so it is NOT the grade's drop predicate (that is {@link verificationExecutesWorkerAuthored});
+ * the gate uses it only to surface a "reads the deliverable" note in the log. Pure.
  */
 export function verificationIsWorkerAuthored(
   run: string,
@@ -352,6 +348,63 @@ export function verificationIsWorkerAuthored(
     if (!raw) continue;
     const src = runTokenToSource(raw);
     if (src && workerOwned.has(src)) return true;
+  }
+  return false;
+}
+
+// Shell tokens that put the scanner back in COMMAND position (the next token is executed).
+const SHELL_COMMAND_BOUNDARY_RE =
+  /^(;|&&?|\|\|?|\(|\)|\{|\}|do|done|then|else|elif|fi|if|while|until|!|exec|command|time)$/;
+// Interpreters whose next non-flag argument is EXECUTED code (its content decides the verdict).
+const INTERPRETER_RE =
+  /^(node|nodejs|npx|tsx|ts-node|bash|sh|zsh|dash|ksh|python\d*|deno|bun|perl|ruby|source)$/i;
+// Redirection operators: the token that follows is a data operand, never a command.
+const REDIRECT_RE = /^\d*(<|>>?)$/;
+
+/**
+ * AC4 (SP-6/6 — the worker cannot grade itself). A declared AC verification is a worker-authored
+ * **self-tick** only when its `run` command **executes** a file inside some dispatched unit's
+ * footprint — the token sits in command position (start of a shell segment) or follows an
+ * interpreter (`node x.js`, `bash y.sh`, `npx tsx z.ts`, `source f`), so the worker-authored
+ * content produces the verdict. Merely *referencing* a worker-owned path as data (a grep target,
+ * a `[ -e … ]` operand, a redirect) is NOT a self-tick: the logic that grades is the probe text
+ * itself, which is server-authored and provenance-signed at the → Ready gate (`readyGate` /
+ * `acSignature`) — and for a docs/config Spec the deliverable IS the files the probes must
+ * inspect, so dropping reads deadlocks an honestly-green Spec (TEP-13_SP-1: AC probes naming
+ * `docs/…` pages were discarded as "no verification ran" on every run). Held-out acceptance
+ * evidence stays never-in-footprint via `resolveFootprint`, exactly as before. Pure.
+ */
+export function verificationExecutesWorkerAuthored(
+  run: string,
+  workerOwned: ReadonlySet<string>,
+): boolean {
+  if (workerOwned.size === 0) return false;
+  let execPosition = true; // start of the command line = command position
+  for (const raw of (run ?? "").split(/\s+/)) {
+    if (!raw) continue;
+    if (SHELL_COMMAND_BOUNDARY_RE.test(raw)) {
+      execPosition = true;
+      continue;
+    }
+    if (REDIRECT_RE.test(raw)) {
+      execPosition = false; // next token is a redirect operand (data)
+      continue;
+    }
+    // A boundary glued to the token's tail (`plan.md;`, `exit 1;`) re-arms command position
+    // for the NEXT token; the current token keeps its own position.
+    const gluedBoundary = /[;|&]$/.test(raw);
+    if (execPosition && /^[A-Za-z_][A-Za-z0-9_]*=/.test(raw)) {
+      // VAR=value prefix — the command is still to come.
+    } else if (execPosition && raw.startsWith("-")) {
+      // Interpreter/command flag (`node --test …`) — execution target still to come.
+    } else if (execPosition) {
+      const src = runTokenToSource(raw);
+      if (src && workerOwned.has(src)) return true;
+      // An interpreter keeps command position for its script argument; any other
+      // command consumes it — what follows is that command's data.
+      execPosition = INTERPRETER_RE.test(src) || raw === ".";
+    }
+    if (gluedBoundary) execPosition = true;
   }
   return false;
 }
@@ -1629,11 +1682,13 @@ export class OrchestratorService {
     // AC4 (SP-6/6): the grade derives ONLY from independently-authored evidence.
     // Build the run-level set of worker-owned paths — every dispatched unit's
     // footprint, with any held-out acceptance evidence stripped by `resolveFootprint`
-    // (it is never-in-footprint) — and DROP from the grade any verification whose
-    // `run` reaches into it. A worker-authored test can never tick an AC green: the
+    // (it is never-in-footprint) — and DROP from the grade any verification that
+    // EXECUTES a file in it. A worker-authored test can never tick an AC green: the
     // dropped AC is treated as un-graded, so the slice that satisfies it falls into
     // the `missing` path below and goes requires-attention, exactly as if no
     // verification had run. There is no worker-facing path to mark its own AC green.
+    // A signed probe that merely READS worker files (grep/`[ -e … ]` over the
+    // deliverable — unavoidable for a docs Spec) stays in the grade, with a log note.
     const workerOwned = new Set(
       resolveFootprint(
         [...unitsBySlice.values()].flat().flatMap((u) => u.footprint ?? []),
@@ -1645,12 +1700,21 @@ export class OrchestratorService {
     const graded = acResults.filter((r) => {
       const v = verifByAc.get(r.ac);
       const selfTick = v
-        ? verificationIsWorkerAuthored(v.run, workerOwned)
+        ? verificationExecutesWorkerAuthored(v.run, workerOwned)
         : false;
       if (selfTick)
         output.appendLine(
-          `⚑ SP-${specNumber}: AC #${r.ac} verification reaches worker-owned footprint — ` +
+          `⚑ SP-${specNumber}: AC #${r.ac} verification EXECUTES a worker-owned file — ` +
             `self-tick excluded from the grade (independent evidence only).`,
+        );
+      else if (v && verificationIsWorkerAuthored(v.run, workerOwned))
+        // Reading the deliverable is not self-grading: the probe text is server-authored and
+        // provenance-signed at → Ready, and a docs/config Spec's deliverable IS the files its
+        // probes inspect (dropping reads deadlocked TEP-13_SP-1 on a fully green run). Only
+        // executing a worker-owned file hands the verdict to the worker.
+        output.appendLine(
+          `⚠ SP-${specNumber}: AC #${r.ac} verification reads worker-owned files (the deliverable) — ` +
+            `kept in the grade: the signed probe inspects them but executes nothing the workers authored.`,
         );
       else if (v && verificationIsWholeSuite(v.run))
         // Kept in the grade (bootstrapping: Specs verified by `npm test` until ACs migrate to

@@ -16,6 +16,7 @@ import * as path from "node:path";
 
 import {
   OrchestratorService,
+  verificationExecutesWorkerAuthored,
   verificationIsWorkerAuthored,
   parseAssessment,
   buildAssessPrompt,
@@ -2181,6 +2182,130 @@ test("dispatchSpec AC4: an INDEPENDENT verification (its `run` reaches only out-
     r.attention,
     [],
     "nothing requires-attention — the independent grade passed",
+  );
+});
+
+test("verificationExecutesWorkerAuthored: only EXECUTING a worker-owned file is a self-tick — reading it (grep/[ -e ]/redirect/for-in operand) is not (the TEP-13_SP-1 docs-spec deadlock)", () => {
+  const owned = new Set(
+    resolveFootprint([
+      "src/feature.ts",
+      "src/feature.test.ts",
+      "scripts/tool.sh",
+      "docs/preview-playbook.yml",
+      "docs/modules/ROOT/nav.adoc",
+      "docs/METHODOLOGY.md",
+      "docs/VISION.md",
+    ]),
+  );
+
+  // Execution of worker-authored content → self-tick, exactly as before.
+  assert.equal(
+    verificationExecutesWorkerAuthored(
+      "node --test out-test/feature.test.js",
+      owned,
+    ),
+    true,
+    "node --test over the worker's own compiled test executes it",
+  );
+  assert.equal(
+    verificationExecutesWorkerAuthored("npx tsx src/feature.ts", owned),
+    true,
+    "npx tsx over an in-footprint source executes it",
+  );
+  assert.equal(
+    verificationExecutesWorkerAuthored("bash scripts/tool.sh", owned),
+    true,
+    "bash over a worker-owned script executes it",
+  );
+  assert.equal(
+    verificationExecutesWorkerAuthored("scripts/tool.sh --check", owned),
+    true,
+    "a worker-owned script in command position is executed",
+  );
+  assert.equal(
+    verificationExecutesWorkerAuthored(
+      "npm run docs:build && node src/feature.ts",
+      owned,
+    ),
+    true,
+    "execution after a && boundary is still caught",
+  );
+
+  // Reads of the deliverable → NOT a self-tick (the signed probe text grades, not the worker).
+  assert.equal(
+    verificationExecutesWorkerAuthored(
+      "grep -q 'failure_level: warn' docs/preview-playbook.yml && grep -q xref docs/modules/ROOT/nav.adoc",
+      owned,
+    ),
+    false,
+    "grep targets are data, not execution (TEP-13 AC#1 shape)",
+  );
+  assert.equal(
+    verificationExecutesWorkerAuthored(
+      'set -e; for f in docs/METHODOLOGY.md docs/VISION.md; do [ ! -e "$f" ] || exit 1; done',
+      owned,
+    ),
+    false,
+    "for-in operands and [ -e ] targets are data (TEP-13 AC#6 shape)",
+  );
+  assert.equal(
+    verificationExecutesWorkerAuthored(
+      '[ "$(wc -l < docs/VISION.md)" -le 80 ]',
+      owned,
+    ),
+    false,
+    "a redirect operand is data",
+  );
+  // The broad reference detector still sees those reads — that is the log-note path.
+  assert.equal(
+    verificationIsWorkerAuthored(
+      "grep -q 'failure_level: warn' docs/preview-playbook.yml",
+      owned,
+    ),
+    true,
+    "the reference detector still flags the read for the log note",
+  );
+  // Empty footprint → vacuously independent.
+  assert.equal(
+    verificationExecutesWorkerAuthored(
+      "node --test out-test/feature.test.js",
+      new Set<string>(),
+    ),
+    false,
+    "with no worker-owned footprint nothing is a self-tick",
+  );
+});
+
+test("dispatchSpec AC4: a signed probe that READS worker-owned files (a docs-spec grep) stays in the grade — the slice advances and the Spec commits (no TEP-13 deadlock)", async () => {
+  // SL-1's worker owns the page the probe inspects. The probe only greps it — the verdict comes
+  // from the server-signed command text, not from anything the worker authored — so it must grade.
+  const { deps, calls } = makeDeps(
+    {
+      "teps/TEP-1/SP-1/SL-1.md": {
+        status: "ready",
+        files: ["docs/page.adoc"], // the worker owns the deliverable the probe reads
+        satisfies: [1],
+      },
+    },
+    {
+      verifs: { "1": { run: "grep -q ':page-type:' docs/page.adoc" } },
+      acPass: { 1: true },
+    },
+  );
+
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
+
+  assert.deepEqual(
+    r.advanced,
+    ["TEP-1_SP-1_SL-1"],
+    "a read-only probe over the deliverable grades and advances the slice",
+  );
+  assert.deepEqual(calls.checked, [1], "the ordinal is checked");
+  assert.equal(r.committed, true, "the Spec commits");
+  assert.deepEqual(r.attention, [], "nothing requires-attention");
+  assert.ok(
+    calls.log.some((l) => /reads worker-owned files/i.test(l)),
+    "the kept-in-grade read is surfaced in the log",
   );
 });
 
