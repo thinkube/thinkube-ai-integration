@@ -14,9 +14,9 @@ flowchart TD
     A["Pair authors the TEP"] --> B["Pair authors the Spec, acceptance criteria first"]
     B --> V{"Every AC certified verifiable or assessment, each with a verification entry?"}
     V -->|"no — blocks Ready"| B
-    V -->|"yes — slices may reach Ready"| C["Pair cuts vertical slices, status ready"]
-    C --> D{"Human approves the Spec in the review panel"}
-    D -->|"Approve"| E["Human runs Orchestrate"]
+    V -->|"yes — the Spec is ready for review"| C{"Human approves the Spec in the review panel"}
+    C -->|"Approve — mints the approval token slice creation requires"| D["Pair cuts vertical slices, status ready"]
+    D --> E["Human runs Orchestrate"]
     E --> F["Orchestrator runs each slice's work units on branch spec/SP-n, in its own worktree"]
     F --> G["Closing gate at quiescence: run every declared AC verification"]
     G --> H{"All green?"}
@@ -37,11 +37,11 @@ That full set of entries is the → Ready gate. A Spec's slices may reach Ready 
 
 == Approve the Spec
 
-Writing the slices crystallizes the artifacts; it does not start the build. To advance, you open the review panel and approve the Spec. This is a maintainer-only button: Claude can open the review surface for you, but it cannot approve on your behalf, because approving mints the content-bound token the board requires before any slice runs. Approval is one of the two points in the whole arc where the human acts on the substance.
+Authoring the Spec crystallizes the plan; it does not start the build. Before the pair can cut a single slice, you open the review panel and approve the Spec. This is a maintainer-only button: Claude can open the review surface for you, but it cannot approve on your behalf, because approving mints the content-bound token that slice creation and the Spec's move to Ready both verify — without it, cutting a slice is refused. Approval is one of the two points in the whole arc where the human acts on the substance.
 
 == Slice the Spec
 
-The pair cuts the Spec into slices — each a coherent, vertical, end-to-end change you verify and commit as a single "done," sized by coherence rather than by layer or file. A slice that spans more than one file pins a shared contract so every worker builds to the same seam, and decomposes into work units the orchestrator can schedule. Each slice is written to the board at status `ready`, and every acceptance criterion maps to at least one slice. See xref:parallel-execution.adoc[Work units and parallel execution] for how the units fan out.
+With the approval in place, the pair cuts the Spec into slices — each a coherent, vertical, end-to-end change you verify and commit as a single "done," sized by coherence rather than by layer or file. A slice that spans more than one file pins a shared contract so every worker builds to the same seam, and decomposes into work units the orchestrator can schedule. Each slice is written to the board at status `ready`, and every acceptance criterion maps to at least one slice. See xref:parallel-execution.adoc[Work units and parallel execution] for how the units fan out.
 
 == Orchestrated execution
 
@@ -85,7 +85,7 @@ stateDiagram-v2
     Quiescence --> Delivered: all green — ACs checked, slices Done, one commit
     Quiescence --> Stalled: any red or uncommitted — nothing committed
     Delivered --> Merged: Accept & merge (refused unless every AC checked)
-    Delivered --> Stalled: Request changes
+    Delivered --> Quiescence: Request changes — primed rework session, then re-run
     Stalled --> Quiescence: Attend, then Re-run
     Merged --> [*]
 ----
