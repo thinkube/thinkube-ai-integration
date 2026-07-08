@@ -122,25 +122,34 @@ export interface ExecutionUnit {
 }
 
 /**
- * Batch one slice's work units into **execution units** to amortize worker cold-start
- * (AC6): all `serial` units collapse into ONE execution unit (a single warm session, run in
- * order); each `mechanize` (codemod-once) and each `fan-out` (parallel-eligible) unit is its
- * own execution unit. Never spans slices — the caller passes a single slice's units, so
- * cross-slice economy can only come from warm-session reuse, never from merging slices.
+ * Batch one slice's work units into **execution units** (a worker's assignment).
+ *
+ * **ONE CODER PER SLICE (tests-first repair, 2026-07-08):** every `role: code` unit —
+ * serial, mechanize and fan-out alike — collapses into a SINGLE execution unit whose
+ * footprint is the union and whose notes concatenate in authored order. The slice is the
+ * unit of code scheduling: ACs (and therefore the held-out probes) exist at slice
+ * granularity, so a test-driven loop only closes when one accountable coder owns the whole
+ * coherent change. Per-file code fan-out was designed for blind writers; under the verify
+ * oracle it fights the design. Parallelism lives BETWEEN slices (`parallel_group`), not
+ * inside one.
+ *
+ * `role: test` units keep their granularity (per-AC fan-out; serial test units still share
+ * one warm session) — and a `code` and a `test` unit never share a session (SP-6/7): the
+ * test-author is the held-out verifier whose prompt keeps the ACs a code-author must not see.
+ * Never spans slices — the caller passes a single slice's units.
  */
 export function batchExecutionUnits(units: WorkUnit[]): ExecutionUnit[] {
   const out: ExecutionUnit[] = [];
-  // Serial units collapse into ONE warm session — but a `code` and a `test` unit must never share a
-  // session (SP-6/7): the test-author is the held-out verifier and its prompt keeps the ACs a
-  // code-author must not see. So batch serial units by role, keeping each execution unit role-uniform.
-  const serial = units.filter((u) => u.execution === "serial");
-  const serialCode = serial.filter((u) => (u.role ?? "code") !== "test");
-  const serialTest = serial.filter((u) => (u.role ?? "code") === "test");
-  if (serialCode.length) out.push({ shape: "serial", units: serialCode });
+  // All code-role units → ONE execution unit (one coder per slice), in authored order.
+  const code = units.filter((u) => (u.role ?? "code") !== "test");
+  if (code.length) out.push({ shape: "serial", units: code });
+  // Test-role units keep the per-AC fan-out; serial test units batch into one warm session.
+  const test = units.filter((u) => (u.role ?? "code") === "test");
+  const serialTest = test.filter((u) => u.execution === "serial");
   if (serialTest.length) out.push({ shape: "serial", units: serialTest });
-  for (const u of units.filter((u) => u.execution === "mechanize"))
+  for (const u of test.filter((u) => u.execution === "mechanize"))
     out.push({ shape: "mechanize", units: [u] });
-  for (const u of units.filter((u) => u.execution === "fan-out"))
+  for (const u of test.filter((u) => u.execution === "fan-out"))
     out.push({ shape: "fan-out", units: [u] });
   return out;
 }
@@ -286,32 +295,45 @@ export function buildUnitDag(slices: SliceForDag[]): SchedUnit[] {
       });
       continue;
     }
+    // TESTS-FIRST (repair, 2026-07-08): compute each execution unit's role up front so the
+    // slice's code unit can be dependency-gated on ALL its same-slice test units — the
+    // held-out probes are authored before the coder dispatches, and the coder then iterates
+    // against them through the verify oracle. Same-slice only; the edge is implicit and
+    // deterministic (never authored).
+    const roleOf = (eu: ExecutionUnit): "code" | "test" =>
+      eu.units.every((u) => (u.role ?? "code") === "test") ? "test" : "code";
+    const testIds = eus.flatMap((eu, i) =>
+      roleOf(eu) === "test" ? [`${s.handle}#eu-${i}`] : [],
+    );
     eus.forEach((eu, i) => {
       const thisId = `${s.handle}#eu-${i}`;
       const footprint = [
         ...new Set(eu.units.flatMap((u) => u.footprint ?? [])),
       ];
-      // The unit's ONLY edges: resolve each consumed file to ALL its producers over the
+      // The unit's edges: resolve each consumed file to ALL its producers over the
       // global map, dropping self-references (a unit consuming a file in its own footprint).
       const consumesDeps = eu.units.flatMap((u) =>
         ((u as WorkUnit & { consumes?: string[] }).consumes ?? []).flatMap(
           (c) => fileToNodes.get(normFile(c)) ?? [],
         ),
       );
-      const requires = [...new Set(consumesDeps.filter((id) => id !== thisId))];
+      // Role carried onto the SchedUnit (SP-6/7 AC1): an execution unit is `test` only when EVERY
+      // underlying work unit is `test` (batchExecutionUnits keeps batches role-uniform), else
+      // `code`. `buildWorkerPrompt` branches on this.
+      const role = roleOf(eu);
+      // Tests-first: the slice's (single, collapsed) code unit waits on every same-slice
+      // test unit, so the probes exist before the coder starts.
+      const testsFirstDeps = role === "code" ? testIds : [];
+      const requires = [
+        ...new Set(
+          [...consumesDeps, ...testsFirstDeps].filter((id) => id !== thisId),
+        ),
+      ];
       const note =
         eu.units
           .map((u) => (u as WorkUnit & { note?: string }).note)
           .filter(Boolean)
           .join("; ") || undefined;
-      // Role carried onto the SchedUnit (SP-6/7 AC1): an execution unit is `test` only when EVERY
-      // underlying work unit is `test` (batchExecutionUnits keeps serial batches role-uniform, and
-      // mechanize/fan-out are single-unit), else `code`. `buildWorkerPrompt` branches on this.
-      const role: "code" | "test" = eu.units.every(
-        (u) => (u.role ?? "code") === "test",
-      )
-        ? "test"
-        : "code";
       out.push({
         id: thisId,
         slice: s.handle,
