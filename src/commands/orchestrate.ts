@@ -35,6 +35,7 @@ import {
   sessionLogPathFor,
   answerParkedWorker,
 } from "../services/orchestratorSessions";
+import { showFreshMarkdownPreview } from "./freshPreview";
 import { gateSpecAcceptance } from "../methodology/qualityGates";
 import { mergeSpecPr, specBranch } from "../github/specMerge";
 import { retireWorktreeNote } from "./acceptLand";
@@ -231,10 +232,11 @@ export function registerOrchestrateCommands(
                 );
               }
               // On a completed Spec, auto-open the delivery summary in the Markdown PREVIEW (rendered)
-              // — the post-execution "here's what was accomplished + what to do next" record.
+              // — the post-execution "here's what was accomplished + what to do next" record. Use the
+              // fresh-preview helper: DELIVERY.md is in the unwatched sidecar, so a stale preview from
+              // the PRIOR run would otherwise be refocused with last run's content (the reported bug).
               if (r.deliveryDoc) {
-                void vscode.commands.executeCommand(
-                  "markdown.showPreview",
+                void showFreshMarkdownPreview(
                   vscode.Uri.file(path.join(thinkingSpaceDir, r.deliveryDoc)),
                 );
               }

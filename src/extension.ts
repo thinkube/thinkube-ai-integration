@@ -50,6 +50,7 @@ import {
 } from "./commands/archive";
 import { registerWorktreeCommands } from "./commands/worktree";
 import { registerOrchestrateCommands } from "./commands/orchestrate";
+import { showFreshMarkdownPreview } from "./commands/freshPreview";
 
 export function activate(context: vscode.ExtensionContext) {
   console.log("Thinkube AI Integration is now active!");
@@ -338,20 +339,14 @@ export function activate(context: vscode.ExtensionContext) {
       "thinkube.specs.openRendered",
       (node?: { file?: string }) => {
         if (node?.file)
-          void vscode.commands.executeCommand(
-            "markdown.showPreview",
-            vscode.Uri.file(node.file),
-          );
+          void showFreshMarkdownPreview(vscode.Uri.file(node.file));
       },
     ),
     vscode.commands.registerCommand(
       "thinkube.teps.openRendered",
       (node?: { file?: string }) => {
         if (node?.file)
-          void vscode.commands.executeCommand(
-            "markdown.showPreview",
-            vscode.Uri.file(node.file),
-          );
+          void showFreshMarkdownPreview(vscode.Uri.file(node.file));
       },
     ),
     // "+ New Spec" on the Specs section header — mint the next Spec id from the
