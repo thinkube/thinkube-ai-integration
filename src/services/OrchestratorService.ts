@@ -1201,6 +1201,8 @@ export class OrchestratorService {
       specNumber,
       this.deps.baseDir,
       this.deps.thinkingSpaceRoot,
+      undefined, // approvalDir — self-located by the server (SP-6/17), not injected
+      (l) => this.deps.output.appendLine(l), // SP-17/1: surface a stale-base refresh / halt
     );
     // Worktree lifecycle (SP-6/7): a (re)dispatched Spec starts from a CLEAN tree — uncommitted
     // leftovers of a prior run (a stale impl authored under an old contract, half-landed units)

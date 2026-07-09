@@ -372,6 +372,7 @@ export class WorktreeService {
     baseDir?: string,
     thinkingSpaceRoot?: string,
     approvalDir?: string,
+    log?: (line: string) => void,
   ): Promise<string> {
     const branch = specBranchName(specNumber);
     // Reuse an existing worktree for this Spec rather than failing on "already
@@ -407,6 +408,16 @@ export class WorktreeService {
         else throw err;
       }
     }
+
+    // Never dispatch against a STALE base (SP-17/1). A reused worktree — or a re-added
+    // pre-existing branch — can sit behind the canonical branch (a prior run's worktree
+    // left at v0.1.154 while main advanced 8 commits). Bring it current BEFORE provisioning:
+    // discard the disposable working changes and rebase onto the base, which fast-forwards
+    // when the branch holds no local commits and REPLAYS any un-accepted committed work when
+    // it does. A rebase that cannot apply cleanly is the one real exception — it throws so the
+    // dispatch halts for the human (running outdated is never an option, so there is nothing
+    // to ask). A freshly-cut branch is already at HEAD ⇒ behind 0 ⇒ this is a no-op.
+    await this.ensureCurrentWithBase(canonicalRepo, worktreePath, specNumber, log);
 
     // Machine-locally connect the worktree: inject THINKUBE_THINKING_SPACE_ROOT
     // (the central sidecar thinking space, AC7) into its .mcp.json kanban-server
@@ -686,6 +697,84 @@ export class WorktreeService {
     } catch {
       return 0;
     }
+  }
+
+  /**
+   * Bring the spec worktree's branch onto the CURRENT base branch before a dispatch (SP-17/1) — the
+   * guarantee that a worker never runs against a stale checkout. `behind` = commits the base has that
+   * the worktree's HEAD lacks; 0 (or an unresolvable / detached base) ⇒ no-op. When behind, discard
+   * the worktree's DISPOSABLE uncommitted + untracked changes (each run regenerates them; `clean -fd`
+   * leaves gitignored deps like node_modules / out-test alone, and committed history is untouched) and
+   * `git rebase` onto the base: a fast-forward when the branch holds no local commits, a replay of any
+   * un-accepted committed slices when it does. A rebase that CONFLICTS is aborted and re-thrown as a
+   * halt — the base moved under un-accepted work in a way only a human can reconcile, and running a
+   * stale base is never an option, so there is nothing to ask. Best-effort base resolution mirrors
+   * {@link unmergedCount}: a detached canonical HEAD ⇒ skip rather than block on ambiguity.
+   */
+  private async ensureCurrentWithBase(
+    canonicalRepo: string,
+    worktreePath: string,
+    specNumber: string,
+    log?: (line: string) => void,
+  ): Promise<void> {
+    let base: string;
+    try {
+      const { stdout } = await execFileAsync(
+        "git",
+        ["-C", canonicalRepo, "rev-parse", "--abbrev-ref", "HEAD"],
+        { timeout: 5000 },
+      );
+      base = stdout.trim();
+    } catch {
+      return;
+    }
+    if (!base || base === "HEAD") return;
+    const count = async (range: string): Promise<number> => {
+      try {
+        const { stdout } = await execFileAsync(
+          "git",
+          ["-C", worktreePath, "rev-list", "--count", range],
+          { timeout: 5000 },
+        );
+        return Number(stdout.trim()) || 0;
+      } catch {
+        return 0;
+      }
+    };
+    const behind = await count(`HEAD..${base}`);
+    if (behind === 0) return;
+    const ahead = await count(`${base}..HEAD`);
+    // Discard the disposable working tree (committed history survives), then rebase onto the base.
+    await execFileAsync(
+      "git",
+      ["-C", worktreePath, "reset", "--hard", "HEAD"],
+      { timeout: 10000 },
+    );
+    await execFileAsync("git", ["-C", worktreePath, "clean", "-fd"], {
+      timeout: 10000,
+    });
+    try {
+      await execFileAsync("git", ["-C", worktreePath, "rebase", base], {
+        timeout: 30000,
+      });
+    } catch (err) {
+      await execFileAsync("git", ["-C", worktreePath, "rebase", "--abort"], {
+        timeout: 10000,
+      }).catch(() => undefined);
+      throw new Error(
+        `SP-${specNumber}: its worktree was ${behind} commit(s) behind ${base}, and rebasing its ` +
+          `${ahead} un-accepted commit(s) onto ${base} hit a conflict only you can resolve. Reconcile ` +
+          `the branch (rebase spec/SP-${specNumber} onto ${base} in ${worktreePath}, or remove the ` +
+          `worktree to rebuild fresh) and re-orchestrate — a stale base is never run. ` +
+          `(${(err as Error).message.split("\n")[0]})`,
+      );
+    }
+    log?.(
+      `▸ SP-${specNumber}: worktree was ${behind} commit(s) behind ${base}` +
+        (ahead
+          ? ` — rebased ${ahead} un-accepted commit(s) onto ${base}.`
+          : ` — refreshed onto ${base}.`),
+    );
   }
 
   private async refExists(cwd: string, ref: string): Promise<boolean> {
