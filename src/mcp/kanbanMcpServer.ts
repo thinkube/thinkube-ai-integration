@@ -2990,6 +2990,69 @@ async function resolveSpecWorkingRepo(
   }
 }
 
+/** Shell builtins/keywords the probe dry-run never tries to resolve. */
+const SHELL_BUILTINS = new Set([
+  "cd",
+  "echo",
+  "true",
+  "false",
+  "test",
+  "[",
+  "exit",
+  "export",
+  "set",
+  "wait",
+  "sleep",
+  "read",
+]);
+
+/**
+ * Probe dry-run (2026-07-11): find env-local verification commands whose
+ * leading token(s) do NOT resolve to an executable in the working repo. Pure
+ * resolution (`command -v`), never execution — safe at spec time. Each
+ * `&&`/`||`/`;`-separated segment's first word is checked with the repo's
+ * `node_modules/.bin` prepended to PATH (so `npx`-less local binaries still
+ * resolve at the root); shell builtins, env-var assignments, subshell noise
+ * and anything unparseable are skipped (the check errs open — its job is to
+ * catch the plain `tsc`-style miss, not to be a shell parser).
+ */
+export function unresolvableProbeCommands(
+  map: Record<string, { run?: string; env?: string }>,
+  cwd: string,
+): { ac: string; cmd: string; token: string }[] {
+  const out: { ac: string; cmd: string; token: string }[] = [];
+  for (const [ac, decl] of Object.entries(map ?? {})) {
+    const run = decl?.run?.trim();
+    if (!run || decl.env === "assessment" || decl.env === "cluster") continue;
+    for (const seg of run.split(/&&|\|\||;/)) {
+      let token = seg.trim().replace(/^[($\s]+/, "").split(/\s+/)[0] ?? "";
+      token = token.replace(/[)]+$/, "");
+      if (
+        !token ||
+        SHELL_BUILTINS.has(token) ||
+        token.includes("=") ||
+        token.includes("$") ||
+        token.startsWith("{") ||
+        token.startsWith("#")
+      )
+        continue;
+      try {
+        execFileSync("sh", ["-c", 'command -v -- "$1"', "sh", token], {
+          cwd,
+          stdio: "ignore",
+          env: {
+            ...process.env,
+            PATH: `${path.join(cwd, "node_modules", ".bin")}:${process.env.PATH ?? ""}`,
+          },
+        });
+      } catch {
+        out.push({ ac, cmd: run, token });
+      }
+    }
+  }
+  return out;
+}
+
 /**
  * Real filesystem oracle for the footprint existence gate: existence via
  * `fs.existsSync` against the working repo; did-you-mean candidates from
@@ -3751,7 +3814,7 @@ async function uniqueSlug(
  * the thinking space, so spec authoring must go through the store like slice creation does.
  * Existing frontmatter is preserved — only the markdown body is replaced.
  */
-async function writeSpec(
+export async function writeSpec(
   store: ThinkubeStore,
   spec: string,
   /** The full replacement body — or `undefined` for a CERTIFY-ONLY call (`/spec-prepare` step 7's
@@ -3873,6 +3936,22 @@ async function writeSpec(
         specId: spec,
       });
       const map = emitAcVerifications(verdicts);
+      // Probe dry-run (2026-07-11): never SIGN a command that cannot execute.
+      // A bare devDependency binary (`tsc`) exits 127 in every fresh worktree,
+      // and a signed-unrunnable probe reads downstream as a phantom code
+      // failure. Each env-local command's leading tokens must resolve in the
+      // working repo (with node_modules/.bin on PATH); refuse otherwise,
+      // naming the token and the repo-local-runner fix.
+      const unresolvable = unresolvableProbeCommands(map, audit.cwd);
+      if (unresolvable.length) {
+        throw new Error(
+          `write_spec refused SP-${spec}: derived verification command(s) cannot execute in the working repo — ` +
+            unresolvable
+              .map((u) => `AC ${u.ac}: \`${u.cmd}\` (\`${u.token}\` not found)`)
+              .join("; ") +
+            `. Invoke repo-local tools via their runner (npx / uv run / poetry run) or declare them in the repo's worktree setup, then re-certify.`,
+        );
+      }
       const acHash = acRequirementHash(trimmed);
       fm.ac_verifications = map;
       fm[AC_CERT_HASH_KEY] = acHash;

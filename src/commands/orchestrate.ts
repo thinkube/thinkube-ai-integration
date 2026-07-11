@@ -35,6 +35,9 @@ import {
   sessionLogPathFor,
   answerParkedWorker,
 } from "../services/orchestratorSessions";
+import { createSdkAuditRunner } from "../services/auditorRunner";
+import { loadOrCreateSecret } from "../services/acSignature";
+import { writeSpec } from "../mcp/kanbanMcpServer";
 import { showFreshMarkdownPreview } from "./freshPreview";
 import { gateSpecAcceptance } from "../methodology/qualityGates";
 import { mergeSpecPr, specBranch } from "../github/specMerge";
@@ -204,6 +207,44 @@ export function registerOrchestrateCommands(
                 verifyCommand: orchestratorCfg
                   .get<string>("verifyCommand")
                   ?.trim(),
+                // Gate self-heal (2026-07-11): when the closing gate hits an
+                // UNRUNNABLE probe (exit 126/127), re-author + re-sign the
+                // Spec's ac_verifications via the same certify-only audit path
+                // write_spec uses, then the gate retries once — a gate defect
+                // never burns a rework attempt or blames a slice.
+                reauthorGate: async (specNumber, worktreeCwd) => {
+                  const keyDir = process.env.THINKUBE_SIGNING_KEY_DIR?.trim();
+                  if (!keyDir) {
+                    output.appendLine(
+                      "⚠ gate re-author unavailable: THINKUBE_SIGNING_KEY_DIR is not set on the host.",
+                    );
+                    return false;
+                  }
+                  const runner = createSdkAuditRunner({
+                    model:
+                      workerModel.workerModelByRole?.auditor ??
+                      workerModel.workerModel ??
+                      "sonnet",
+                    log: (l) => output.appendLine(l),
+                  });
+                  await writeSpec(
+                    store,
+                    specNumber,
+                    undefined, // certify-only: audit + sign the on-disk body
+                    undefined,
+                    // The PRESENCE of ac_verifications is the "please certify
+                    // now" signal; with signing on its VALUE is ignored (the
+                    // server signs only what its own audit produced).
+                    {},
+                    undefined,
+                    {
+                      runner,
+                      secret: loadOrCreateSecret(keyDir),
+                      cwd: worktreeCwd,
+                    },
+                  );
+                  return true;
+                },
               });
               output.show(true);
               const cap =

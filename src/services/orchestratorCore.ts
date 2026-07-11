@@ -10,6 +10,7 @@
  * defaulting to `child_process` so the runner + the report builder stay unit-testable with fakes.
  */
 import { spawn } from "child_process";
+import { createHash } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -503,6 +504,26 @@ export const CONTRACT_DEFECT_MARKER =
   "⛔ CONTRACT-DEFECT — the contract is incomplete";
 
 /**
+ * Marker for a **gate-attributed** escalation (2026-07-11): the verification
+ * PROBE itself cannot run (shell exit 126/127 or spawn error). The defect is
+ * the gate's own machinery — the probe command, its environment — never the
+ * slice, so no rework attempt is burned and no role is re-dispatched; the
+ * remedy is re-authoring `ac_verifications` (auditor re-run), and only if that
+ * still cannot produce a runnable probe does a human see this marker.
+ */
+export const GATE_DEFECT_MARKER =
+  "⛔ GATE-DEFECT — the verification probe cannot run";
+
+/**
+ * Marker for a **deterministic-failure** escalation (2026-07-11): the same AC
+ * failed with (normalized-)identical evidence to the prior attempt. Re-running
+ * unchanged inputs cannot converge, so remaining rework attempts are not
+ * burned — the loop stops immediately and a human (or auto-attend) decides.
+ */
+export const DETERMINISTIC_FAILURE_MARKER =
+  "⛔ DETERMINISTIC FAILURE — identical evidence to the prior attempt; retrying unchanged inputs cannot converge";
+
+/**
  * Has a slice **crossed its rework bound** (SP-6/6 AC5)? True once the recorded failed-attempt count
  * reaches the bound (default {@link MAX_REWORK_ATTEMPTS}) — at which point {@link readyFrontier} drops
  * every unit the slice owns, so it is no longer auto-re-dispatchable. Fail-safe on junk input: a
@@ -529,7 +550,7 @@ export function isEscalated(
  * defect is the CONTRACT itself and the slice routes to a contract re-cut (not another role guess). The
  * verdict of {@link JudgeFailure}; routes {@link reDispatchDecision}.
  */
-export type Fault = "code" | "test" | "both" | "contract";
+export type Fault = "code" | "test" | "both" | "contract" | "gate";
 
 /**
  * An independent judge's verdict on a red acceptance run (SP-6/7 AC4): which role is at fault plus the
@@ -568,9 +589,34 @@ export interface ReDispatchVerdict {
   attempts: number;
   /** SP-6/7 AC4: which role the re-dispatch targets — set ONLY when a judged `fault` was supplied.
    *  `code`/`test` route the re-author to that role; `both` forces escalation (ambiguous); SP-6/9
-   *  `contract` forces escalation to a contract re-cut (attempts NOT burned). Absent when no fault is
-   *  given (the pure attempt-bound decision), so the AC5 behaviour is unchanged. */
+   *  `contract` forces escalation to a contract re-cut (attempts NOT burned); `gate` forces
+   *  escalation to gate re-authoring (attempts NOT burned — the probe, not the slice, is broken).
+   *  Absent when no fault is given (the pure attempt-bound decision), so the AC5 behaviour is
+   *  unchanged. */
   route?: Fault;
+  /** Set when the escalation was forced by the identical-evidence circuit breaker: the same AC
+   *  failed with the same normalized evidence as the prior attempt, so re-dispatch was refused
+   *  ("deterministic failure — inputs unchanged") without burning the remaining attempts. */
+  deterministic?: boolean;
+}
+
+/**
+ * Normalize failing-run evidence into a stable hash for the identical-failure
+ * circuit breaker: volatile fragments (durations, timestamps, tmp paths, hex
+ * addresses, pids) are stripped so two runs of the same deterministic failure
+ * hash identically while any real change in the failure hashes differently.
+ */
+export function normalizeEvidenceHash(evidence: string): string {
+  const normalized = (evidence ?? "")
+    .replace(/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g, "<ts>")
+    .replace(/\b\d+(?:\.\d+)?\s*(?:ms|s|sec|seconds?|m|min|minutes?)\b/gi, "<dur>")
+    .replace(/duration_ms:\s*[\d.]+/g, "duration_ms: <dur>")
+    .replace(/\/tmp\/[^\s'"]+/g, "<tmp>")
+    .replace(/0x[0-9a-fA-F]+/g, "<addr>")
+    .replace(/\bpid[= ]\d+/gi, "pid=<pid>")
+    .replace(/[ \t]+/g, " ")
+    .trim();
+  return createHash("sha256").update(normalized).digest("hex");
 }
 
 /**
@@ -598,6 +644,12 @@ export function reDispatchDecision(
   priorAttempts: number,
   bound: number = MAX_REWORK_ATTEMPTS,
   fault?: Fault,
+  /** Identical-failure circuit breaker (2026-07-11): the current red's
+   *  normalized evidence hash and the prior attempt's persisted one. When both
+   *  are present and equal, a would-be re-dispatch becomes an immediate
+   *  escalation (`deterministic: true`) WITHOUT burning the remaining
+   *  attempts — re-running unchanged inputs cannot converge. */
+  evidence?: { hash?: string; priorHash?: string },
 ): ReDispatchVerdict {
   const prior = Number.isFinite(priorAttempts)
     ? Math.max(0, Math.floor(priorAttempts))
@@ -609,7 +661,30 @@ export function reDispatchDecision(
   if (fault === "contract") {
     return { action: "escalate", attempts: prior, route: "contract" };
   }
+  // Gate arm (2026-07-11): the verification PROBE cannot run — the defect is the
+  // gate's own machinery, never the slice. Escalate to gate re-authoring (the
+  // shell first retries via the auditor) without burning an attempt.
+  if (fault === "gate") {
+    return { action: "escalate", attempts: prior, route: "gate" };
+  }
   const attempts = prior + 1;
+  // Circuit breaker: the same failure, byte-for-normalized-byte, as last time.
+  // The judge may have blamed code or test, but with unchanged inputs another
+  // worker roll is a coin with no new sides — stop at THIS attempt count
+  // instead of burning the rest of the bound on the identical experiment.
+  if (
+    evidence?.hash !== undefined &&
+    evidence.priorHash !== undefined &&
+    evidence.hash === evidence.priorHash
+  ) {
+    const verdict: ReDispatchVerdict = {
+      action: "escalate",
+      attempts,
+      deterministic: true,
+    };
+    if (fault) verdict.route = fault;
+    return verdict;
+  }
   // Escalate at the bound OR when the fault is ambiguous (both code and test suspect) — AC4.
   const escalate = isEscalated(attempts, bound) || fault === "both";
   const verdict: ReDispatchVerdict = {
@@ -1299,7 +1374,19 @@ export interface AcResult {
   pass: boolean;
   /** The command + exit code + a tail of its output (or the un-runnable reason). Auditable. */
   evidence: string;
+  /**
+   * The probe itself could not execute (shell exit 126/127 — command not
+   * found / not executable — or a spawn error). This is a GATE defect, not a
+   * code failure: the shell routes it to auditor re-authoring instead of
+   * blaming a slice or burning a rework attempt (2026-07-11: a signed bare
+   * `tsc` probe exited 127 in every fresh worktree and burned 3 attempts).
+   */
+  unrunnable?: boolean;
 }
+
+/** Shell exit codes that mean the PROBE cannot run at all (126 = found but not
+ *  executable, 127 = command not found) — a gate defect, never a code red. */
+export const PROBE_UNRUNNABLE_CODES: ReadonlySet<number> = new Set([126, 127]);
 
 /**
  * Normalize the Spec frontmatter `ac_verifications` map (AC ordinal → { run, env }) into the
@@ -1634,12 +1721,20 @@ export async function runAcVerifications(
         ac: v.ac,
         pass: false,
         evidence: `$ ${v.run} → could not run: ${cached.error}`,
+        unrunnable: true,
       });
     } else {
+      const unrunnable =
+        cached.code !== null && PROBE_UNRUNNABLE_CODES.has(cached.code);
       out.push({
         ac: v.ac,
         pass: cached.code === 0,
-        evidence: acEvidence(v.run, cached.code, cached.output),
+        evidence:
+          acEvidence(v.run, cached.code, cached.output) +
+          (unrunnable
+            ? "\n(probe unrunnable — command not found / not executable: a GATE defect, not a code failure)"
+            : ""),
+        ...(unrunnable ? { unrunnable: true } : {}),
       });
     }
   }

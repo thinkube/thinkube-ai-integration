@@ -51,8 +51,11 @@ import {
   reDispatchDecision,
   markEscalated,
   hasEscalationMarker,
+  normalizeEvidenceHash,
   ESCALATION_MARKER,
   CONTRACT_DEFECT_MARKER,
+  GATE_DEFECT_MARKER,
+  DETERMINISTIC_FAILURE_MARKER,
   type SliceForDag,
   type SchedUnit,
   type SchedulerState,
@@ -168,8 +171,20 @@ export interface OrchestratorDeps {
   flagAttention?: (
     handle: string,
     diagnosis: string,
-    escalation?: { attempts: number; escalated: boolean },
+    escalation?: {
+      attempts: number;
+      escalated: boolean;
+      /** Normalized hash of this failure's evidence, persisted as
+       *  `last_evidence_hash` — the identical-failure circuit breaker's memory. */
+      evidenceHash?: string;
+    },
   ) => Promise<void>;
+  /** Re-author + re-sign the Spec's `ac_verifications` (the write_spec certify-only
+   *  audit path) when the closing gate finds an UNRUNNABLE probe (exit 126/127) —
+   *  the gate self-heal (2026-07-11). Returns true when the map was re-authored;
+   *  the gate then retries once. Absent ⇒ no self-heal, the gate escalates with
+   *  fault `gate` directly. */
+  reauthorGate?: (specNumber: string, worktreeCwd: string) => Promise<boolean>;
   /** Park a slice needs-input with its question + the worker's session id + unit id (tests): defaults to a frontmatter+body write. */
   flagNeedsInput?: (
     handle: string,
@@ -944,6 +959,9 @@ export class OrchestratorService {
    *  survives a reload: a slice's count carries ACROSS runs, each requires-attention run adding one.
    *  Loaded once per dispatchSpec. */
   private reworkAttempts: Map<string, number> = new Map();
+  /** Per-slice normalized hash of the LAST failing evidence (frontmatter
+   *  `last_evidence_hash`) — the identical-failure circuit breaker's memory. */
+  private priorEvidenceHash: Map<string, string> = new Map();
 
   /** Slices the bounded loop already ESCALATED on a prior run (SP-6/6 AC5) — detected from the durable
    *  `escalated` frontmatter flag or the {@link ESCALATION_MARKER} on the body. Their units are blocked
@@ -999,6 +1017,7 @@ export class OrchestratorService {
     const slices: SliceForDag[] = [];
     this.sliceResumeState = new Map();
     this.reworkAttempts = new Map();
+    this.priorEvidenceHash = new Map();
     this.escalatedSlices = new Set();
     for (const rel of await store.listSlices(specNumber)) {
       const m = SLICE_REL_RE.exec(rel);
@@ -1017,6 +1036,11 @@ export class OrchestratorService {
           ? Math.floor(priorAttempts)
           : 0,
       );
+      // Identical-failure circuit breaker (2026-07-11): re-seed the prior
+      // failing-evidence hash so a re-run can detect "same failure, unchanged
+      // inputs" and stop instead of burning the remaining attempts.
+      if (typeof fm?.last_evidence_hash === "string" && fm.last_evidence_hash)
+        this.priorEvidenceHash.set(handle, fm.last_evidence_hash);
       if (fm?.escalated === true || hasEscalationMarker(parsed?.body ?? ""))
         this.escalatedSlices.add(handle);
       // Resume markers (SP-th4wqc_SL-3): a prior run that landed the units but couldn't commit
@@ -1420,6 +1444,13 @@ export class OrchestratorService {
       slice: string,
       diagnosis: string,
       fault?: Fault,
+      // Raw failing evidence for the identical-failure circuit breaker
+      // (2026-07-11). Hashed NORMALIZED (volatile fragments stripped) and
+      // compared against the prior attempt's persisted hash: identical ⇒ a
+      // re-dispatch would re-run unchanged inputs, so escalate immediately.
+      // Deliberately the raw evidence, not the diagnosis — the judge's
+      // rationale varies between runs and would defeat the comparison.
+      evidenceForHash?: string,
     ) => {
       if (countedThisRun.has(slice)) return;
       countedThisRun.add(slice);
@@ -1431,17 +1462,32 @@ export class OrchestratorService {
       // the slice stays requires-attention with the durable ESCALATION_MARKER and `readyFrontier` (now
       // reading the bumped `attemptsMap`) stops auto-re-dispatching it — a human must decide. The counter
       // is persisted to frontmatter so the loop carries across runs.
+      const evidenceHash = evidenceForHash?.trim()
+        ? normalizeEvidenceHash(evidenceForHash)
+        : undefined;
       const verdict = reDispatchDecision(
         attemptsMap.get(slice) ?? 0,
         state.attemptBound,
         fault,
+        {
+          hash: evidenceHash,
+          priorHash: this.priorEvidenceHash.get(slice),
+        },
       );
       attemptsMap.set(slice, verdict.attempts);
+      if (evidenceHash) this.priorEvidenceHash.set(slice, evidenceHash);
       const escalate = verdict.action === "escalate";
-      await this.flagAttention(slice, diagnosis, {
-        attempts: verdict.attempts,
-        escalated: escalate,
-      });
+      await this.flagAttention(
+        slice,
+        verdict.deterministic
+          ? `${DETERMINISTIC_FAILURE_MARKER}\n${diagnosis}`
+          : diagnosis,
+        {
+          attempts: verdict.attempts,
+          escalated: escalate,
+          evidenceHash,
+        },
+      );
       // Route the re-dispatch (AC4): on escalate or an unrouted failure, block EVERY unit of the slice.
       // On a routed re-dispatch, block only the SIBLING role's units so the frontier re-authors just the
       // faulting role — the code-author for a `code` route, the test-author for a `test` route.
@@ -1468,7 +1514,11 @@ export class OrchestratorService {
         output.appendLine(
           fault === "contract"
             ? `⛔ ${slice}: contract defect — both hands conform yet disagree on an undefined seam → held for a contract re-cut (no rework attempt burned), awaiting the slicer.`
-            : `⛔ ${slice}: bounded rework attempts exhausted (${verdict.attempts})${fault === "both" ? " / fault ambiguous (both code and test)" : ""} → escalated, awaiting a human decision.`,
+            : fault === "gate"
+              ? `⛔ ${slice}: gate defect — the verification probe cannot run and re-authoring did not heal it → escalated (no rework attempt burned); fix the probe/environment, not the slice.`
+              : verdict.deterministic
+                ? `⛔ ${slice}: deterministic failure — identical evidence to the prior attempt (inputs unchanged) → escalated at attempt ${verdict.attempts} without burning the rest of the bound.`
+                : `⛔ ${slice}: bounded rework attempts exhausted (${verdict.attempts})${fault === "both" ? " / fault ambiguous (both code and test)" : ""} → escalated, awaiting a human decision.`,
         );
       }
     };
@@ -1765,6 +1815,7 @@ export class OrchestratorService {
       slice: string,
       diagnosis: string,
       fault?: Fault,
+      evidenceForHash?: string,
     ) => Promise<void>,
     result: SpecRunResult,
     testerPath?: string,
@@ -1772,7 +1823,8 @@ export class OrchestratorService {
     const { output, store } = this.deps;
     const green = new Map<string, number[]>();
     const specDoc = await store.getFile(store.pathForSpecDoc(specNumber));
-    const verifs = parseAcVerifications(specDoc?.frontmatter?.ac_verifications);
+    // `let`: the gate self-heal below may replace the plan with re-authored probes.
+    let verifs = parseAcVerifications(specDoc?.frontmatter?.ac_verifications);
 
     // SP-6/7 structural independence: the held-out probes were authored in the TESTER snapshot —
     // merge them into the code worktree so the gate grades the real implementation with them.
@@ -1864,7 +1916,7 @@ export class OrchestratorService {
               /* judge unavailable → unrouted block, as before */
             }
           }
-          await blockSlice(s.handle, diagnosis, fault);
+          await blockSlice(s.handle, diagnosis, fault, prep.output.slice(-4000));
         }
         output.appendLine(
           `⚑ SP-${specNumber}: build gate FAILED → landed slices require attention (per-AC runs skipped).`,
@@ -1912,11 +1964,47 @@ export class OrchestratorService {
         artifactFiles.length ? artifactFiles.join(", ") : "(none)"
       }`,
     };
-    const acResults = await (
-      this.deps.runAcVerifications ??
-      ((vs: AcVerification[], cwd: string) =>
-        runAcVerifications(vs, cwd, undefined, assess))
-    )(verifs, worktreePath);
+    const runPlan = (vs: AcVerification[]) =>
+      (
+        this.deps.runAcVerifications ??
+        ((v: AcVerification[], cwd: string) =>
+          runAcVerifications(v, cwd, undefined, assess))
+      )(vs, worktreePath);
+    let acResults = await runPlan(verifs);
+    // Gate self-heal (2026-07-11): an UNRUNNABLE probe (shell exit 126/127 or
+    // spawn error) is a defect in the gate's own machinery — the probe command
+    // or its environment — never in the slice (a signed bare `tsc` burned 3
+    // rework attempts as a phantom "code failure"). When available, re-author
+    // + re-sign `ac_verifications` via the auditor (the write_spec certify-only
+    // path) and retry the whole plan ONCE. No rework attempt is burned by any
+    // of this.
+    if (acResults.some((r) => r.unrunnable) && this.deps.reauthorGate) {
+      output.appendLine(
+        `⚑ SP-${specNumber}: unrunnable verification probe — a GATE defect, not a code failure. ` +
+          `Re-authoring ac_verifications via the auditor and retrying the gate once (no rework attempt burned).`,
+      );
+      let reauthored = false;
+      try {
+        reauthored = await this.deps.reauthorGate(specNumber, worktreePath);
+      } catch (err) {
+        output.appendLine(
+          `⚠ SP-${specNumber}: gate re-author failed: ${(err as Error).message}`,
+        );
+      }
+      if (reauthored) {
+        const freshDoc = await store.getFile(store.pathForSpecDoc(specNumber));
+        const fresh = parseAcVerifications(
+          freshDoc?.frontmatter?.ac_verifications,
+        );
+        if (fresh.length) {
+          verifs = fresh;
+          acResults = await runPlan(fresh);
+          output.appendLine(
+            `▸ SP-${specNumber}: closing gate retried with re-authored probes.`,
+          );
+        }
+      }
+    }
     // The full per-AC run lands on the auditable report regardless of who could
     // have authored it — but the GRADE is derived only from the independently-authored
     // subset below (so a self-tick still leaves an audit trail of why it didn't count).
@@ -2019,30 +2107,52 @@ export class OrchestratorService {
           .filter((r) => !r.pass)
           .map((r) => `AC #${r.ac}: ${r.evidence}`)
           .join("\n\n");
+        // Gate-defect short-circuit (2026-07-11): when EVERY failing result for
+        // this slice is an unrunnable probe (exit 126/127 / spawn error), the
+        // verdict is control-plane — the gate's machinery is broken, no model
+        // judgment needed, no role to blame, no attempt to burn. (The self-heal
+        // retry above already ran and did not produce a runnable probe.)
+        const redResults = acResults.filter(
+          (r) => !r.pass && (failedAcs.length ? failedAcs.includes(r.ac) : true),
+        );
+        const gateDefect =
+          redResults.length > 0 &&
+          redResults.every((r) => r.unrunnable) &&
+          missing.length === 0;
         let fault: Fault = "both";
         let rationale = "";
-        try {
-          const judgment = await judge(
-            {
-              id: units[0]?.id ?? s.handle,
-              slice: s.handle,
-              role: units[0]?.role,
-            },
-            `${why}\n\n${failEvidence}`,
-            // SP-6/9: thread the slice's CONTRACT so the judge triangulates the red against it (the
-            // neutral arbiter) rather than comparing the two hands — the only way to reach `contract`.
-            s.contract,
-          );
-          fault = judgment.fault;
-          rationale = (judgment.rationale ?? "").trim();
+        if (gateDefect) {
+          fault = "gate";
+          rationale =
+            "the verification probe(s) cannot execute in the worktree (command not found / not executable) — " +
+            "a defect in the gate's own machinery; no slice role can fix it";
           output.appendLine(
-            `⚖ ${s.handle}: judged fault = ${judgment.fault} — ${judgment.rationale}`,
+            `⚖ ${s.handle}: gate defect (probe unrunnable) — control-plane verdict, judge skipped; no rework attempt burned.`,
           );
-        } catch (err) {
-          // Fail-safe: a judge error escalates (fault `both`) rather than mis-routing.
-          output.appendLine(
-            `⚖ ${s.handle}: judge failed (${(err as Error).message}) → fault ambiguous (both).`,
-          );
+        } else {
+          try {
+            const judgment = await judge(
+              {
+                id: units[0]?.id ?? s.handle,
+                slice: s.handle,
+                role: units[0]?.role,
+              },
+              `${why}\n\n${failEvidence}`,
+              // SP-6/9: thread the slice's CONTRACT so the judge triangulates the red against it (the
+              // neutral arbiter) rather than comparing the two hands — the only way to reach `contract`.
+              s.contract,
+            );
+            fault = judgment.fault;
+            rationale = (judgment.rationale ?? "").trim();
+            output.appendLine(
+              `⚖ ${s.handle}: judged fault = ${judgment.fault} — ${judgment.rationale}`,
+            );
+          } catch (err) {
+            // Fail-safe: a judge error escalates (fault `both`) rather than mis-routing.
+            output.appendLine(
+              `⚖ ${s.handle}: judge failed (${(err as Error).message}) → fault ambiguous (both).`,
+            );
+          }
         }
         for (const n of failedAcs) routes.set(n, fault);
         // SP-11/3: keep the judge's UNCLIPPED per-AC rationale on the run result so the delivery
@@ -2072,8 +2182,14 @@ export class OrchestratorService {
               `Re-cut the contract via /slice (update_slice contract) to define this seam, then re-orchestrate — ` +
               `do NOT re-author the code or the test (both conform to the contract as written), do NOT auto-rewrite ` +
               `the contract here, and no rework attempt was burned.\n\n${baseDiagnosis}`
-            : baseDiagnosis;
-        await blockSlice(s.handle, diagnosis, fault);
+            : fault === "gate"
+              ? `${GATE_DEFECT_MARKER}\n` +
+                `The verification probe(s) for this slice cannot execute (command not found / not executable). ` +
+                `${this.deps.reauthorGate ? "The auditor already re-authored the probes once this run and they still cannot execute" : "No auditor was available to re-author them this run"}. ` +
+                `Fix the probe command or its environment (invoke repo-local tools via their runner — npx / uv run / poetry run — and declare worktree setup), ` +
+                `then re-orchestrate. The slice's code was never judged and no rework attempt was burned.\n\n${baseDiagnosis}`
+              : baseDiagnosis;
+        await blockSlice(s.handle, diagnosis, fault, failEvidence);
         output.appendLine(
           `⚑ ${s.handle}: closing gate red → requires-attention.`,
         );
@@ -3033,7 +3149,7 @@ export class OrchestratorService {
   private flagAttention(
     handle: string,
     diagnosis: string,
-    escalation?: { attempts: number; escalated: boolean },
+    escalation?: { attempts: number; escalated: boolean; evidenceHash?: string },
   ): Promise<void> {
     return (
       this.deps.flagAttention ??
@@ -3055,7 +3171,7 @@ export class OrchestratorService {
   private async defaultFlagAttention(
     handle: string,
     diagnosis: string,
-    escalation?: { attempts: number; escalated: boolean },
+    escalation?: { attempts: number; escalated: boolean; evidenceHash?: string },
   ): Promise<void> {
     const m = /^TEP-(\d+)_SP-(\d+)_SL-(\d+)$/.exec(handle);
     if (!m) return;
@@ -3071,6 +3187,11 @@ export class OrchestratorService {
         status: "requires-attention",
         ...(escalation ? { rework_attempts: escalation.attempts } : {}),
         ...(escalation?.escalated ? { escalated: true } : {}),
+        // Circuit-breaker memory (2026-07-11): the normalized failing-evidence
+        // hash, read back by buildSlices on the next run.
+        ...(escalation?.evidenceHash
+          ? { last_evidence_hash: escalation.evidenceHash }
+          : {}),
       },
       escalation?.escalated ? markEscalated(bodyWithNote) : bodyWithNote,
     );
