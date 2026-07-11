@@ -44,5 +44,23 @@ export async function showFreshMarkdownPreview(uri: vscode.Uri): Promise<void> {
       /* best-effort — a tab may already be gone */
     }
   }
+  // Closing tabs is only HALF the staleness (2026-07-11): a TextDocument can
+  // stay loaded with NO tab at all (anything that ever opened this file keeps
+  // the model alive), and the markdown preview renders from that model, not
+  // the disk. The sidecar is outside the watched workspace, so no change
+  // event ever refreshes it after the orchestrator's external write — revert
+  // the lagging model to the on-disk content explicitly before previewing.
+  const lagging = vscode.workspace.textDocuments.find(
+    (d) => d.uri.fsPath === uri.fsPath,
+  );
+  if (lagging) {
+    try {
+      await vscode.window.showTextDocument(lagging, { preview: true });
+      await vscode.commands.executeCommand("workbench.action.files.revert");
+      await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+    } catch {
+      /* best-effort — worst case the preview shows the model as-is */
+    }
+  }
   await vscode.commands.executeCommand("markdown.showPreview", uri);
 }
