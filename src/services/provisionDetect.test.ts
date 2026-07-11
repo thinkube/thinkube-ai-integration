@@ -78,3 +78,56 @@ test("first matching ecosystem wins per directory (npm beats a stray yarn.lock)"
   );
   assert.deepEqual(steps, [{ dir: "", command: "npm ci" }]);
 });
+
+// ── provisionWorktree: detected steps skip missing toolchains ───────────────
+// (2026-07-11 second live failure: a Go component built only in the cluster
+// hard-blocked worktree creation on a host with no `go`.)
+import { provisionWorktree } from "./worktreeProvision";
+import * as fsSync from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { execFileSync } from "node:child_process";
+
+function gitRepoWith(files: Record<string, string>): string {
+  const dir = fsSync.mkdtempSync(path.join(os.tmpdir(), "tk-prov-skip-"));
+  execFileSync("git", ["-C", dir, "init", "-q"]);
+  for (const [rel, content] of Object.entries(files)) {
+    fsSync.mkdirSync(path.join(dir, path.dirname(rel)), { recursive: true });
+    fsSync.writeFileSync(path.join(dir, rel), content);
+  }
+  execFileSync("git", ["-C", dir, "add", "-A"]);
+  execFileSync("git", ["-C", dir, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "seed"]);
+  return dir;
+}
+
+test("a detected step with no installed toolchain is SKIPPED; present ones still run", async () => {
+  const repo = gitRepoWith({
+    "proxy/go.sum": "x",
+    "frontend/package-lock.json": "{}",
+  });
+  const calls: string[] = [];
+  const exec = async (run: string) => {
+    calls.push(run);
+    if (run.startsWith("command -v"))
+      return { code: run.includes(" go") ? 127 : 0, output: "" };
+    return { code: 0, output: "" };
+  };
+  const r = await provisionWorktree(repo, repo, { exec });
+  assert.equal(r.ran, true);
+  assert.equal(r.code, 0);
+  assert.match(r.command!, /npm ci \(in frontend\/\)/);
+  assert.match(r.command!, /skipped: go mod download \(in proxy\/\) — `go` not installed/);
+  assert.ok(!calls.includes("go mod download"), "the go step must never execute");
+});
+
+test("a detected step whose PRESENT toolchain fails still fails hard", async () => {
+  const repo = gitRepoWith({ "frontend/package-lock.json": "{}" });
+  const exec = async (run: string) =>
+    run.startsWith("command -v")
+      ? { code: 0, output: "" }
+      : { code: 1, output: "npm ERR! network" };
+  const r = await provisionWorktree(repo, repo, { exec });
+  assert.equal(r.ran, true);
+  assert.equal(r.code, 1);
+  assert.match(r.command!, /npm ci/);
+});

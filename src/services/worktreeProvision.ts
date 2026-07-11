@@ -169,19 +169,35 @@ export async function provisionWorktree(
   // its whole gate with no node_modules and a signed probe exited 127 as a
   // phantom code failure. Detection is lockfile-pinned and idempotent; a
   // declared recipe always overrides it (the branch above).
+  //
+  // A DETECTED step whose toolchain is not installed on this host is SKIPPED
+  // (loudly, in the summary): a lockfile proves the repo ships that
+  // ecosystem, not that this machine builds it (first live run: a Go
+  // component built only in the cluster hard-blocked worktree creation on a
+  // host with no `go`). A declared recipe never gets this leniency — explicit
+  // intent fails hard — and a PRESENT toolchain that fails still fails hard.
   const steps = await detectProvisionSteps(canonicalRepo);
   if (steps.length === 0) return { ran: false };
+  const skipped: string[] = [];
+  const executed: string[] = [];
   for (const step of steps) {
     const cwd = step.dir ? path.join(worktreePath, step.dir) : worktreePath;
     const label = `${step.command}${step.dir ? ` (in ${step.dir}/)` : ""}`;
+    const tool = step.command.trim().split(/\s+/)[0];
+    const probe = await exec(`command -v -- ${tool}`, worktreePath);
+    if (probe.code !== 0) {
+      skipped.push(`${label} — \`${tool}\` not installed on this host`);
+      continue;
+    }
     const { code, output } = await exec(step.command, cwd);
     if (code !== 0) return { ran: true, command: label, code, output };
+    executed.push(label);
   }
   return {
-    ran: true,
-    command: `auto-detected setup: ${steps
-      .map((s) => `${s.command}${s.dir ? ` (${s.dir}/)` : ""}`)
-      .join(" ; ")}`,
+    ran: executed.length > 0,
+    command:
+      `auto-detected setup: ${executed.length ? executed.join(" ; ") : "(nothing ran)"}` +
+      (skipped.length ? ` | skipped: ${skipped.join(" ; ")}` : ""),
     code: 0,
     output: "",
   };
