@@ -4,8 +4,7 @@
  *
  * Each slice file (`.thinkube/specs/SP-{id}/SL-{m}.md`) becomes one card whose
  * string `id` IS the human handle `SP-{id}_SL-{m}` — that handle is the card's
- * identity across the host↔webview boundary (SP-7). Spec ids are opaque strings
- * (base36-epoch for new Specs, legacy integers for old ones), so there is no
+ * identity across the host↔webview boundary. Spec ids are strings, so there is no
  * numeric card encoding; colour and the parent chip group by the parent Spec id.
  */
 import { ThinkingSpace, ThinkingSpaceColumn, TaskCard } from "../types";
@@ -114,7 +113,7 @@ function acceptIdForKey(specKey: string, nested: boolean): string {
 }
 
 export interface SliceInput {
-  /** Parent Spec id — an opaque string (base36-epoch, or a legacy integer). */
+  /** Parent Spec id (string). */
   specNumber: string;
   /**
    * Parent TEP number when the slice was discovered in the org-scoped nested
