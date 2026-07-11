@@ -14,7 +14,7 @@ import "./installVscodeStub";
  * Code spawns `.mcp.json` servers with the session's cwd).
  *
  * Thinking Space addressing: the canonical id is the repo's HOME-RELATIVE path
- * (e.g. `apps/vllm`, `thinkube-platform/core/thinkube`). The workspace
+ * (e.g. `Apps/vllm`, `Platform/core/thinkube`). The workspace
  * organization is semantic, so bare basenames are systemically ambiguous
  * (template vs deployed app) and are NEVER resolved — an unknown id fails
  * with candidate suggestions, and `list_thinking_spaces` supplies the vocabulary.
@@ -61,6 +61,11 @@ import {
   sliceFilesResolveInRepo,
   type RepoFileOracle,
 } from "../methodology/sliceRepoGuard";
+import {
+  assertDeclaredSpace,
+  resolveVerifiedRepo,
+} from "../store/spaceRegistry";
+import { SPACE_CARD_FILENAME } from "../store/spaceManifest";
 import {
   // Slice lifecycle contract: the single source the `move_slice`
   // / `update_slice` handlers and their dispatch test agree on for retire + re-cut.
@@ -412,7 +417,7 @@ export class ThinkingSpaceRegistry {
       // session can never silently act on the wrong thinking space (the cwd's repo thinking space
       // is NOT assumed). Pass `thinking_space=<id>` explicitly.
       throw new Error(
-        "A thinking space is required: pass `thinking_space=<id>` — the thinking space's home-relative id (e.g. `thinkube-platform/core/thinkube`) or a `<product>/projects/<id>` project namespace. There is no default thinking space; call list_thinking_spaces for the available ids." +
+        "A thinking space is required: pass `thinking_space=<id>` — the workspace spelling (e.g. `Platform/core/thinkube`) or a `<product>/projects/<id>` project namespace. There is no default thinking space; call list_thinking_spaces for the available ids." +
           this.missingThinkingSpaceRootHint(),
       );
     }
@@ -458,7 +463,7 @@ export class ThinkingSpaceRegistry {
         ? ` Did you mean: ${candidates.join(", ")}?`
         : " Call list_thinking_spaces for the available ids.";
     throw new Error(
-      `Unknown thinking space "${arg}" — thinkingSpaces are addressed by their home-relative id (e.g. thinkube-platform/core/thinkube), never by bare name.${hint}`,
+      `Unknown thinking space "${arg}" — thinking spaces are addressed by the workspace spelling (e.g. Platform/core/thinkube), never by bare name.${hint}`,
     );
   }
 
@@ -558,6 +563,25 @@ function walkForThinkingSpaces(
     const abs = path.resolve(dir);
     const wt = gitEntry.isFile() ? linkedWorktreeInfo(abs) : undefined;
     const thinkingSpaceDir = thinkingSpaceDirOf(abs, env); // thinkingSpaceDirOf maps a worktree → canonical
+    if (env.thinkingSpaceRoot) {
+      // ONE convention (TEP-14): a space exists iff its sidecar dir holds a
+      // card (space.yaml — declared, never inferred from folder shapes), and
+      // its id IS the workspace spelling (the same string the sidecar dir is
+      // named by). A repo outside every workspace folder has no valid name
+      // and is not listed.
+      if (!fsSync.existsSync(path.join(thinkingSpaceDir, SPACE_CARD_FILENAME)))
+        return;
+      const ns = namespaceForRepo(
+        path.resolve(wt ? wt.canonicalRepo : abs),
+        env.folders,
+      );
+      if (!ns) return;
+      const name = wt
+        ? `${path.basename(wt.canonicalRepo)} · ${wt.name} worktree`
+        : path.basename(abs);
+      out.set(abs, { id: ns, name, path: abs, thinkingSpaceDir, worktree: !!wt });
+      return;
+    }
     if (isThinkingSpaceDir(thinkingSpaceDir)) {
       const name = wt
         ? `${path.basename(wt.canonicalRepo)} · ${wt.name} worktree`
@@ -739,7 +763,7 @@ const THINKING_SPACE_PARAM = {
   thinking_space: {
     type: "string",
     description:
-      "REQUIRED — the thinking space this call acts on: the thinking space's home-relative id (e.g. `thinkube-platform/core/thinkube`), a `<product>/projects/<id>` project namespace, or an absolute path. There is NO default thinking space (a call must never silently act on the session's cwd repo thinking space). Bare repo names are not accepted (ambiguous) — call `list_thinking_spaces` for the ids.",
+      "REQUIRED — the thinking space this call acts on: the workspace spelling (e.g. `Platform/core/thinkube`), a `<product>/projects/<id>` project namespace, or an absolute path. There is NO default thinking space (a call must never silently act on the session's cwd repo thinking space). Bare repo names are not accepted (ambiguous) — call `list_thinking_spaces` for the ids.",
   },
 } as const;
 
@@ -747,7 +771,7 @@ export const TOOL_DEFS = [
   {
     name: "list_thinking_spaces",
     description:
-      "Discover every Tandem thinking space across the configured roots: repos whose thinking space dir exists in the central sidecar namespace `<thinking space-root>/<container>/<rel>` (ADR-0008). Returns each thinking space's canonical id (home-relative path — the value to pass as `thinking space` to the other tools), name, and absolute path, plus which thinking space is this session's default. Linked git worktrees are omitted (they share their canonical repo's thinking space — address them by that repo's id). The semantic location is part of the id (`apps/…` = deployed app, `user-templates/…` = template, `thinkube-platform/…` = platform code).",
+      "Discover every Tandem thinking space across the configured roots: repos whose thinking space dir exists in the central sidecar namespace `<thinking space-root>/<container>/<rel>` (ADR-0008). Returns each thinking space's canonical id (the workspace spelling — the value to pass as `thinking_space` to the other tools), name, and absolute path, plus which thinking space is this session's default. Linked git worktrees are omitted (they share their canonical repo's thinking space — address them by that repo's id). The semantic location is part of the id (`apps/…` = deployed app, `User Templates/…` = template, `Platform/…` = platform code).",
     inputSchema: {
       type: "object",
       properties: {},
@@ -1142,7 +1166,7 @@ export const TOOL_DEFS = [
         repo: {
           type: "string",
           description:
-            "The WORKING repository for a project-member spec — a thinking space namespace (e.g. `thinkube-platform/core/thinkube-metadata`) the orchestrator branches a worktree in, independent of where the spec file lives under the project umbrella. Sets the `repo:` frontmatter. Omit to leave unchanged; empty clears it. A normal same-repo spec needs none (the orchestrator falls back to the thinking space's repo).",
+            "The WORKING repository for a project-member spec — the workspace spelling (e.g. `Platform/core/thinkube-metadata`) the orchestrator branches a worktree in, independent of where the spec file lives under the project umbrella. Sets the `repo:` frontmatter. Omit to leave unchanged; empty clears it. A normal same-repo spec needs none (the orchestrator falls back to the thinking space's repo).",
         },
         ac_verifications: {
           type: "object",
@@ -1619,6 +1643,31 @@ export async function dispatchTool(
           );
         }
       }
+      // ENFORCEMENT (TEP-14): one naming convention. A `repo:` must be a
+      // DECLARED space (its dir under the thinking-space root holds
+      // space.yaml), resolve under a workspace folder, and its directory's
+      // git remote must match the card — verified NOW, at write time, so a
+      // bad card can never be stored. A qualified `implements:` namespace
+      // must be a declared space. (Skipped only when no thinking-space root
+      // is configured — bare unit-test fixtures.)
+      const repoRefArg = optString(args, "repo");
+      if (repoRefArg?.trim() && ctx.env.thinkingSpaceRoot) {
+        await resolveVerifiedRepo(
+          repoRefArg.trim(),
+          ctx.env.folders,
+          ctx.env.thinkingSpaceRoot,
+          "write_spec `repo:`",
+        );
+      }
+      if (implementsRaw?.includes(":") && ctx.env.thinkingSpaceRoot) {
+        const qualifierNs = implementsRaw.slice(0, implementsRaw.lastIndexOf(":")).trim();
+        if (qualifierNs)
+          assertDeclaredSpace(
+            qualifierNs,
+            ctx.env.thinkingSpaceRoot,
+            "write_spec `implements:` qualifier",
+          );
+      }
       // SP-6/1 provenance: when the server holds a signing secret AND an audit runner, the audit
       // runs server-side. It must run where the CODE lives — the spec's WORKING repo (`repo:`),
       // NOT store.workspaceRoot (the project-umbrella root has no package.json / repo-conventions,
@@ -1637,10 +1686,21 @@ export async function dispatchTool(
           (typeof existingForRepo?.frontmatter?.repo === "string"
             ? existingForRepo.frontmatter.repo.trim()
             : undefined);
-        const resolved = repoNs
-          ? repoPathForNamespace(repoNs, ctx.env.folders)
-          : undefined;
-        if (resolved && fsSync.existsSync(resolved)) auditCwd = resolved;
+        if (repoNs && ctx.env.thinkingSpaceRoot) {
+          // Strict: the audit must run in the VERIFIED working repo — a card
+          // that no longer verifies fails the write loudly (correct the card).
+          auditCwd = await resolveVerifiedRepo(
+            repoNs,
+            ctx.env.folders,
+            ctx.env.thinkingSpaceRoot,
+            "write_spec audit",
+          );
+        } else if (repoNs) {
+          // No thinking-space root configured — a bare test harness, never a
+          // real deployment (production always sets THINKUBE_THINKING_SPACE_ROOT).
+          const resolved = repoPathForNamespace(repoNs, ctx.env.folders);
+          if (resolved && fsSync.existsSync(resolved)) auditCwd = resolved;
+        }
       }
       return writeSpec(
         store,
@@ -3002,21 +3062,27 @@ async function resolveSpecWorkingRepo(
   store: ThinkubeStore,
   specId: string,
 ): Promise<string | undefined> {
-  try {
-    const doc = await store.getFile(store.pathForSpecDoc(specId));
-    const repoNs =
-      typeof doc?.frontmatter?.repo === "string"
-        ? doc.frontmatter.repo.trim()
-        : undefined;
-    const resolved = repoNs
-      ? repoPathForNamespace(repoNs, ctx.env.folders)
-      : store.workspaceRoot;
-    return resolved && fsSync.existsSync(path.join(resolved, ".git"))
-      ? resolved
+  const doc = await store.getFile(store.pathForSpecDoc(specId)).catch(() => undefined);
+  const repoNs =
+    typeof doc?.frontmatter?.repo === "string"
+      ? doc.frontmatter.repo.trim()
       : undefined;
-  } catch {
-    return undefined;
+  if (repoNs && ctx.env.thinkingSpaceRoot) {
+    // ENFORCEMENT (TEP-14): a declared `repo:` resolves verified or refuses —
+    // an unresolvable card no longer silently skips the footprint gate.
+    return resolveVerifiedRepo(
+      repoNs,
+      ctx.env.folders,
+      ctx.env.thinkingSpaceRoot,
+      `spec ${specId} \`repo:\``,
+    );
   }
+  // No `repo:` (same-repo spec / bare test store): the thinking-space repo
+  // itself, when it is a git repo; else no gate target.
+  const resolved = store.workspaceRoot;
+  return resolved && fsSync.existsSync(path.join(resolved, ".git"))
+    ? resolved
+    : undefined;
 }
 
 /** Shell builtins/keywords the probe dry-run never tries to resolve. */
