@@ -90,6 +90,8 @@ export function validateRetireReason(
 export interface SliceRecut {
   /** New machine-readable footprint — repo-relative paths. Replaces `files`. */
   files?: string[];
+  /** New declared-new-file set (existence-gate exemption). Replaces `creates`. */
+  creates?: string[];
   /** New 1-based AC ordinals the slice delivers. Replaces `satisfies`. */
   satisfies?: number[];
   /** New execution-aware work units. Replaces `work_units`. */
@@ -104,6 +106,7 @@ export function hasRecutFields(recut: SliceRecut | undefined): boolean {
   if (!recut) return false;
   return (
     recut.files !== undefined ||
+    recut.creates !== undefined ||
     recut.satisfies !== undefined ||
     recut.work_units !== undefined ||
     recut.contract !== undefined
@@ -152,6 +155,7 @@ export function recutSliceFrontmatter(
   // already validated when it was last written.
   const declaredFiles: string[] = [
     ...(recut.files ?? []),
+    ...(recut.creates ?? []),
     ...(recut.work_units ?? []).flatMap((wu) => wu?.footprint ?? []),
   ];
   if (declaredFiles.length) {
@@ -165,6 +169,7 @@ export function recutSliceFrontmatter(
   // parent, tags, …) so the slice keeps its identity and `SL-{m}`.
   const next: Frontmatter = { ...(existing ?? {}) };
   if (recut.files !== undefined) next.files = recut.files;
+  if (recut.creates !== undefined) next.creates = recut.creates;
   if (recut.satisfies !== undefined) next.satisfies = recut.satisfies;
   if (recut.work_units !== undefined) next.work_units = recut.work_units;
   if (recut.contract !== undefined) next.contract = recut.contract;

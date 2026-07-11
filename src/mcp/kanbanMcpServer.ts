@@ -48,6 +48,7 @@ import "./installVscodeStub";
  * Logging: stderr only. VS Code captures it under the MCP server's output
  * channel; never print to stdout — that channel is the protocol stream.
  */
+import { execFileSync } from "node:child_process";
 import * as fsSync from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -55,7 +56,11 @@ import * as path from "node:path";
 import { requirementHash } from "../methodology/specChange";
 import { sectionPatch } from "../methodology/sectionPatch";
 import { specSectionsPresent } from "../methodology/specStructure";
-import { sliceFilesResolveInRepo } from "../methodology/sliceRepoGuard";
+import {
+  sliceFilesExistInRepo,
+  sliceFilesResolveInRepo,
+  type RepoFileOracle,
+} from "../methodology/sliceRepoGuard";
 import {
   // Slice lifecycle contract: the single source the `move_slice`
   // / `update_slice` handlers and their dispatch test agree on for retire + re-cut.
@@ -1077,6 +1082,12 @@ const TOOL_DEFS = [
           description:
             'Exported symbol names this slice REMOVES or NARROWS (SP-6/15) — the machine-readable successor to the prose `// Retired: …` contract line (e.g. ["APPROVAL_TTL_MS", "verifyApproval.now"], plain tokens). Serialized to slice frontmatter `retires:` and surfaced by `get_slice`. Arms an author-time reverse-dependency gate: after the footprint/contract gates the server reads the working repo\'s source and REFUSES the slice unless EVERY existing importer of a retired symbol is already inside the slice\'s footprint (`files` + a work_unit `footprint`), naming each retired symbol and the uncovered importer path — so the removal\'s blast radius is footprinted before orchestration, not discovered when the whole-project compile breaks. Omit/empty for a slice that retires nothing (the default, unchanged path).',
         },
+        creates: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            'Footprint paths this slice CREATES (new files), e.g. ["src/new-module.ts"]. Every other footprint path (in `files` and non-test work_unit footprints) must already EXIST in the working repo — the slice is refused otherwise, naming each missing path with a did-you-mean, so workers are never fenced onto a phantom path. Held-out test-unit footprints are exempt automatically. Serialized to frontmatter `creates:`.',
+        },
         docs: {
           type: "string",
           enum: ["required", "n/a"],
@@ -1233,6 +1244,12 @@ const TOOL_DEFS = [
           items: { type: "string" },
           description:
             "Re-cut (SP-6/15): REPLACE the slice's retired-symbol declaration — the exported symbol names the re-cut removes or narrows (plain tokens, e.g. [\"APPROVAL_TTL_MS\"]). Omit to leave `retires:` unchanged; pass `[]` to clear. When provided, arms the same author-time reverse-dependency gate `create_slice` runs: the re-cut is REFUSED unless every existing importer of a retired symbol is inside the slice's (post-re-cut) footprint, naming each retired symbol and the uncovered importer path — so widen `files`/`work_units` to cover them, or drop the symbol. Surfaced by `get_slice`.",
+        },
+        creates: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Re-cut: REPLACE the slice's declared-new-file set (the footprint existence-gate exemption). Omit to leave `creates:` unchanged; pass `[]` to clear. The re-cut's resulting footprint must exist in the working repo except `creates:` entries and held-out test-unit footprints — refused otherwise with a did-you-mean, same as create_slice.",
         },
         work_units: {
           type: "array",
@@ -1532,12 +1549,17 @@ export async function dispatchTool(
           // gates it against the working-repo's importers and serializes it to
           // frontmatter `retires:`.
           retires: optStringArray(args, "retires"),
+          // Declared-new files: exempt from the footprint existence gate.
+          creates: optStringArray(args, "creates"),
         },
         // SP-6/1 provenance: hand `createSlice` the server signing secret so its
         // → Ready gate verifies the `ac_verifications` signature (not the
         // reproducible hash) and refuses a Spec whose auditor was skipped. Absent
         // ⇒ legacy hash-only gate.
         ctx.signingSecret,
+        // The spec's WORKING repo (its `repo:` resolved) — what the footprint
+        // existence gate checks against; undefined skips that gate.
+        await resolveSpecWorkingRepo(ctx, store, createSpecId),
       );
     }
     case "write_spec": {
@@ -1659,8 +1681,17 @@ export async function dispatchTool(
         asString(args, "section"),
         asString(args, "content"),
       );
-    case "update_slice":
+    case "update_slice": {
       writeGate(name);
+      // Resolve the slice's parent spec up front so the footprint existence
+      // gate can check against the spec's WORKING repo (`repo:`), not the
+      // possibly code-less umbrella the store is rooted in.
+      const recutSliceSpec = (
+        await resolveSliceRef(
+          () => store.listSpecDirs(),
+          asString(args, "slice"),
+        )
+      ).specNumber;
       return updateSlice(
         store,
         asString(args, "slice"),
@@ -1677,11 +1708,14 @@ export async function dispatchTool(
             ? (args.work_units as Frontmatter["work_units"])
             : undefined,
           contract: optString(args, "contract"),
+          creates: optStringArray(args, "creates"),
         },
         // Retired-symbol declaration (SP-6/15): forwarded verbatim; updateSlice gates
         // the re-cut against the working-repo's importers and (re)serializes `retires:`.
         optStringArray(args, "retires"),
+        await resolveSpecWorkingRepo(ctx, store, recutSliceSpec),
       );
+    }
     case "write_tep": {
       writeGate(name);
       const tepStatus = optString(args, "status");
@@ -2927,6 +2961,60 @@ export function resolveApprovalDir(invocationPath: string): string {
 }
 
 /**
+ * Resolve a spec's WORKING repo root for the footprint existence gate: the
+ * spec's `repo:` frontmatter resolved via the machine folders (the same
+ * resolution `write_spec`'s audit uses), else the thinking-space repo itself.
+ * Returns undefined when the resolved path is not a git repo — a bare-tmpdir
+ * unit-test store or an unresolvable namespace has no repo reality to check,
+ * so the existence gate is skipped rather than refusing valid work.
+ */
+async function resolveSpecWorkingRepo(
+  ctx: HandlerContext,
+  store: ThinkubeStore,
+  specId: string,
+): Promise<string | undefined> {
+  try {
+    const doc = await store.getFile(store.pathForSpecDoc(specId));
+    const repoNs =
+      typeof doc?.frontmatter?.repo === "string"
+        ? doc.frontmatter.repo.trim()
+        : undefined;
+    const resolved = repoNs
+      ? repoPathForNamespace(repoNs, ctx.env.folders)
+      : store.workspaceRoot;
+    return resolved && fsSync.existsSync(path.join(resolved, ".git"))
+      ? resolved
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Real filesystem oracle for the footprint existence gate: existence via
+ * `fs.existsSync` against the working repo; did-you-mean candidates from
+ * `git ls-files` (tracked files only — fast, ignores node_modules by
+ * construction). A git failure degrades to "no suggestions", never to a pass.
+ */
+function repoFileOracle(repoRoot: string): RepoFileOracle {
+  return {
+    exists: (rel) => fsSync.existsSync(path.join(repoRoot, rel)),
+    listFiles: () => {
+      try {
+        return execFileSync("git", ["-C", repoRoot, "ls-files"], {
+          encoding: "utf8",
+          maxBuffer: 64 * 1024 * 1024,
+        })
+          .split("\n")
+          .filter(Boolean);
+      } catch {
+        return [];
+      }
+    },
+  };
+}
+
+/**
  * Self-locate the control-request dir (SP-6/20) — the `<globalStorage>/control` folder the host's
  * `ControlRequestWatcher` watches, derived lexically from the server's own invocation path exactly
  * like {@link resolveApprovalDir}. Both `open_review` and `start_spec_worktree` write here, so the
@@ -3035,6 +3123,10 @@ export async function createSlice(
     // refused unless every existing importer of a retired symbol is inside its
     // footprint. Optional/absent on every existing slice (backward-compatible).
     retires?: string[];
+    // Declared-new files (2026-07-11): footprint paths this slice CREATES.
+    // Exempt from the existence gate (everything else in the footprint must
+    // exist in the working repo); serialized to frontmatter `creates:`.
+    creates?: string[];
   },
   /**
    * SP-6/1 (TEP-6) provenance: the server signing secret (loaded from globalStorage by `main`,
@@ -3045,6 +3137,15 @@ export async function createSlice(
    * signature) is refused, naming the missing/invalid provenance. Absent ⇒ legacy hash-only path.
    */
   signingSecret?: Buffer,
+  /**
+   * The spec's WORKING repo root (its `repo:` frontmatter resolved to a path;
+   * the thinking-space repo for a same-repo spec) — what the footprint
+   * EXISTENCE gate checks against. `undefined` when no working repo could be
+   * resolved (e.g. a unit-test store rooted in a bare tmpdir): the existence
+   * gate is then skipped — there is no repo whose reality could be checked —
+   * while the lexical containment gate still runs.
+   */
+  workingRepoRoot?: string,
 ): Promise<unknown> {
   const title = args.title.trim();
   if (!title) throw new Error("title must not be empty.");
@@ -3114,6 +3215,7 @@ export async function createSlice(
   const declaredFiles = [
     ...(args.files ?? []),
     ...(args.work_units ?? []).flatMap((wu) => wu.footprint ?? []),
+    ...(args.creates ?? []),
   ];
   if (declaredFiles.length) {
     const repoCheck = sliceFilesResolveInRepo(
@@ -3121,6 +3223,31 @@ export async function createSlice(
       declaredFiles,
     );
     if (!repoCheck.ok) throw new Error(repoCheck.reason);
+  }
+
+  // Existence gate (2026-07-11): a contained-but-nonexistent footprint path
+  // fences workers onto a phantom file and every orchestration burns on it.
+  // Every footprint path must exist in the WORKING repo (the spec's `repo:`,
+  // resolved by the dispatch — NOT store.workspaceRoot, which for a
+  // project-member spec is the code-less umbrella) unless declared in
+  // `creates:`. Held-out test-unit footprints are exempt — the reserved
+  // acceptance-probe files are new by design.
+  if (workingRepoRoot) {
+    const mustExist = [
+      ...(args.files ?? []),
+      ...(args.work_units ?? [])
+        .filter((wu) => wu.role !== "test")
+        .flatMap((wu) => wu.footprint ?? []),
+    ];
+    if (mustExist.length) {
+      const existCheck = sliceFilesExistInRepo(
+        workingRepoRoot,
+        mustExist,
+        args.creates ?? [],
+        repoFileOracle(workingRepoRoot),
+      );
+      if (!existCheck.ok) throw new Error(existCheck.reason);
+    }
   }
 
   // Documentation obligation. Default `required` (fail closed);
@@ -3512,6 +3639,9 @@ export async function createSlice(
   // `// Retired: …` contract line. Serialized only when non-empty (absent on every
   // slice that retires nothing); `get_slice` surfaces it verbatim from frontmatter.
   if (args.retires?.length) fm.retires = args.retires;
+  // Declared-new files: serialized so a later re-cut / re-run keeps the
+  // existence-gate exemption for exactly the files this slice creates.
+  if (args.creates?.length) fm.creates = args.creates;
   fm.docs = docsResult.value.docs;
   if (docsResult.value.docs_reason)
     fm.docs_reason = docsResult.value.docs_reason;
@@ -4064,6 +4194,9 @@ export async function updateSlice(
   // re-cut footprint fields follow. Gated against the working-repo's importers before
   // the write, identically to `create_slice`.
   retires?: string[],
+  // The spec's WORKING repo root for the footprint existence gate (see
+  // createSlice) — undefined skips that gate.
+  workingRepoRoot?: string,
 ): Promise<unknown> {
   const { specNumber, sliceNumber } = await resolveSliceRef(
     () => store.listSpecDirs(),
@@ -4095,6 +4228,32 @@ export async function updateSlice(
     );
     if (!result.ok) throw new Error(result.error);
     nextFm = result.frontmatter;
+
+    // Existence gate (2026-07-11), identical to create_slice: the re-cut's
+    // resulting footprint must exist in the WORKING repo except declared-new
+    // (`creates:`) files and held-out test-unit footprints. Checked over the
+    // RESULTING frontmatter so an unchanged field keeps its prior validation.
+    if (workingRepoRoot) {
+      const wus = (nextFm.work_units ?? []) as {
+        footprint?: string[];
+        role?: string;
+      }[];
+      const mustExist = [
+        ...(Array.isArray(nextFm.files) ? (nextFm.files as string[]) : []),
+        ...wus
+          .filter((wu) => wu?.role !== "test")
+          .flatMap((wu) => wu?.footprint ?? []),
+      ];
+      if (mustExist.length) {
+        const existCheck = sliceFilesExistInRepo(
+          workingRepoRoot,
+          mustExist,
+          (nextFm.creates as string[] | undefined) ?? [],
+          repoFileOracle(workingRepoRoot),
+        );
+        if (!existCheck.ok) throw new Error(existCheck.reason);
+      }
+    }
   }
 
   // Retired-symbol footprint gate (SP-6/15). After the re-cut repo guard — resolve

@@ -82,6 +82,10 @@ export interface Frontmatter {
    *  disjointness for a `parallel_group` and the ownership arbiter's claim.
    *  Repo-relative paths. */
   files?: string[];
+  /** Footprint paths this slice CREATES (new files). Exempt from the
+   *  create/update existence gate; every other footprint path must already
+   *  exist in the working repo. */
+  creates?: string[];
   /** 1-based AC ordinals this slice delivers; the → Done gate checks each is ticked on the parent Spec. */
   satisfies?: number[];
   /** The slice's design-time CONTRACT (SP-6/3): the shared interface — exact exports, types,
