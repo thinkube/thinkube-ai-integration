@@ -26,20 +26,21 @@ export interface DetectedSetup {
   command: string;
 }
 
-/** Manifest basename → the idempotent, lockfile-pinned install command. */
+/** Manifest basename → the idempotent, lockfile-pinned install command.
+ *  STRICTLY lockfiles: a `requirements.txt` or bare `pyproject.toml`/
+ *  `package.json` pins nothing and its install strategy (index, venv layout,
+ *  extras) is repo policy — guessing one produced a hard provisioning failure
+ *  on the first live run (pip with no reachable index, for a gate that never
+ *  needed the venv). No lockfile → no guess; such a repo declares its
+ *  `## Worktree setup` recipe instead. */
 const MANIFEST_COMMANDS: ReadonlyArray<{ file: string; command: string }> = [
   { file: "package-lock.json", command: "npm ci" },
   { file: "pnpm-lock.yaml", command: "pnpm install --frozen-lockfile" },
   { file: "yarn.lock", command: "yarn install --frozen-lockfile" },
   { file: "uv.lock", command: "uv sync" },
   { file: "poetry.lock", command: "poetry install" },
-  { file: "go.mod", command: "go mod download" },
+  { file: "go.sum", command: "go mod download" },
   { file: "Cargo.lock", command: "cargo fetch" },
-  {
-    file: "requirements.txt",
-    command:
-      "python3 -m venv .venv && .venv/bin/python -m pip install -q -r requirements.txt",
-  },
 ];
 
 /** Cap on detected steps — a pathological monorepo should declare its recipe

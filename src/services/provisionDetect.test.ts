@@ -19,12 +19,23 @@ test("frontend package-lock.json detects npm ci in frontend/ (the thinkube-contr
     "/repo",
     listed([
       "backend/app/main.py",
+      "backend/requirements.txt",
       "frontend/package.json",
       "frontend/package-lock.json",
       "templates/service-configmap.yaml.j2",
     ]),
   );
+  // requirements.txt is NOT a lockfile — no guessed pip install (the first
+  // live run failed exactly there: pip with no reachable index, for a gate
+  // that never needed the venv). Only the pinned npm ci is detected.
   assert.deepEqual(steps, [{ dir: "frontend", command: "npm ci" }]);
+});
+
+test("requirements.txt alone detects nothing — not a lockfile, declare a recipe", async () => {
+  assert.deepEqual(
+    await detectProvisionSteps("/repo", listed(["backend/requirements.txt"])),
+    [],
+  );
 });
 
 test("root + nested manifests: root first, one step per directory", async () => {
@@ -33,7 +44,7 @@ test("root + nested manifests: root first, one step per directory", async () => 
     listed([
       "package-lock.json",
       "package.json",
-      "services/api/go.mod",
+      "services/api/go.sum",
       "tools/Cargo.lock",
       "tools/Cargo.toml",
     ]),
