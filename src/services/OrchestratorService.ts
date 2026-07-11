@@ -177,6 +177,9 @@ export interface OrchestratorDeps {
       /** Normalized hash of this failure's evidence, persisted as
        *  `last_evidence_hash` — the identical-failure circuit breaker's memory. */
       evidenceHash?: string;
+      /** The judged fault, persisted as `last_fault` — checkpoint seeding
+       *  re-runs exactly the implicated role's units on the next dispatch. */
+      fault?: Fault;
     },
   ) => Promise<void>;
   /** Re-author + re-sign the Spec's `ac_verifications` (the write_spec certify-only
@@ -951,7 +954,17 @@ export class OrchestratorService {
    *  re-authoring it (the frontier never re-dispatches a worker for it). Loaded once per dispatchSpec. */
   private sliceResumeState: Map<
     string,
-    { unitsLanded: boolean; committed: boolean }
+    {
+      unitsLanded: boolean;
+      committed: boolean;
+      /** Unit ids already checkpoint-committed (`units_done` frontmatter,
+       *  2026-07-11) — re-dispatch schedules only units NOT in here, plus
+       *  units implicated by `lastFault`. */
+      unitsDone: string[];
+      /** The judged fault persisted with the last requires-attention flag
+       *  (`last_fault`) — the role whose checkpointed units must re-run. */
+      lastFault?: string;
+    }
   > = new Map();
 
   /** Per-slice failed-rework-attempt counter, read from the slice frontmatter (`rework_attempts`)
@@ -1051,6 +1064,13 @@ export class OrchestratorService {
         committed:
           fm?.committed === true ||
           (typeof fm?.commit_sha === "string" && !!fm.commit_sha),
+        unitsDone: Array.isArray(fm?.units_done)
+          ? (fm.units_done as unknown[]).filter(
+              (u): u is string => typeof u === "string",
+            )
+          : [],
+        lastFault:
+          typeof fm?.last_fault === "string" ? fm.last_fault : undefined,
       });
       slices.push({
         handle,
@@ -1212,6 +1232,7 @@ export class OrchestratorService {
       const rs = this.sliceResumeState.get(s.handle) ?? {
         unitsLanded: false,
         committed: false,
+        unitsDone: [] as string[],
       };
       const decision = resumeDecision({
         status: s.status,
@@ -1236,6 +1257,35 @@ export class OrchestratorService {
         // `requires-attention` slice IS re-dispatchable: clicking ▶ again retries it (the
         // human's re-run after looking), so it falls through into the ready frontier.
         ids.forEach((id) => state.blocked.add(id));
+      } else if (rs.unitsDone.length) {
+        // Checkpoint seeding (2026-07-11): units already checkpoint-committed
+        // to the branch are DONE — the reset returns to their work, so a
+        // re-dispatch never re-authors them from zero. Exception: units whose
+        // role matches the judged `last_fault` of a requires-attention slice
+        // re-run (FROM their checkpoint — the worktree keeps their files).
+        const checkpointed = new Set(rs.unitsDone);
+        const us = unitsBySlice.get(s.handle) ?? [];
+        let allDone = us.length > 0;
+        for (const u of us) {
+          const implicated =
+            st === "requires-attention" &&
+            !!rs.lastFault &&
+            (rs.lastFault === "code" || rs.lastFault === "test") &&
+            (u.role ?? "code") === rs.lastFault;
+          if (checkpointed.has(u.id) && !implicated) state.done.add(u.id);
+          else allDone = false;
+        }
+        if (allDone) {
+          // Verify-before-rework: every unit's work is already on the branch
+          // (an attend/auto-attend fix, or a fault the judge didn't attribute
+          // to any unit's role). Grade the CURRENT state with ZERO workers —
+          // the closing gate decides; only a red re-enters rework.
+          state.done.add(s.handle);
+          landed.add(s.handle);
+          output.appendLine(
+            `▸ ${s.handle}: all units checkpointed → verify-before-rework (graded as-is, no workers spawned).`,
+          );
+        }
       }
     }
     const remaining = new Map<string, number>();
@@ -1486,6 +1536,7 @@ export class OrchestratorService {
           attempts: verdict.attempts,
           escalated: escalate,
           evidenceHash,
+          fault,
         },
       );
       // Route the re-dispatch (AC4): on escalate or an unrouted failure, block EVERY unit of the slice.
@@ -1616,6 +1667,17 @@ export class OrchestratorService {
       } else {
         state.done.add(d.id);
         markUnitDone(d.id); // graph: show this worker's node done (lime) until re-dispatch
+        // Checkpoint (2026-07-11): commit the landed unit's footprint NOW so a
+        // later reset returns TO this work instead of deleting it — completed
+        // units survive every re-dispatch; only unfinished/implicated units
+        // re-run (and rework starts from the checkpoint, not from zero).
+        await this.checkpointUnit(
+          worktreePath,
+          d.slice,
+          d.id,
+          (unitsBySlice.get(d.slice) ?? []).find((u) => u.id === d.id)
+            ?.footprint ?? [],
+        );
         const rem = (remaining.get(d.slice) ?? 1) - 1;
         remaining.set(d.slice, rem);
         if (rem <= 0) {
@@ -3149,7 +3211,12 @@ export class OrchestratorService {
   private flagAttention(
     handle: string,
     diagnosis: string,
-    escalation?: { attempts: number; escalated: boolean; evidenceHash?: string },
+    escalation?: {
+      attempts: number;
+      escalated: boolean;
+      evidenceHash?: string;
+      fault?: Fault;
+    },
   ): Promise<void> {
     return (
       this.deps.flagAttention ??
@@ -3171,7 +3238,12 @@ export class OrchestratorService {
   private async defaultFlagAttention(
     handle: string,
     diagnosis: string,
-    escalation?: { attempts: number; escalated: boolean; evidenceHash?: string },
+    escalation?: {
+      attempts: number;
+      escalated: boolean;
+      evidenceHash?: string;
+      fault?: Fault;
+    },
   ): Promise<void> {
     const m = /^TEP-(\d+)_SP-(\d+)_SL-(\d+)$/.exec(handle);
     if (!m) return;
@@ -3192,6 +3264,8 @@ export class OrchestratorService {
         ...(escalation?.evidenceHash
           ? { last_evidence_hash: escalation.evidenceHash }
           : {}),
+        // Checkpoint-seeding route memory: which role's units must re-run.
+        ...(escalation?.fault ? { last_fault: escalation.fault } : {}),
       },
       escalation?.escalated ? markEscalated(bodyWithNote) : bodyWithNote,
     );
@@ -3250,6 +3324,73 @@ export class OrchestratorService {
       specNumber,
       cwd,
     );
+  }
+
+  /** Run one git command in `cwd`, resolving its exit code (never rejects). */
+  private git(cwd: string, args: string[]): Promise<number> {
+    return new Promise((resolve) => {
+      const p = spawn("git", args, { cwd, stdio: "ignore" });
+      p.on("error", () => resolve(-1));
+      p.on("close", (code) => resolve(code ?? -1));
+    });
+  }
+
+  /**
+   * Unit checkpoint commit (2026-07-11): the moment a work unit lands, commit
+   * its footprint to the spec branch as `wip(<unit>)`. Completion is thereafter
+   * DERIVED from git + the durable `units_done` frontmatter — a reset returns
+   * to the checkpoint instead of deleting the work, so a re-dispatch schedules
+   * only units with no checkpoint (plus units implicated by the judged fault,
+   * which rework FROM their checkpoint instead of from zero). The gate-green
+   * slice commit still lands whatever remains; PR-level squash keeps main's
+   * history one verified commit per slice. Best-effort: a checkpoint failure
+   * never fails the unit (the gate-green commit is the backstop), and a
+   * non-git `worktreePath` (unit-test fixtures) is a no-op.
+   */
+  private async checkpointUnit(
+    worktreePath: string,
+    slice: string,
+    unitId: string,
+    footprint: string[],
+  ): Promise<void> {
+    try {
+      if ((await this.git(worktreePath, ["rev-parse", "--git-dir"])) !== 0)
+        return; // not a git repo (test fixture) — nothing to checkpoint
+      const paths = (footprint ?? []).filter(
+        (p) => typeof p === "string" && p.trim(),
+      );
+      if (paths.length) {
+        for (const p of paths)
+          await this.git(worktreePath, ["add", "-A", "--", p]);
+      } else {
+        await this.git(worktreePath, ["add", "-A"]);
+      }
+      const committed = await this.git(worktreePath, [
+        "commit",
+        "-m",
+        `wip(${unitId}): unit checkpoint (pre-gate; superseded by the slice's verified commit / PR squash)`,
+      ]);
+      if (committed === 0)
+        this.deps.output.appendLine(`▸ ${unitId}: checkpoint committed.`);
+      // Durable unit-done record, read back by buildSlices on the next run.
+      const m = /^TEP-(\d+)_SP-(\d+)_SL-(\d+)$/.exec(slice);
+      if (!m) return;
+      const rel = this.deps.store.pathForSlice(`${m[1]}/${m[2]}`, Number(m[3]));
+      const parsed = await this.deps.store.getFile(rel);
+      if (!parsed?.frontmatter) return;
+      const prev = Array.isArray(parsed.frontmatter.units_done)
+        ? (parsed.frontmatter.units_done as string[])
+        : [];
+      if (!prev.includes(unitId)) {
+        await this.deps.store.writeFile(
+          rel,
+          { ...parsed.frontmatter, units_done: [...prev, unitId] },
+          parsed.body,
+        );
+      }
+    } catch {
+      /* best-effort — the gate-green slice commit is the backstop */
+    }
   }
 
   /** Roll a slice back to `ready` (SP-th4wqc_SL-3): used when its commit fails so it is never left

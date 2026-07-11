@@ -4,10 +4,11 @@
  *
  * A Spec normally runs on one branch `spec/SP-<id>` and produces exactly one PR;
  * when the human accepts the Spec (gate green + `accept_spec` stamp), that one PR
- * merges and the Spec is done. The merge keeps the slice commits — each slice is
- * a commit on the branch, and that per-slice trail is the thinking space's history (we use
- * `--merge`, not `--squash`), and deletes the branch so the Space's branch list
- * stays one-branch-per-active-Spec.
+ * merges and the Spec is done. The merge SQUASHES (2026-07-11): the branch
+ * carries per-unit `wip(...)` checkpoint commits (work survives re-dispatch
+ * resets) alongside the verified slice commits, so main receives one verified
+ * commit per Spec while the full trail stays readable on the PR. The branch is
+ * deleted after, so the Space's branch list stays one-branch-per-active-Spec.
  *
  * But the PR-ceremony rule lets docs / TEPs / thinking space moves / trivial fixes go
  * straight to `main`. Those Specs have no branch (or one with nothing ahead of
@@ -182,7 +183,10 @@ const ghOps: PrOps = {
     // delete branch, the transaction #10 always described).
     const { stdout } = await execFileAsync(
       "gh",
-      ["pr", "merge", branch, "--merge"],
+      // --squash (2026-07-11): the branch now carries per-unit `wip(...)`
+      // checkpoint commits alongside the verified slice commits; main
+      // receives one verified commit per Spec (trail stays on the PR).
+      ["pr", "merge", branch, "--squash"],
       { cwd, timeout: 60000 },
     );
     return stdout.trim();
