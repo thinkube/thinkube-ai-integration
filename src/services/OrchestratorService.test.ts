@@ -141,10 +141,17 @@ interface FakeFile {
   satisfies?: number[];
   /** The slice's design-time contract (SP-6/3) — threaded to the judge for triangulation (SP-6/9). */
   contract?: string;
+  /** Bounded-loop carry-over (SP-6/6): seeds the per-slice attempt counter, so the
+   *  pre-flight contract check's FRESH-only guard is exercisable. */
+  rework_attempts?: number;
+  /** Checkpoint seeding (2026-07-11): prior landed units — also disarms the FRESH-only guard. */
+  units_done?: string[];
   work_units?: {
     footprint: string[];
     execution: string;
     note?: string;
+    /** Independent-verification role (SP-6/7): `test` = the held-out probe author. */
+    role?: "code" | "test";
     /** Files a sibling unit produces that this one reads — the SOLE authored edge language
      *  (SP-5/1): `buildUnitDag` resolves it (global footprint map) into a real producer edge.
      *  The retired `depends_on` forms are no longer accepted. */
@@ -2875,15 +2882,20 @@ test("SP-11/3: the closing gate carries the judge's UNCLIPPED diagnosis, the AC 
   );
 });
 
-// SP-11/3 fault-test rework routing: on a rework round (the slice body carries the judge's diagnosis
-// under `## ⚑ Requires attention`), OrchestratorService appends `buildTestReworkContext`'s result —
-// the diagnosis verbatim — to the `role: "test"` re-author's prompt ONLY. The code author's prompt is
-// untouched (full redaction kept: `buildTestReworkContext` returns undefined for route "code").
-test("SP-11/3 rework routing: a role:test re-author's prompt gets the judged mechanism; the code author's is untouched", async () => {
-  const diagnosis =
+// Rework routing (2026-07-12, supersedes SP-11/3's test-only exception): on a rework round the
+// slice card carries round-stamped `## ⚖ Judge guidance → <role>-author` sections (the auditable
+// channel blockSlice appends). Each re-dispatched worker's prompt renders ONLY the sections
+// addressed to ITS role, under the PRIORITIZE instruction — the code author is no longer blind.
+test("rework routing: each role's re-author prompt gets its own ⚖ judge guidance with the PRIORITIZE instruction", async () => {
+  const testDiagnosis =
     "JUDGE: the held-out probe pins an internal detail the contract never named — rewrite the check.";
+  const codeDiagnosis =
+    "JUDGE: the implementation drops the contract's `sentinel` field — restore it.";
   const slice = "TEP-1_SP-1_SL-1";
-  const sliceBody = `Some slice intent.\n\n## ⚑ Requires attention\n\n${diagnosis}\n`;
+  const sliceBody =
+    `Some slice intent.\n` +
+    `\n## ⚖ Judge guidance — round 1 → code-author\n\n${codeDiagnosis}\n` +
+    `\n## ⚖ Judge guidance — round 2 → test-author\n\n${testDiagnosis}\n`;
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "tk-rework-"));
 
   const capturePromptFor = async (role: "code" | "test"): Promise<string> => {
@@ -2939,15 +2951,230 @@ test("SP-11/3 rework routing: a role:test re-author's prompt gets the judged mec
   const codePrompt = await capturePromptFor("code");
   const count = (hay: string, needle: string) => hay.split(needle).length - 1;
 
-  assert.ok(
-    testPrompt.includes(diagnosis),
-    "the test re-author's prompt carries the judge's diagnosis",
-  );
-  // Both prompts embed the slice body once; ONLY the test prompt appends buildTestReworkContext's
-  // result — so the diagnosis appears exactly one MORE time for the test author than the code author.
+  // Each role's appended guidance block carries ITS diagnosis and the PRIORITIZE instruction.
+  assert.match(testPrompt, /JUDGE GUIDANCE/);
+  assert.match(codePrompt, /JUDGE GUIDANCE/);
+  assert.match(testPrompt, /PRIORITIZE this section/);
+  assert.match(codePrompt, /PRIORITIZE this section/);
+  // The slice body is embedded once for each; the appended block re-quotes ONLY the
+  // role-addressed diagnosis — so each diagnosis appears exactly one more time in its
+  // own role's prompt than in the sibling's.
   assert.equal(
-    count(testPrompt, diagnosis),
-    count(codePrompt, diagnosis) + 1,
-    "buildTestReworkContext is appended for the test author and NOTHING is added for the code author",
+    count(testPrompt, testDiagnosis),
+    count(codePrompt, testDiagnosis) + 1,
+    "the test-author's block quotes the test-addressed guidance only",
   );
+  assert.equal(
+    count(codePrompt, codeDiagnosis),
+    count(testPrompt, codeDiagnosis) + 1,
+    "the code-author's block quotes the code-addressed guidance only (no more blindfold)",
+  );
+});
+
+// ── Same-run rework loop (2026-07-12) ───────────────────────────────────────
+//
+// "Fault routed to the code-author — re-dispatching" must be an ACTION in the current run,
+// not a promise about the next button press: a routed red reopens exactly the blamed role's
+// unit(s), the judge's guidance is appended to the slice card (the auditable channel), the
+// worker re-runs, and the gate re-grades — all inside ONE dispatchSpec call.
+test("same-run rework: a routed red re-dispatches the blamed role's unit in the same run; the re-graded green advances the slice", async () => {
+  const { deps, calls } = makeDeps({
+    "teps/TEP-1/SP-1/SL-1.md": {
+      status: "ready",
+      satisfies: [1],
+      work_units: [
+        { footprint: ["src/a.ts"], execution: "fan-out", note: "implement a" },
+        {
+          footprint: ["src/acceptance/a.test.ts"],
+          execution: "fan-out",
+          note: "probe a",
+          role: "test",
+        },
+      ],
+    },
+  });
+  const dispatched: string[] = [];
+  const base = runOutcome("success");
+  deps.runUnit = async (u, s, c, p) => {
+    dispatched.push(u.id);
+    return base(u, s, c, p);
+  };
+  // Gate: red on the first full run, green on the re-grade after rework.
+  let gateRuns = 0;
+  deps.runAcVerifications = async (verifs) => {
+    gateRuns++;
+    return verifs.map((v) => ({
+      ac: v.ac,
+      pass: gateRuns > 1,
+      evidence: `$ ${v.run} → exit ${gateRuns > 1 ? 0 : 1} (round ${gateRuns})`,
+    }));
+  };
+  // The auditable channel: blockSlice appends the judge's guidance to the slice card.
+  const judgeNotes: Array<{
+    h: string;
+    round: number;
+    route: string;
+    text: string;
+  }> = [];
+  deps.appendJudgeNote = async (h, round, route, text) => {
+    judgeNotes.push({ h, round, route, text });
+  };
+
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
+
+  // The blamed (code) unit ran TWICE — once initially, once as same-run rework; the held
+  // (test) unit ran once. One worktree, one run.
+  assert.equal(dispatched.length, 3, "3 worker dispatches (test, code, code-rework)");
+  const byCount = new Map<string, number>();
+  for (const id of dispatched) byCount.set(id, (byCount.get(id) ?? 0) + 1);
+  assert.deepEqual(
+    [...byCount.values()].sort(),
+    [1, 2],
+    "exactly one unit re-ran",
+  );
+  assert.equal(calls.created, 1, "single run — one worktree creation");
+  assert.equal(gateRuns, 2, "the gate re-graded after the rework round");
+  // The judge's guidance landed on the card, addressed to the routed role, round-stamped.
+  assert.equal(judgeNotes.length, 1);
+  assert.equal(judgeNotes[0].route, "code");
+  assert.equal(judgeNotes[0].round, 1);
+  assert.match(judgeNotes[0].text, /Closing gate/);
+  // The re-graded green advanced + committed the slice; nothing left flagged.
+  assert.deepEqual(calls.advanced, ["TEP-1_SP-1_SL-1"]);
+  assert.equal(calls.committed, 1);
+  assert.deepEqual(r.attention, [], "the rework round cleared the attention flag");
+  assert.ok(
+    calls.log.some((l) => l.includes("same-run rework")),
+    "the run narrates the same-run re-dispatch",
+  );
+});
+
+test("same-run rework is BOUNDED: an identical second failure trips the circuit breaker and escalates instead of looping", async () => {
+  const { deps, calls } = makeDeps({
+    "teps/TEP-1/SP-1/SL-1.md": {
+      status: "ready",
+      satisfies: [1],
+      work_units: [
+        { footprint: ["src/a.ts"], execution: "fan-out", note: "implement a" },
+        {
+          footprint: ["src/acceptance/a.test.ts"],
+          execution: "fan-out",
+          note: "probe a",
+          role: "test",
+        },
+      ],
+    },
+  });
+  const dispatched: string[] = [];
+  const base = runOutcome("success");
+  deps.runUnit = async (u, s, c, p) => {
+    dispatched.push(u.id);
+    return base(u, s, c, p);
+  };
+  // Every gate run fails with IDENTICAL evidence — rework changes nothing.
+  deps.runAcVerifications = async (verifs) =>
+    verifs.map((v) => ({
+      ac: v.ac,
+      pass: false,
+      evidence: `$ ${v.run} → exit 1 (same failure)`,
+    }));
+  deps.appendJudgeNote = async () => {};
+  let fixerCalls = 0;
+  deps.autoAttend = async () => {
+    fixerCalls++;
+    return false;
+  };
+
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
+
+  // Round 1 red → routed rework (code re-ran once). Round 2 red with the SAME evidence →
+  // the deterministic circuit breaker escalates; the loop stops instead of burning rounds.
+  assert.equal(
+    dispatched.length,
+    3,
+    "no third dispatch — the breaker stopped the loop",
+  );
+  assert.ok(r.escalated.includes("TEP-1_SP-1_SL-1"));
+  assert.ok(
+    calls.log.some((l) => /deterministic failure — identical evidence/.test(l)),
+    "the escalation names the breaker",
+  );
+  assert.equal(fixerCalls, 1, "auto-attend fired exactly once for the escalated slice");
+});
+
+// ── Pre-flight contract-consistency check (2026-07-12) ──────────────────────
+//
+// An AUTHORED contradiction (a unit instruction an AC forbids) is caught BEFORE any worker
+// dispatches on a fresh slice — through the CONTRACT-defect lane (no attempt burned), so it
+// routes to a re-cut instead of burning a full worker+gate round.
+test("pre-flight contract check: a contradiction blocks the FRESH slice before any worker dispatches (contract lane)", async () => {
+  const { deps, calls } = makeDeps({
+    "teps/TEP-1/SP-1/SL-1.md": {
+      status: "ready",
+      satisfies: [1],
+      contract: "deploy.sh must uninstall the OLD extension id",
+      work_units: [
+        {
+          footprint: ["scripts/deploy.sh"],
+          execution: "fan-out",
+          note: "name the old id in deploy.sh",
+        },
+      ],
+    },
+  });
+  const checked: string[] = [];
+  deps.checkContract = async (input) => {
+    checked.push(input.slice);
+    assert.equal(input.contract, "deploy.sh must uninstall the OLD extension id");
+    assert.deepEqual(input.unitNotes, ["name the old id in deploy.sh"]);
+    return {
+      consistent: false,
+      contradiction: "the unit note requires the old id; AC 1 forbids any old-id reference",
+    };
+  };
+  let ran = 0;
+  const base = runOutcome("success");
+  deps.runUnit = async (u, s, c, p) => {
+    ran++;
+    return base(u, s, c, p);
+  };
+
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
+
+  assert.deepEqual(checked, ["TEP-1_SP-1_SL-1"]);
+  assert.equal(ran, 0, "no worker dispatched against the contradictory contract");
+  assert.ok(r.attention.includes("TEP-1_SP-1_SL-1"));
+  assert.ok(r.escalated.includes("TEP-1_SP-1_SL-1"), "contract lane escalates for a re-cut");
+  assert.ok(
+    calls.attentionReasons.some(
+      (t) =>
+        /Pre-flight contract check/.test(t) &&
+        /the unit note requires the old id/.test(t),
+    ),
+    "the flag carries the contradiction verbatim",
+  );
+});
+
+test("pre-flight contract check: SKIPPED for a slice with prior attempts or checkpointed units (fresh-only)", async () => {
+  const { deps, calls } = makeDeps({
+    "teps/TEP-1/SP-1/SL-1.md": {
+      status: "ready",
+      satisfies: [1],
+      rework_attempts: 1,
+      work_units: [
+        { footprint: ["src/a.ts"], execution: "fan-out", note: "implement a" },
+      ],
+    },
+  });
+  const checked: string[] = [];
+  deps.checkContract = async (input) => {
+    checked.push(input.slice);
+    return { consistent: false, contradiction: "should never be asked" };
+  };
+
+  const r = await new OrchestratorService(deps).dispatchSpec("1/1", 4);
+
+  assert.deepEqual(checked, [], "a non-fresh slice is never re-checked");
+  assert.deepEqual(calls.advanced, ["TEP-1_SP-1_SL-1"], "the run proceeds normally");
+  assert.equal(r.ok, true);
 });

@@ -1110,20 +1110,77 @@ export function extractDiscoveries(finalOutput: string): string[] {
   return items;
 }
 
+// ── Judge guidance on the slice card (2026-07-12): the auditable rework channel ─────
+//
+// When the closing gate goes red and the judge routes the fault to one role, the judge's
+// diagnosis (rationale + failing evidence) is APPENDED to the slice card as a round-stamped
+// `## ⚖ Judge guidance` section addressed to that role — never overwritten, so the card
+// carries the full history of what each rework round was told (the audit trail a human
+// reads on the board). The re-dispatched worker's prompt renders the sections addressed to
+// its role with an explicit PRIORITIZE instruction. This replaces the old
+// `buildTestReworkContext` seam, which handed the diagnosis to the test-author only and
+// left the code-author blind (the 2026-07-11 repair's principle applies to every fixer:
+// grading independence lives in the judge, never in hiding the failure from the fixer).
+
+/** Heading regex for one judge-guidance section; captures round + addressed role. */
+const JUDGE_GUIDANCE_RE =
+  /^##\s+⚖\s+Judge guidance — round (\d+) → (code|test)-author\s*$/;
+
 /**
- * The fault-test rework context seam (SP-11/3): the ONLY deliberate exception to the redaction
- * boundary. When a failed acceptance run is judged `route === "test"` — the held-out probe itself is
- * broken and the TEST author owns the check — the test re-author gets the judge's diagnosis of the
- * mechanism VERBATIM (redacting a broken check's mechanism from the person rewriting the check caused
- * two identical false-red rounds on SP-11/2). For any other route (`code` / undefined) this returns
- * undefined: code authors stay fully redacted (SP-6/9 behaviour unchanged). `OrchestratorService`
- * feeds the result into the `role: "test"` re-author's prompt ONLY. Pure.
+ * Append one round's judge guidance to a slice body as a durable, round-stamped section
+ * addressed to the routed role. Append-only by design: prior rounds stay on the card
+ * (auditability) — hygiene never collapses ⚖ sections the way it does ⚑ blocks. Pure.
  */
-export function buildTestReworkContext(
-  diagnosis: string,
-  route: "code" | "test" | undefined,
+export function appendJudgeGuidance(
+  body: string,
+  round: number,
+  route: "code" | "test",
+  text: string,
+): string {
+  const section = `\n\n## ⚖ Judge guidance — round ${round} → ${route}-author\n\n${text.trim()}\n`;
+  return (body ?? "").trimEnd() + section;
+}
+
+/**
+ * Extract the judge-guidance sections addressed to `role` from a slice body, oldest first
+ * (each prefixed with its round header line so the worker sees the progression), or
+ * undefined when none exist. The re-dispatched worker prompt renders this with the
+ * PRIORITIZE instruction. Pure.
+ */
+export function extractJudgeGuidance(
+  body: string,
+  role: "code" | "test",
 ): string | undefined {
-  return route === "test" ? diagnosis : undefined;
+  const lines = (body ?? "").split(/\r?\n/);
+  const sections: string[] = [];
+  let current: string[] | undefined;
+  let header: string | undefined;
+  const flush = () => {
+    if (header && current) sections.push(`${header}\n${current.join("\n").trim()}`);
+    current = undefined;
+    header = undefined;
+  };
+  for (const line of lines) {
+    const m = JUDGE_GUIDANCE_RE.exec(line);
+    if (m) {
+      flush();
+      if (m[2] === role) {
+        header = `(round ${m[1]})`;
+        current = [];
+      }
+      continue;
+    }
+    if (current !== undefined) {
+      if (/^##\s+/.test(line)) {
+        flush();
+      } else {
+        current.push(line);
+      }
+      continue;
+    }
+  }
+  flush();
+  return sections.length ? sections.join("\n\n") : undefined;
 }
 
 /**

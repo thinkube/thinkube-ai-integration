@@ -14,7 +14,8 @@ import {
   batchExecutionUnits,
   extractDiagnosis,
   extractDiscoveries,
-  buildTestReworkContext,
+  appendJudgeGuidance,
+  extractJudgeGuidance,
   buildAttendPrompt,
   buildRejectPrompt,
   StreamJsonBuffer,
@@ -279,12 +280,31 @@ test("SP-11/3: extractDiscoveries pulls items under a trailing `## Discoveries` 
   assert.deepEqual(extractDiscoveries(""), []);
 });
 
-test("SP-11/3: buildTestReworkContext returns the diagnosis VERBATIM only for route `test`, undefined otherwise", () => {
-  const diag =
-    "The probe asserts stale-store state that the contract never guarantees.";
-  assert.equal(buildTestReworkContext(diag, "test"), diag); // verbatim
-  assert.equal(buildTestReworkContext(diag, "code"), undefined);
-  assert.equal(buildTestReworkContext(diag, undefined), undefined);
+test("judge guidance (2026-07-12): appendJudgeGuidance is append-only + round-stamped; extractJudgeGuidance filters by role", () => {
+  const codeDiag = "The implementation drops the contract's `sentinel` field.";
+  const testDiag = "The probe pins an internal detail the contract never named.";
+  let body = "Some slice intent.\n";
+  body = appendJudgeGuidance(body, 1, "code", codeDiag);
+  body = appendJudgeGuidance(body, 2, "test", testDiag);
+  // Append-only: both rounds live on the card (the audit trail), oldest first.
+  assert.match(body, /## ⚖ Judge guidance — round 1 → code-author/);
+  assert.match(body, /## ⚖ Judge guidance — round 2 → test-author/);
+  assert.ok(
+    body.indexOf("round 1") < body.indexOf("round 2"),
+    "rounds accumulate in order",
+  );
+  // Extraction is role-addressed: each role sees ONLY its sections, round-tagged.
+  const forCode = extractJudgeGuidance(body, "code");
+  assert.ok(forCode?.includes(codeDiag), "code-author gets its guidance");
+  assert.ok(!forCode?.includes(testDiag), "…and not the test-author's");
+  assert.match(forCode ?? "", /\(round 1\)/);
+  const forTest = extractJudgeGuidance(body, "test");
+  assert.ok(forTest?.includes(testDiag) && !forTest.includes(codeDiag));
+  // No sections → undefined (a first run appends nothing to the prompt).
+  assert.equal(extractJudgeGuidance("plain body", "code"), undefined);
+  // A section ends at the next `## ` heading — trailing card prose never leaks in.
+  const bounded = appendJudgeGuidance("intent", 1, "code", codeDiag) + "\n\n## Notes\nunrelated";
+  assert.ok(!extractJudgeGuidance(bounded, "code")?.includes("unrelated"));
 });
 
 test("buildAttendPrompt: /attend invocation + worktree note + VERBATIM divergence", () => {

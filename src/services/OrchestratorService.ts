@@ -40,8 +40,8 @@ import {
   checkAcOrdinals,
   buildDeliveryReport,
   extractDiscoveries,
-  extractDiagnosis,
-  buildTestReworkContext,
+  appendJudgeGuidance,
+  extractJudgeGuidance,
   buildVerificationTrace,
   mergeVerificationTrace,
   finalizationVerdict,
@@ -185,6 +185,22 @@ export interface OrchestratorDeps {
        *  re-runs exactly the implicated role's units on the next dispatch. */
       fault?: Fault;
     },
+  ) => Promise<void>;
+  /** Pre-flight contract-consistency check (2026-07-12): asked once per FRESH slice (no
+   *  prior attempts, no checkpointed units) before any worker dispatches — can every
+   *  instruction be satisfied without violating any AC? A contradiction blocks the slice
+   *  as a CONTRACT defect (no attempt burned, no worker spawned). Absent ⇒ no check;
+   *  production wires {@link createSdkContractCheck} at the command layer. */
+  checkContract?: ContractCheck;
+  /** Append one round's judge guidance to the slice card (tests): defaults to the
+   *  append-only `## ⚖ Judge guidance — round N → <role>-author` body write (the auditable
+   *  rework channel, 2026-07-12). Never replaced, never pruned — the card keeps the full
+   *  history of what each rework round was told. */
+  appendJudgeNote?: (
+    handle: string,
+    round: number,
+    route: "code" | "test",
+    text: string,
   ) => Promise<void>;
   /** Re-author + re-sign the Spec's `ac_verifications` (the write_spec certify-only
    *  audit path) when the closing gate finds an UNRUNNABLE probe (exit 126/127) —
@@ -849,6 +865,135 @@ export function createSdkJudge(deps: SdkAssessorDeps): JudgeFailure {
         rationale: "judge session did not complete successfully",
       };
     return parseJudgment(resultText || assistantText);
+  };
+}
+
+// ── Pre-flight contract-consistency check (2026-07-12) ─────────────────────
+//
+// The most expensive defect class of the first live runs was AUTHORED, not worked: a slice
+// note ordering the coder to do something an acceptance criterion forbids. The closing gate
+// catches that contradiction at the most expensive possible point — after every worker ran.
+// This seam asks one independent session, BEFORE any worker dispatches on a FRESH slice,
+// whether every instruction can be satisfied without violating any AC. Injectable end-to-end;
+// production wires createSdkContractCheck at the command layer, tests inject a fake (or omit
+// it — absent ⇒ no check, exactly the pre-2026-07-12 behaviour).
+
+/** The pre-flight verdict: consistent, or the contradiction spelled out. */
+export interface ContractCheckVerdict {
+  consistent: boolean;
+  contradiction?: string;
+}
+
+/** The pre-flight contract-consistency seam — see the section comment above. */
+export type ContractCheck = (input: {
+  slice: string;
+  contract?: string;
+  unitNotes: string[];
+  acTexts: string[];
+}) => Promise<ContractCheckVerdict>;
+
+/** Build the pre-flight consistency prompt: contract + unit instructions + the ACs the
+ *  slice satisfies, asking for a machine-readable consistency verdict. Pure. */
+export function buildContractCheckPrompt(input: {
+  slice: string;
+  contract?: string;
+  unitNotes: string[];
+  acTexts: string[];
+}): string {
+  return [
+    `You are a PRE-FLIGHT consistency checker for slice ${input.slice} of a software Spec.`,
+    "Below are (1) the slice's design-time CONTRACT, (2) the instructions its workers will",
+    "be given, and (3) the ACCEPTANCE CRITERIA the finished work will be graded against.",
+    "",
+    "Your ONLY question: can a worker follow EVERY instruction without violating ANY",
+    "acceptance criterion? Look specifically for direct contradictions — an instruction that",
+    "requires producing something a criterion forbids (or vice versa). Do NOT flag vagueness,",
+    "style, or missing detail; only a genuine cannot-satisfy-both contradiction.",
+    "",
+    "──── CONTRACT ────",
+    input.contract?.trim() || "(no contract declared)",
+    "",
+    "──── WORKER INSTRUCTIONS ────",
+    input.unitNotes.length
+      ? input.unitNotes.map((n, i) => `${i + 1}. ${n}`).join("\n")
+      : "(none)",
+    "",
+    "──── ACCEPTANCE CRITERIA ────",
+    input.acTexts.length
+      ? input.acTexts.map((t, i) => `AC ${i + 1}: ${t}`).join("\n")
+      : "(none)",
+    "",
+    "Respond with ONLY a JSON object:",
+    '  {"consistent": true}',
+    "or",
+    '  {"consistent": false, "contradiction": "instruction X requires …, but AC Y forbids …"}',
+  ].join("\n");
+}
+
+/** Parse the checker's reply. Fail-SAFE toward dispatch: an unparseable reply or missing
+ *  field reads as consistent — a broken checker must never block a healthy slice. Pure. */
+export function parseContractCheck(text: string): ContractCheckVerdict {
+  const obj = extractJsonObject(text) as Record<string, unknown> | undefined;
+  if (obj && typeof obj.consistent === "boolean") {
+    return {
+      consistent: obj.consistent,
+      contradiction:
+        typeof obj.contradiction === "string" && obj.contradiction.trim()
+          ? obj.contradiction.trim()
+          : undefined,
+    };
+  }
+  return { consistent: true };
+}
+
+/** Production {@link ContractCheck}: a headless read-only session (same primitive as the
+ *  judge/assessor), equally failure-tolerant — any session error degrades to `consistent`
+ *  (never a blocked dispatch on tooling failure; the closing gate still stands behind it). */
+export function createSdkContractCheck(deps: SdkAssessorDeps): ContractCheck {
+  const log = deps.log ?? (() => {});
+  const loadQuery =
+    deps.loadQuery ??
+    (async () =>
+      (await import("@anthropic-ai/claude-agent-sdk"))
+        .query as unknown as AssessorSdkQuery);
+  return async (input): Promise<ContractCheckVerdict> => {
+    const prompt = buildContractCheckPrompt(input);
+    let resultText = "";
+    let assistantText = "";
+    let sawSuccess = false;
+    try {
+      const query = await loadQuery();
+      for await (const msg of query({
+        prompt,
+        options: {
+          cwd: deps.cwd,
+          model: deps.model,
+          permissionMode: "bypassPermissions",
+        },
+      })) {
+        const rec = msg as Record<string, unknown>;
+        const line = summarizeEvent(rec);
+        if (line) log(`  [contract-check ${input.slice}] ${line}`);
+        if (rec.type === "assistant") {
+          const m = rec.message as { content?: unknown } | undefined;
+          const content = Array.isArray(m?.content) ? m!.content : [];
+          for (const b of content as Array<Record<string, unknown>>)
+            if (b.type === "text" && typeof b.text === "string")
+              assistantText += b.text;
+        }
+        if (rec.type === "result") {
+          if (typeof rec.result === "string") resultText = rec.result;
+          sawSuccess = isResultSuccess(rec);
+        }
+      }
+    } catch (err) {
+      log(
+        `  [contract-check ${input.slice}] session failed: ${(err as Error).message} — proceeding without the check.`,
+      );
+      return { consistent: true };
+    }
+    if (!sawSuccess) return { consistent: true };
+    return parseContractCheck(resultText || assistantText);
   };
 }
 
@@ -1581,6 +1726,11 @@ export class OrchestratorService {
     // Auto-attend inputs (2026-07-11): each blocked slice's full diagnosis, so
     // the one-shot fixer gets the judged fault + evidence verbatim.
     const sliceDiagnoses = new Map<string, string>();
+    // Same-run rework (2026-07-12): slices the gate routed to one role this
+    // round. The gate loop below reopens exactly the routed role's units and
+    // re-dispatches them IN THIS RUN — "fault routed → re-dispatching" is an
+    // action, not a promise about the next button press.
+    const pendingRework = new Map<string, "code" | "test">();
     const blockSlice = async (
       slice: string,
       diagnosis: string,
@@ -1635,16 +1785,37 @@ export class OrchestratorService {
       // On a routed re-dispatch, block only the SIBLING role's units so the frontier re-authors just the
       // faulting role — the code-author for a `code` route, the test-author for a `test` route.
       const units = unitsBySlice.get(slice) ?? [];
-      const route = verdict.route;
+      // Narrow the routed role: only `code`/`test` are re-dispatchable roles — any
+      // other fault (`both`/`contract`/`gate`) escalates above and never routes.
+      const route =
+        verdict.route === "code" || verdict.route === "test"
+          ? verdict.route
+          : undefined;
       if (escalate || !route) {
         units.forEach((u) => state.blocked.add(u.id));
       } else {
         units
           .filter((u) => (u.role ?? "code") !== route)
           .forEach((u) => state.blocked.add(u.id));
-        output.appendLine(
-          `↻ ${slice}: fault routed to the ${route}-author — re-dispatching its unit(s), holding the ${route === "code" ? "test" : "code"}-author.`,
-        );
+        // Auditable rework channel (2026-07-12): append the judge's diagnosis to the
+        // slice card as a round-stamped `## ⚖ Judge guidance → <role>-author` section
+        // (append-only — the card keeps every round's guidance, the audit trail). The
+        // re-dispatched worker's prompt renders it with the PRIORITIZE instruction.
+        await this.appendJudgeNote(slice, verdict.attempts, route, diagnosis);
+        // Same-run rework needs CONCRETE failing evidence — with none (e.g. an AC whose
+        // verification never ran / was dropped as a self-tick) there is nothing new to
+        // tell the worker, so re-running is the same experiment re-rolled. Those stay
+        // flagged for a plan change; only an evidence-backed red re-dispatches this run.
+        if (evidenceHash) {
+          pendingRework.set(slice, route);
+          output.appendLine(
+            `↻ ${slice}: fault routed to the ${route}-author — guidance appended to the slice card; re-dispatching its unit(s) this run, holding the ${route === "code" ? "test" : "code"}-author's landed work.`,
+          );
+        } else {
+          output.appendLine(
+            `↻ ${slice}: fault routed to the ${route}-author — guidance appended to the slice card; no failing evidence to rework against this run, so its unit(s) re-run on the next Orchestrate.`,
+          );
+        }
       }
       remaining.delete(slice);
       result.attention.push(slice);
@@ -1666,7 +1837,59 @@ export class OrchestratorService {
       }
     };
 
-    fill();
+    // ── Pre-flight contract-consistency check (2026-07-12) ──────────────────
+    // Catch an AUTHORED contradiction (a unit instruction an AC forbids) before any worker
+    // burns tokens against it — the closing gate would only surface it after every worker
+    // ran. FRESH slices only: prior attempts / checkpointed units already passed authoring.
+    // A contradiction blocks the slice through the CONTRACT-defect lane (escalates for a
+    // re-cut, no rework attempt burned); a check failure never blocks (fail-safe toward
+    // dispatch — the closing gate still stands behind it).
+    if (this.deps.checkContract) {
+      const acTextPre = acTextByOrdinal(this.promptCtx.specBody ?? "");
+      for (const s of slices) {
+        if (!remaining.has(s.handle)) continue;
+        const attempts = this.reworkAttempts.get(s.handle) ?? 0;
+        const priorUnits =
+          this.sliceResumeState.get(s.handle)?.unitsDone.length ?? 0;
+        if (attempts > 0 || priorUnits > 0) continue;
+        try {
+          const v = await this.deps.checkContract({
+            slice: s.handle,
+            contract: s.contract,
+            unitNotes: (s.workUnits ?? [])
+              .map((u) => (u as WorkUnit & { note?: string }).note ?? "")
+              .filter(Boolean),
+            acTexts: (s.satisfies ?? [])
+              .map((n) => acTextPre.get(n) ?? "")
+              .filter(Boolean),
+          });
+          if (!v.consistent) {
+            await blockSlice(
+              s.handle,
+              `${CONTRACT_DEFECT_MARKER}\n` +
+                `Pre-flight contract check: the slice's instructions contradict its acceptance criteria — ` +
+                `NO worker was dispatched and no rework attempt was burned.\n\n` +
+                `${v.contradiction ?? "(no detail returned)"}\n\n` +
+                `Fix the contradiction at its source — the unit note / contract (update_slice) or the AC ` +
+                `(patch_spec_section + re-certify) — then re-orchestrate.`,
+              "contract",
+            );
+            output.appendLine(
+              `⛔ ${s.handle}: pre-flight contract check found a contradiction → held for a re-cut (no workers dispatched).`,
+            );
+          }
+        } catch (err) {
+          output.appendLine(
+            `⚠ ${s.handle}: pre-flight contract check unavailable (${(err as Error).message}) — proceeding without it.`,
+          );
+        }
+      }
+    }
+
+    // The dispatch-drain loop, extracted (2026-07-12) so the same-run rework loop below can
+    // re-enter it after reopening a red slice's implicated units: fill() seeds the frontier,
+    // drain() runs workers to quiescence. Same closure, same state — nothing else changed.
+    const drain = async () => {
     while (running.size > 0) {
       // Race worker completions against a park-wake (a freed slot with no completion, so we
       // re-fill). If only parked workers remain, the loop waits here for `/attend` to answer them.
@@ -1787,17 +2010,42 @@ export class OrchestratorService {
       }
       fill();
     }
+    };
 
-    // ── Closing AI-verification gate ──────────────
+    fill();
+    await drain();
+
+    // ── Closing AI-verification gate + same-run rework loop (2026-07-12) ──────────────
     // At Spec quiescence — every slice's units landed (none failed / parked / blocked) — run the
     // Spec's DECLARED per-AC verifications as one full plan. The gate returns the landed slices that
     // are AC-green (→ their satisfied ordinals); a red / un-runnable slice is flagged
     // requires-attention in place. The green slices are the input to the per-slice commit below.
-    const everyLanded = slices.every(
-      (s) => doneSlices.has(s.handle) || landed.has(s.handle),
-    );
+    //
+    // On a ROUTED red (the judge blamed one role), the loop reopens exactly that role's units and
+    // re-dispatches them IN THIS RUN — the worker prompt carries the judge's guidance from the slice
+    // card — then the gate re-grades. Bounded by the existing per-slice attempt cap and the
+    // identical-failure circuit breaker (both inside reDispatchDecision, via blockSlice): a slice
+    // that keeps failing ESCALATES out of the loop instead of burning rounds, so one press of
+    // Orchestrate means "run until green or until a human is genuinely needed".
     const greenByGate = new Map<string, number[]>();
-    if (everyLanded && landed.size > 0) {
+    // Auto-attend cap: one automated fix attempt per slice per orchestration RUN — the rework
+    // loop must not re-burn the fixer on a slice it already tried.
+    const autoAttended = new Set<string>();
+    for (;;) {
+      const everyLanded = slices.every(
+        (s) => doneSlices.has(s.handle) || landed.has(s.handle),
+      );
+      if (!(everyLanded && landed.size > 0)) {
+        if (landed.size > 0)
+          output.appendLine(
+            `▸ SP-${specNumber}: paused — ${result.attention.length} need attention / ${result.needsInput.length} need input; closing gate not run, nothing committed.`,
+          );
+        break;
+      }
+      // Each round re-grades from scratch: a slice's prior green is only as good as the
+      // latest gate run over the current tree.
+      for (const h of landed) greenByGate.delete(h);
+      pendingRework.clear();
       const green = await this.runClosingGate(
         specNumber,
         worktreePath,
@@ -1824,8 +2072,11 @@ export class OrchestratorService {
       // are exempt — a probe/environment defect is not fixable from the code
       // worktree, so the fixer isn't burned on it.
       const toAutoAttend = result.escalated.filter(
-        (h) => !sliceDiagnoses.get(h)?.startsWith(GATE_DEFECT_MARKER),
+        (h) =>
+          !autoAttended.has(h) &&
+          !sliceDiagnoses.get(h)?.startsWith(GATE_DEFECT_MARKER),
       );
+      toAutoAttend.forEach((h) => autoAttended.add(h));
       if (toAutoAttend.length > 0) {
         const fixer =
           this.deps.autoAttend ??
@@ -1882,11 +2133,48 @@ export class OrchestratorService {
           }
         }
       }
-    } else if (landed.size > 0) {
-      output.appendLine(
-        `▸ SP-${specNumber}: paused — ${result.attention.length} need attention / ${result.needsInput.length} need input; closing gate not run, nothing committed.`,
+
+      // ── Same-run rework: reopen the routed role's units and go again ──────
+      // Only slices the gate routed this round, still red, not escalated. Reopening
+      // clears the unit from `done` so the frontier re-offers it; the checkpointed
+      // work is still on the branch, so the worker resumes from it rather than zero.
+      const rework = [...pendingRework].filter(
+        ([h]) => !greenByGate.has(h) && !this.escalatedSlices.has(h),
       );
+      if (rework.length === 0) break;
+      let reopened = 0;
+      for (const [h, route] of rework) {
+        const units = unitsBySlice.get(h) ?? [];
+        const implicated = units.filter((u) => (u.role ?? "code") === route);
+        if (implicated.length === 0) continue; // no unit of that role — stays flagged
+        implicated.forEach((u) => {
+          state.done.delete(u.id);
+          state.blocked.delete(u.id);
+        });
+        state.done.delete(h);
+        landed.delete(h);
+        remaining.set(h, implicated.length);
+        // A fresh round is a fresh attempt: if it goes red again, blockSlice must
+        // count it (and the circuit breaker must compare its evidence).
+        countedThisRun.delete(h);
+        result.attention = result.attention.filter((x) => x !== h);
+        reopened += implicated.length;
+        output.appendLine(
+          `↻ ${h}: same-run rework — re-dispatching ${implicated.length} ${route}-author unit(s) with the judge's guidance.`,
+        );
+      }
+      if (reopened === 0) break;
+      // Refresh the embedded slice bodies so the re-dispatched worker's prompt carries
+      // the ⚖ guidance blockSlice just appended to the card.
+      await this.loadPromptContext(specNumber);
+      fill();
+      await drain();
     }
+    // Recomputed AFTER the rework loop — the finalization watchdog below reads the
+    // final landed state, not the first round's.
+    const everyLanded = slices.every(
+      (s) => doneSlices.has(s.handle) || landed.has(s.handle),
+    );
 
     // ── Per-slice commit-before-Done ──────
     // No more all-or-nothing commit. `commitPlan` is the per-slice decision: only landed ∧ gate-green
@@ -2706,20 +2994,21 @@ export class OrchestratorService {
       selfVerifyCommand,
       oracleAvailable: !!oracle,
     });
-    // SP-11/3 fault-test rework routing: on a rework round the slice body carries the judge's
-    // diagnosis under `## ⚑ Requires attention`. The `role: test` re-author OWNS the check, so it
-    // gets that judged mechanism verbatim in its prompt (`buildTestReworkContext` returns it ONLY for
-    // route "test"); a `code` author's route yields undefined, so this appends nothing and the code
-    // prompt is untouched (the SP-6/9 redaction boundary is kept for them). A first (non-rework) run
-    // has no `## ⚑ Requires attention` block, so `extractDiagnosis` is undefined and nothing is added.
-    const priorDiagnosis = extractDiagnosis(
+    // Rework routing (2026-07-12): on a rework round the slice card carries the judge's
+    // round-stamped `## ⚖ Judge guidance` sections, addressed to the routed role (blockSlice
+    // appended them — the durable, auditable channel). The re-dispatched worker of THAT role
+    // gets its sections verbatim, with an explicit PRIORITIZE instruction: where the guidance
+    // conflicts with the worker's own reading of the note/contract, the guidance wins. Both
+    // roles are served — the old code-author blindfold is gone (grading independence lives in
+    // the judge, never in hiding the failure from the fixer). A first run has no ⚖ sections,
+    // so nothing is added.
+    const guidance = extractJudgeGuidance(
       this.promptCtx.sliceBodies.get(unit.slice) ?? "",
+      (unit.role ?? "code") as "code" | "test",
     );
-    const reworkContext = priorDiagnosis
-      ? buildTestReworkContext(priorDiagnosis, unit.role)
-      : undefined;
-    const workerPrompt = reworkContext
-      ? `${prompt}\n\n${reworkContext}`
+    const workerPrompt = guidance
+      ? `${prompt}\n\n──── JUDGE GUIDANCE (a previous attempt FAILED acceptance; an independent judge attributed the fault to your role) ────\n` +
+        `PRIORITIZE this section: where it conflicts with your own interpretation of the task note or contract, this guidance wins. Address every point it raises before finishing.\n\n${guidance}`
       : prompt;
     let success = false;
     // SP-11/3: the worker's final output text (last `result` message), mined below for a trailing
@@ -3386,6 +3675,39 @@ export class OrchestratorService {
       this.deps.flagAttention ??
       ((h, d, e) => this.defaultFlagAttention(h, d, e))
     )(handle, diagnosis, escalation);
+  }
+
+  /** Append one round's judge guidance to the slice card (the auditable rework channel,
+   *  2026-07-12): read the slice doc, append the round-stamped ⚖ section addressed to the
+   *  routed role, write it back. Injectable for tests; best-effort in production — a failed
+   *  write must not sink the rework round (the prompt-side extraction simply finds nothing). */
+  private async appendJudgeNote(
+    handle: string,
+    round: number,
+    route: "code" | "test",
+    text: string,
+  ): Promise<void> {
+    if (this.deps.appendJudgeNote)
+      return this.deps.appendJudgeNote(handle, round, route, text);
+    try {
+      const m = /^TEP-(\d+)_SP-(\d+)_SL-(\d+)$/.exec(handle);
+      if (!m) return;
+      const rel = this.deps.store.pathForSlice(
+        `${m[1]}/${m[2]}`,
+        Number(m[3]),
+      );
+      const parsed = await this.deps.store.getFile(rel);
+      if (!parsed?.frontmatter) return;
+      await this.deps.store.writeFile(
+        rel,
+        parsed.frontmatter,
+        appendJudgeGuidance(parsed.body ?? "", round, route, text),
+      );
+    } catch (err) {
+      this.deps.output.appendLine(
+        `⚠ ${handle}: could not append judge guidance to the slice card (${(err as Error).message}).`,
+      );
+    }
   }
 
   /**

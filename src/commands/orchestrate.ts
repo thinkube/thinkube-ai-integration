@@ -8,8 +8,12 @@
 import * as vscode from "vscode";
 import { ThinkubeStore } from "../store/ThinkubeStore";
 import { WorktreeService } from "../services/WorktreeService";
-import { OrchestratorService } from "../services/OrchestratorService";
+import {
+  OrchestratorService,
+  createSdkContractCheck,
+} from "../services/OrchestratorService";
 import type { WorkerModelConfig } from "../services/workerModel";
+import { resolveWorkerModel } from "../services/workerModel";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
@@ -204,6 +208,15 @@ export function registerOrchestrateCommands(
                 thinkingSpaceRoot,
                 baseDir,
                 workerModel,
+                // Pre-flight contract-consistency check (2026-07-12): one independent
+                // session per FRESH slice, before any worker dispatches — an authored
+                // contradiction (a unit note an AC forbids) is caught at the cheapest
+                // point instead of after every worker ran. Runs on the judge's model.
+                checkContract: createSdkContractCheck({
+                  cwd: canonical,
+                  model: resolveWorkerModel(workerModel, "judge"),
+                  log: (l) => output.appendLine(l),
+                }),
                 verifyCommand: orchestratorCfg
                   .get<string>("verifyCommand")
                   ?.trim(),
