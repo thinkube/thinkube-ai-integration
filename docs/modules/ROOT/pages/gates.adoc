@@ -127,11 +127,31 @@ commits on the result:
 There is **no skip**. A Spec whose criteria cannot all be verified is never advanced
 to Done on an un-run verification.
 
+=== Intent is the north star
+
+Self-healing is anchored to one hierarchy. The Spec's **intent** — the outcome the
+work exists to achieve — is the fixed reference; the acceptance criteria, the
+slice contract (the shared interface both authors build against), and the
+work-unit instructions are all **instruments** that approximate it. When the gate
+goes red, an independent judge triangulates the failure against the intent and
+decides which layer is actually wrong: the **work** (implementation or probe),
+the **plan** (an instrument misserves the intent as written), or the **intent
+itself** (ambiguous or self-contradictory). Each layer has its own automated
+remedy — except the last: an intent defect is the one verdict no machine may
+resolve, and it always stops for a human.
+
+The guard that keeps this honest: a plan amendment is legitimate **only** when
+the intent, read honestly, is already served by the delivered work and the
+instrument mis-measures that. Weakening a check to force green when the intent is
+genuinely unmet is never a repair — the judge is instructed to treat that case as
+a work fault or escalate.
+
 === The failure ladder
 
-A red or un-runnable verification does not go straight to a human. The gate works
-through its automated remedies in order, and a human sees `requires-attention`
-only after all of them have run:
+A red or un-runnable verification does not go straight to a human. One press of
+Orchestrate means "run until green or until a human is genuinely needed": the
+gate works through its automated remedies **in the same run**, re-grading after
+each, and a human sees `requires-attention` only after all of them have run:
 
 [cols="1,3",options="header"]
 |===
@@ -140,15 +160,49 @@ only after all of them have run:
 | Gate self-heal
 | A probe that cannot execute (shell exit 126/127 or a spawn error) is a **gate defect**, not a code failure — no rework attempt is burned and no role is blamed. The gate re-authors and re-signs the `ac_verifications` entries via the auditor and retries once. Relatedly, `write_spec` refuses to **sign** a probe command whose leading token cannot resolve in the working repo — repo-local tools are invoked through `npx`, `uv run`, or `poetry run`.
 
-| Judge-routed rework
-| A genuinely red criterion goes to an independent judge, which attributes the fault — code author, test author, contract, or gate — and the faulted role reworks **from its checkpoint**, bounded by the attempt limit. Re-dispatch schedules only un-checkpointed units plus the judged-fault role's units.
+| Same-run judge-routed rework
+| A genuinely red criterion goes to the independent judge. A **work** fault (`code` or `test`) reopens exactly the blamed role's units and re-dispatches them **in the same run**: the judge's diagnosis is appended to the slice card as a round-stamped `⚖ Judge guidance` section addressed to that role, and the re-dispatched worker's prompt renders it under an explicit PRIORITIZE instruction — both roles get their guidance; nobody reworks blind. The worker resumes from its checkpoint, the gate re-grades, and the loop repeats within the attempt bound. Same-run rework requires concrete failing evidence — with none (a criterion whose verification never ran), re-running would be the same experiment re-rolled, so the slice stays flagged for a plan change instead.
+
+| Plan repair
+| A **plan** fault (the judge's `contract` verdict: an instrument — a criterion, the contract, a unit note — misserves the intent) routes to the plan-repair lane instead of a human, burning no rework attempt. See the next section.
 
 | Identical-failure circuit breaker
 | The same criterion failing with the same normalized evidence as the prior attempt escalates immediately — "deterministic failure — inputs unchanged" — instead of burning the remaining attempts.
 
 | Auto-attend
-| On escalation the orchestrator dispatches **one** automated fixer session with the full failure evidence; it edits and commits in the worktree, and the gate re-runs. Only a still-red slice reaches a human.
+| On escalation of a work fault the orchestrator dispatches **one** automated fixer session with the full failure evidence; it edits and commits in the worktree, and the gate re-runs. Only a still-red slice reaches a human. Gate defects and plan defects are exempt — neither is fixable from the code worktree.
 |===
+
+=== The plan-repair lane
+
+When the plan is the defect, the run amends the plan — anchored to the intent,
+deterministically applied, and fully on the record:
+
+. A **repair session** proposes the amendment as structured output — it may
+  clarify a seam, add a carve-out the intent implies, or fix a
+  criterion/instruction contradiction; it may **never** weaken a check when the
+  intent is genuinely unmet, and it may never touch the intent itself. If it
+  cannot justify an amendment from the intent, it declines and the slice
+  escalates to a human with the reason.
+. The **orchestrator applies** the proposal through the board's safe-write
+  paths (the criterion section patch, the slice contract/notes), and
+  **re-certifies** the verification entries via the auditor whenever the
+  criteria changed.
+. A round-stamped `🛠 Plan repair` section is **appended to the slice card** —
+  what changed and why the intent justifies it. Like the `⚖` sections it is
+  append-only: the card keeps the full history of every rework round and every
+  amendment, which is the audit trail the delivery report renders.
+. If an artifact must follow the amended plan (for example the held-out probe
+  must learn a new carve-out), the affected role's units are reopened and
+  re-authored **in the same run**, with the amendment travelling as their
+  prioritized guidance; then the gate re-grades.
+
+The lane is bounded (two plan repairs per slice per run); reaching the bound, a
+declined proposal, or a failed apply all escalate to a human with the reason on
+the card. The same lane runs **before dispatch**: a pre-flight check asks, per
+fresh slice, whether every instruction can be satisfied without violating any
+criterion — an authored contradiction is repaired against the intent (or held for
+a human) before any worker burns tokens on it.
 
 === Unit checkpoints and verify-before-rework
 
@@ -264,11 +318,12 @@ On **every** completion — pass or fail — the closing gate writes a durable r
 
 | 1 | Title + summary | One-line orchestration summary: branch, sha, slices advanced, units run, committed or not.
 | 2 | What happened | Plain language. On failure, the closing-gate judge's diagnosis, verbatim and unclipped. On success, a plain summary of what was delivered.
-| 3 | Acceptance criteria | One row per declared criterion, each with its verdict (`✓ pass` / `✗ fail` / `· not run`).
-| 4 | Discoveries & recommendations | Each out-of-scope finding a worker reported, with its unit id and text, verbatim. Empty ⇒ the literal `none reported`.
-| 5 | Files | The union of the units' touched files.
-| 6 | Next | The operator's exits for the run's terminal state.
-| 7 | Evidence appendix | The demoted machine record: per-criterion evidence blocks, the verification trace table, per-unit outcomes, and any caught problems.
+| 3 | Changes to the approved plan | Every plan-repair amendment made during the run — what changed and why the intent justifies it — so the Accept decision sees the delta between the approved plan and the delivered one without hunting through cards. A clean committed run states **explicitly** `None — delivered exactly to the plan as approved` (silence would be ambiguous). Today this renders the run's own amendments; extending it to the full cross-run, cross-lane history from the cards' `🛠` records is TEP-20.
+| 4 | Acceptance criteria | One row per declared criterion, each with its verdict (`✓ pass` / `✗ fail` / `· not run`).
+| 5 | Discoveries & recommendations | Each out-of-scope finding a worker reported, with its unit id and text, verbatim. Empty ⇒ the literal `none reported`.
+| 6 | Files | The union of the units' touched files.
+| 7 | Next | The operator's exits for the run's terminal state.
+| 8 | Evidence appendix | The demoted machine record: per-criterion evidence blocks, the verification trace table, per-unit outcomes, and any caught problems.
 |===
 
 == Staleness
