@@ -1130,7 +1130,7 @@ test("codeTestFence: a write to any *.test.* or acceptance/ path is denied regar
 
 test("codeTestFence: with the oracle armed, Bash that reaches tests or the toolchain is denied", () => {
   const denied = [
-    "cat ../thinkube-ai-integration-worktrees/TEP-17_SP-1-test/src/acceptance/SP-17_1_AC-1.test.ts",
+    "cat ../thinkube-tandem-worktrees/TEP-17_SP-1-test/src/acceptance/SP-17_1_AC-1.test.ts",
     "grep -rn model src/acceptance/",
     "npm install",
     "npx tsc -p tsconfig.test.json",

@@ -199,7 +199,7 @@ test("resolve_project_space returns null when cwd is under no project umbrella",
   // A working-repo path, not under any umbrella.
   const res = resolveProjectSpace(
     ctx as never,
-    "/home/thinkube/thinkube-platform/extensions/thinkube-ai-integration",
+    "/home/thinkube/thinkube-platform/extensions/thinkube-tandem",
   ) as { namespace: null; reason: string };
   assert.equal(res.namespace, null);
   assert.equal(res.reason, "cwd-not-under-project-umbrella");

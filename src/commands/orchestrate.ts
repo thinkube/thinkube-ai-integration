@@ -8,8 +8,13 @@
 import * as vscode from "vscode";
 import { ThinkubeStore } from "../store/ThinkubeStore";
 import { WorktreeService } from "../services/WorktreeService";
-import { OrchestratorService } from "../services/OrchestratorService";
+import {
+  OrchestratorService,
+  createSdkContractCheck,
+  createSdkPlanRepair,
+} from "../services/OrchestratorService";
 import type { WorkerModelConfig } from "../services/workerModel";
+import { resolveWorkerModel } from "../services/workerModel";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
@@ -204,6 +209,25 @@ export function registerOrchestrateCommands(
                 thinkingSpaceRoot,
                 baseDir,
                 workerModel,
+                // Pre-flight contract-consistency check (2026-07-12): one independent
+                // session per FRESH slice, before any worker dispatches — an authored
+                // contradiction (a unit note an AC forbids) is caught at the cheapest
+                // point instead of after every worker ran. Runs on the judge's model.
+                checkContract: createSdkContractCheck({
+                  cwd: canonical,
+                  model: resolveWorkerModel(workerModel, "judge"),
+                  log: (l) => output.appendLine(l),
+                }),
+                // Plan-repair lane (2026-07-12): when the judge attributes a red to the
+                // PLAN (an instrument misserving the intent), this session proposes the
+                // amendment; the orchestrator applies it, re-certifies, records it on
+                // the card and in the delivery report's "Changes to the approved plan",
+                // and re-grades — same run. The intent itself is never machine-amended.
+                repairPlan: createSdkPlanRepair({
+                  cwd: canonical,
+                  model: resolveWorkerModel(workerModel, "judge"),
+                  log: (l) => output.appendLine(l),
+                }),
                 verifyCommand: orchestratorCfg
                   .get<string>("verifyCommand")
                   ?.trim(),

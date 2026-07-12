@@ -14,7 +14,8 @@ import {
   batchExecutionUnits,
   extractDiagnosis,
   extractDiscoveries,
-  buildTestReworkContext,
+  appendJudgeGuidance,
+  extractJudgeGuidance,
   buildAttendPrompt,
   buildRejectPrompt,
   StreamJsonBuffer,
@@ -34,6 +35,8 @@ import {
   runAcVerifications,
   checkAcOrdinals,
   buildDeliveryReport,
+  appendPlanRepair,
+  sectionText,
   deliveryExitState,
   reDispatchDecision,
   isEscalated,
@@ -279,12 +282,31 @@ test("SP-11/3: extractDiscoveries pulls items under a trailing `## Discoveries` 
   assert.deepEqual(extractDiscoveries(""), []);
 });
 
-test("SP-11/3: buildTestReworkContext returns the diagnosis VERBATIM only for route `test`, undefined otherwise", () => {
-  const diag =
-    "The probe asserts stale-store state that the contract never guarantees.";
-  assert.equal(buildTestReworkContext(diag, "test"), diag); // verbatim
-  assert.equal(buildTestReworkContext(diag, "code"), undefined);
-  assert.equal(buildTestReworkContext(diag, undefined), undefined);
+test("judge guidance (2026-07-12): appendJudgeGuidance is append-only + round-stamped; extractJudgeGuidance filters by role", () => {
+  const codeDiag = "The implementation drops the contract's `sentinel` field.";
+  const testDiag = "The probe pins an internal detail the contract never named.";
+  let body = "Some slice intent.\n";
+  body = appendJudgeGuidance(body, 1, "code", codeDiag);
+  body = appendJudgeGuidance(body, 2, "test", testDiag);
+  // Append-only: both rounds live on the card (the audit trail), oldest first.
+  assert.match(body, /## ⚖ Judge guidance — round 1 → code-author/);
+  assert.match(body, /## ⚖ Judge guidance — round 2 → test-author/);
+  assert.ok(
+    body.indexOf("round 1") < body.indexOf("round 2"),
+    "rounds accumulate in order",
+  );
+  // Extraction is role-addressed: each role sees ONLY its sections, round-tagged.
+  const forCode = extractJudgeGuidance(body, "code");
+  assert.ok(forCode?.includes(codeDiag), "code-author gets its guidance");
+  assert.ok(!forCode?.includes(testDiag), "…and not the test-author's");
+  assert.match(forCode ?? "", /\(round 1\)/);
+  const forTest = extractJudgeGuidance(body, "test");
+  assert.ok(forTest?.includes(testDiag) && !forTest.includes(codeDiag));
+  // No sections → undefined (a first run appends nothing to the prompt).
+  assert.equal(extractJudgeGuidance("plain body", "code"), undefined);
+  // A section ends at the next `## ` heading — trailing card prose never leaks in.
+  const bounded = appendJudgeGuidance("intent", 1, "code", codeDiag) + "\n\n## Notes\nunrelated";
+  assert.ok(!extractJudgeGuidance(bounded, "code")?.includes("unrelated"));
 });
 
 test("buildAttendPrompt: /attend invocation + worktree note + VERBATIM divergence", () => {
@@ -1958,11 +1980,11 @@ test("SP-6/7 AC4: reDispatchDecision with NO fault is the unchanged attempt-boun
 // prior count or bound, and — unlike every other path — leaves `attempts` === priorAttempts (the slice
 // was never the problem, so no rework attempt is spent).
 
-test("SP-6/9: reDispatchDecision routes a `contract` fault to escalate WITHOUT burning an attempt", () => {
-  // First failure, well below the bound: still escalates (a contract defect is not re-rollable) and
-  // the attempt counter is UNCHANGED (0 in → 0 out), not prior + 1.
+test("SP-6/9 (re-anchored 2026-07-12): reDispatchDecision routes a `contract` fault to the PLAN-REPAIR lane WITHOUT burning an attempt; `intent` escalates", () => {
+  // First failure, well below the bound: routes to plan repair (the plan is the defect, not
+  // re-rollable work) and the attempt counter is UNCHANGED (0 in → 0 out), not prior + 1.
   const first = reDispatchDecision(0, 3, "contract");
-  assert.equal(first.action, "escalate");
+  assert.equal(first.action, "repair");
   assert.equal(first.route, "contract");
   assert.equal(
     first.attempts,
@@ -1972,12 +1994,12 @@ test("SP-6/9: reDispatchDecision routes a `contract` fault to escalate WITHOUT b
 
   // Mid-bound: same verdict, attempts unchanged (2 in → 2 out).
   const mid = reDispatchDecision(2, 5, "contract");
-  assert.deepEqual(mid, { action: "escalate", attempts: 2, route: "contract" });
+  assert.deepEqual(mid, { action: "repair", attempts: 2, route: "contract" });
 
-  // AT/ABOVE the bound: still escalate, still unchanged — the bound is irrelevant to a contract defect.
+  // AT/ABOVE the bound: still repair, still unchanged — the bound is irrelevant to a plan defect.
   const atBound = reDispatchDecision(3, 3, "contract");
   assert.deepEqual(atBound, {
-    action: "escalate",
+    action: "repair",
     attempts: 3,
     route: "contract",
   });
@@ -1987,6 +2009,15 @@ test("SP-6/9: reDispatchDecision routes a `contract` fault to escalate WITHOUT b
     9,
     "never bumped, whatever the prior count vs the bound",
   );
+
+  // `intent` (2026-07-12): the intent itself is ambiguous — the ONE verdict no machine may
+  // resolve. Always a human, never a repair, no attempt burned.
+  const intent = reDispatchDecision(1, 3, "intent");
+  assert.deepEqual(intent, {
+    action: "escalate",
+    attempts: 1,
+    route: "intent",
+  });
 
   // Contrast: a `code` fault at the same prior count DOES burn the attempt (prior + 1) — proving the
   // contract arm is the exception, not a general no-op.
@@ -2178,4 +2209,56 @@ test("SP-6/7 AC5: buildDeliveryReport renders the verification-trace section whe
   assert.match(md, /probe/);
   assert.match(md, /code/); // the route column
   assert.match(md, /the probe never reached green/);
+});
+
+// ── Plan-repair lane primitives (2026-07-12) ────────────────────────────────
+test("appendPlanRepair: round-stamped, append-only 🛠 sections carrying what + why", () => {
+  let body = "Intent prose.";
+  body = appendPlanRepair(body, 1, "AC 2 gains carve-out (d)", "the probes must name the old id to prove its absence");
+  body = appendPlanRepair(body, 2, "contract defines the sentinel seam", "the intent implies a migration marker");
+  assert.match(body, /## 🛠 Plan repair — round 1/);
+  assert.match(body, /## 🛠 Plan repair — round 2/);
+  assert.ok(body.indexOf("round 1") < body.indexOf("round 2"), "history accumulates in order");
+  assert.match(body, /\*\*What changed:\*\* AC 2 gains carve-out \(d\)/);
+  assert.match(body, /\*\*Why the intent justifies it:\*\* the probes must name/);
+});
+
+test("sectionText: extracts one ## section's inner text; absent heading → empty", () => {
+  const body = "# T\n\nintro\n\n## Acceptance Criteria\n\n- [ ] a\n- [ ] b\n\n## Constraints\n\nc";
+  assert.equal(sectionText(body, "Acceptance Criteria"), "- [ ] a\n- [ ] b");
+  assert.equal(sectionText(body, "Constraints"), "c");
+  assert.equal(sectionText(body, "Missing"), "");
+});
+
+test("delivery report: plan-repair amendments render as 'Changes to the approved plan'; a clean committed run states none", () => {
+  const base = {
+    specNumber: "1/1",
+    sha: "abc1234",
+    files: ["a.ts"],
+    units: [{ id: "u", outcome: "success" as const }],
+    declared: [{ ac: 1, run: "check" }],
+    acResults: [{ ac: 1, pass: true, evidence: "ok" }],
+    advanced: ["TEP-1_SP-1_SL-1"],
+    committed: true,
+  };
+  const amended = buildDeliveryReport({
+    ...base,
+    planChanges: [
+      {
+        slice: "TEP-1_SP-1_SL-1",
+        round: 1,
+        summary: "AC 2 gains carve-out (d) for the spec's own probes",
+        justification: "proving absence requires naming the old identity",
+      },
+    ],
+  });
+  assert.match(amended, /## Changes to the approved plan/);
+  assert.match(amended, /plan repair \(round 1\)/);
+  assert.match(amended, /What changed: AC 2 gains carve-out \(d\)/);
+  assert.match(amended, /Why the intent justifies it: proving absence requires/);
+  assert.match(amended, /not byte-for-byte/);
+  // A clean committed run says so EXPLICITLY — silence would be ambiguous at Accept.
+  const clean = buildDeliveryReport({ ...base, planChanges: [] });
+  assert.match(clean, /## Changes to the approved plan/);
+  assert.match(clean, /None — delivered exactly to the plan as approved\./);
 });
