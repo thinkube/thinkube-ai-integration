@@ -47,6 +47,8 @@ import {
   isEscalated,
   hasEscalationMarker,
   unmetDocsObligation,
+  UNDELIVERED_FORMAT_STANZA,
+  BUNDLED_WORKER_PREAMBLE,
   markEscalated,
   MAX_REWORK_ATTEMPTS,
   ESCALATION_MARKER,
@@ -2699,4 +2701,28 @@ test("preflight provisions: fully provisioned ⇒ no failures; legacy files-only
     })),
   });
   assert.equal(dup.filter((f) => /SL-3.*contract/.test(f)).length, 1);
+});
+
+// ── UNDELIVERED format is single-sourced in code (2026-07-14) ─────────────────
+//
+// WHY (INVARIANT): the line shape the parser scans is a reply contract. It must
+// exist ONLY in UNDELIVERED_FORMAT_STANZA (code): a doctrine template or the
+// bundled preamble restating it can drift and teach workers a shape the parser
+// misses — contradictory instructions inside one prompt, silent parse losses.
+test("the UNDELIVERED line shape lives only in the code stanza — preamble prose references, never restates", () => {
+  assert.match(UNDELIVERED_FORMAT_STANZA, /UNDELIVERED: /);
+  assert.doesNotMatch(
+    BUNDLED_WORKER_PREAMBLE,
+    /^\s*UNDELIVERED:/m,
+    "bundled preamble must not restate the parsed line shape",
+  );
+  const fs = require("node:fs");
+  const tpl =
+    "/home/thinkube/thinkube-platform/core/thinkube-metadata/plugins/tandem-methodology/templates/worker-preamble.md";
+  if (fs.existsSync(tpl))
+    assert.doesNotMatch(
+      fs.readFileSync(tpl, "utf8"),
+      /^\s*UNDELIVERED:/m,
+      "doctrine template must not restate the parsed line shape",
+    );
 });
