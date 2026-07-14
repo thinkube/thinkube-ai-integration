@@ -24,6 +24,13 @@ import type { WorktreeService } from "./WorktreeService";
 import type { OwnershipArbiter } from "./OwnershipArbiter";
 import type { ThinkubeStore } from "../store/ThinkubeStore";
 import {
+  oracleStoreDir,
+  persistProbes,
+  probesPresent,
+  removeProbes,
+  restoreProbes,
+} from "./oracleStore";
+import {
   buildUnitDag,
   readyFrontier,
   buildWorkerPrompt,
@@ -1139,7 +1146,7 @@ export function buildPlanRepairPrompt(input: {
     '   "acSection": "<full replacement AC section, only if it changed>", "contract": "<full replacement contract, only if it changed>",',
     '   "unitNotes": [{"unit": 0, "note": "<full replacement note>"}], "reopen": "code" | "test" | "none"}',
     "Omit acSection/contract/unitNotes fields you are NOT changing. Set reopen to the role whose",
-    "artifact must be re-authored under the amended plan (e.g. \"test\" when the probe must learn a",
+    'artifact must be re-authored under the amended plan (e.g. "test" when the probe must learn a',
     'new carve-out), or "none" when a pure re-grade suffices.',
     'Or: {"amend": false, "justification": "<why no amendment is justifiable from the intent>", "summary": ""}',
   ].join("\n");
@@ -1269,7 +1276,8 @@ export function buildAutoAttendPrompt(
     `You are the AUTO-ATTEND fix agent for slice ${slice}. The orchestrator escalated it: bounded rework did not converge. You get ONE attempt before a human is asked.`,
     ``,
     `## The slice's intent`,
-    sliceIntent || "(no slice body available — infer intent from the diagnosis and the code)",
+    sliceIntent ||
+      "(no slice body available — infer intent from the diagnosis and the code)",
     ``,
     `## What failed (judged fault + verbatim evidence)`,
     diagnosis,
@@ -1693,6 +1701,19 @@ export class OrchestratorService {
     // never committed, so `resumeDecision` says COMMIT (not author). Their units are seeded done so
     // the frontier never re-dispatches a worker for them — the resume commits the present work.
     const resumeCommit = new Set<string>();
+    // Held-out probe persistence (2026-07-14): the oracle store is where `role: test`
+    // units' probes survive the tester worktree's per-run re-snapshot (`reset --hard`
+    // + `clean -fd` deletes them — they are deliberately never committed). Keyed to
+    // the signed AC contract: a changed `ac_verifications_hash` voids the stored oracle.
+    const probeStore = oracleStoreDir(
+      this.deps.canonicalRepo,
+      specNumber,
+      this.deps.baseDir,
+    );
+    const acContractHash =
+      typeof specDoc?.frontmatter?.ac_verifications_hash === "string"
+        ? specDoc.frontmatter.ac_verifications_hash
+        : undefined;
     for (const s of slices) {
       const st = s.status.toLowerCase();
       const ids = (unitsBySlice.get(s.handle) ?? []).map((u) => u.id);
@@ -1748,8 +1769,30 @@ export class OrchestratorService {
             !!rs.lastFault &&
             (rs.lastFault === "code" || rs.lastFault === "test") &&
             (u.role ?? "code") === rs.lastFault;
-          if (checkpointed.has(u.id) && !implicated) state.done.add(u.id);
-          else allDone = false;
+          // Honest test-unit checkpoints (2026-07-14): a `role: test` unit's probes
+          // live ONLY in the oracle store (never on the branch), so its `units_done`
+          // entry counts only while those probes are still present under the CURRENT
+          // AC contract — otherwise the unit re-authors. An implicated test unit also
+          // drops its stored probes so the re-author starts from a clean oracle.
+          const isTest = (u.role ?? "code") === "test";
+          if (isTest && implicated)
+            await removeProbes(probeStore, u.footprint ?? []);
+          const durable =
+            !isTest ||
+            (await probesPresent(
+              probeStore,
+              u.footprint ?? [],
+              acContractHash,
+            ));
+          if (checkpointed.has(u.id) && !implicated && durable) {
+            state.done.add(u.id);
+          } else {
+            if (isTest && checkpointed.has(u.id) && !implicated && !durable)
+              output.appendLine(
+                `▸ ${s.handle}: checkpointed test unit ${u.id} has no persisted probes (wiped tester / changed contract) → re-author.`,
+              );
+            allDone = false;
+          }
         }
         if (allDone) {
           // Verify-before-rework: every unit's work is already on the branch
@@ -1842,6 +1885,27 @@ export class OrchestratorService {
         output.appendLine(
           `▸ SP-${specNumber}: tester snapshot at ${testerPath} (base commit; implementation-in-progress absent by construction).`,
         );
+      if (testerPath) {
+        // Restore the persisted probes into the fresh snapshot: `createTester` just
+        // wiped every untracked file, and both the closing gate and the verify
+        // oracle copy probes FROM this tree. Contract-keyed — stale-hash probes
+        // stay out and their units re-author (the seeding pass above agrees).
+        try {
+          const restored = await restoreProbes(
+            probeStore,
+            testerPath,
+            acContractHash,
+          );
+          if (restored.length)
+            output.appendLine(
+              `▸ SP-${specNumber}: ${restored.length} persisted probe file(s) restored into the tester snapshot.`,
+            );
+        } catch (err) {
+          output.appendLine(
+            `⚑ SP-${specNumber}: probe restore failed (${(err as Error).message}) — checkpointed test units may need re-authoring.`,
+          );
+        }
+      }
     }
 
     // ── The black-box verify oracle (tests-first repair, 2026-07-08) ─────────
@@ -2099,12 +2163,12 @@ export class OrchestratorService {
           fault === "intent"
             ? `⛔ ${slice}: INTENT defect — the Spec's intent is ambiguous or self-contradictory; no instrument amendment can be machine-justified → awaiting a human decision (no rework attempt burned).`
             : fault === "contract"
-            ? `⛔ ${slice}: plan defect — an instrument misserves the intent and no repair lane is wired → held for a plan re-cut (no rework attempt burned), awaiting the slicer.`
-            : fault === "gate"
-              ? `⛔ ${slice}: gate defect — the verification probe cannot run and re-authoring did not heal it → escalated (no rework attempt burned); fix the probe/environment, not the slice.`
-              : verdict.deterministic
-                ? `⛔ ${slice}: deterministic failure — identical evidence to the prior attempt (inputs unchanged) → escalated at attempt ${verdict.attempts} without burning the rest of the bound.`
-                : `⛔ ${slice}: bounded rework attempts exhausted (${verdict.attempts})${fault === "both" ? " / fault ambiguous (both code and test)" : ""} → escalated, awaiting a human decision.`,
+              ? `⛔ ${slice}: plan defect — an instrument misserves the intent and no repair lane is wired → held for a plan re-cut (no rework attempt burned), awaiting the slicer.`
+              : fault === "gate"
+                ? `⛔ ${slice}: gate defect — the verification probe cannot run and re-authoring did not heal it → escalated (no rework attempt burned); fix the probe/environment, not the slice.`
+                : verdict.deterministic
+                  ? `⛔ ${slice}: deterministic failure — identical evidence to the prior attempt (inputs unchanged) → escalated at attempt ${verdict.attempts} without burning the rest of the bound.`
+                  : `⛔ ${slice}: bounded rework attempts exhausted (${verdict.attempts})${fault === "both" ? " / fault ambiguous (both code and test)" : ""} → escalated, awaiting a human decision.`,
         );
       }
     };
@@ -2281,126 +2345,153 @@ export class OrchestratorService {
     // re-enter it after reopening a red slice's implicated units: fill() seeds the frontier,
     // drain() runs workers to quiescence. Same closure, same state — nothing else changed.
     const drain = async () => {
-    while (running.size > 0) {
-      // Race worker completions against a park-wake (a freed slot with no completion, so we
-      // re-fill). If only parked workers remain, the loop waits here for `/attend` to answer them.
-      const winner = await Promise.race<
-        { kind: "done"; d: UnitDone } | { kind: "wake" }
-      >([
-        ...[...running.values()].map((p) =>
-          p.then((d) => ({ kind: "done" as const, d })),
-        ),
-        wakeSignal.then(() => ({ kind: "wake" as const })),
-      ]);
-      if (winner.kind === "wake") {
-        wakeSignal = new Promise<void>((r) => (wake = r));
-        fill();
-        continue;
-      }
-      const d = winner.d;
-      running.delete(d.id);
-      parked.delete(d.id);
-      unparkWorker(d.id);
-      (footprintsOf.get(d.id) ?? []).forEach((f) => state.running.delete(f));
-      result.results.push({ id: d.id, slice: d.slice, outcome: d.outcome });
+      while (running.size > 0) {
+        // Race worker completions against a park-wake (a freed slot with no completion, so we
+        // re-fill). If only parked workers remain, the loop waits here for `/attend` to answer them.
+        const winner = await Promise.race<
+          { kind: "done"; d: UnitDone } | { kind: "wake" }
+        >([
+          ...[...running.values()].map((p) =>
+            p.then((d) => ({ kind: "done" as const, d })),
+          ),
+          wakeSignal.then(() => ({ kind: "wake" as const })),
+        ]);
+        if (winner.kind === "wake") {
+          wakeSignal = new Promise<void>((r) => (wake = r));
+          fill();
+          continue;
+        }
+        const d = winner.d;
+        running.delete(d.id);
+        parked.delete(d.id);
+        unparkWorker(d.id);
+        (footprintsOf.get(d.id) ?? []).forEach((f) => state.running.delete(f));
+        result.results.push({ id: d.id, slice: d.slice, outcome: d.outcome });
 
-      // SP-11/3: collect this unit's out-of-scope findings — the list items under a trailing
-      // `## Discoveries` heading in its final output — verbatim, pairing each with the unit id (the
-      // declared discovery channel; no model-side summarizing between worker and report). Independent
-      // of outcome: a unit that failed may still have surfaced a real finding worth reporting.
-      if (d.finalOutput)
-        for (const text of extractDiscoveries(d.finalOutput))
-          result.discoveries.push({ unit: d.id, text });
+        // SP-11/3: collect this unit's out-of-scope findings — the list items under a trailing
+        // `## Discoveries` heading in its final output — verbatim, pairing each with the unit id (the
+        // declared discovery channel; no model-side summarizing between worker and report). Independent
+        // of outcome: a unit that failed may still have surfaced a real finding worth reporting.
+        if (d.finalOutput)
+          for (const text of extractDiscoveries(d.finalOutput))
+            result.discoveries.push({ unit: d.id, text });
 
-      if (d.outcome === "needs-input") {
-        // Non-resident needs-input: a worker that RETURNED a question instead of parking its live
-        // session. runViaSdk parks resident via onPark and never returns this; this branch covers a
-        // runUnit seam (tests) / a future exit-model runner. No live session to feed → flag via the
-        // thinking space for resume-by-session-id (/attend fallback).
-        await this.flagNeedsInput(
-          d.slice,
-          d.question ?? "(no question text)",
-          d.sessionId,
-          d.id,
-        );
-        (unitsBySlice.get(d.slice) ?? []).forEach((u) =>
-          state.blocked.add(u.id),
-        );
-        remaining.delete(d.slice);
-        if (!result.needsInput.includes(d.slice))
-          result.needsInput.push(d.slice);
-        output.appendLine(
-          `❓ ${d.slice}: ${d.id} asked a question → needs-input (slot freed).`,
-        );
-      } else if (d.outcome === "failed") {
-        // A footprint-containment hard-stop (SP-6/2 AC3) carries its own diagnosis naming the
-        // offending out-of-footprint path; otherwise fall back to the generic exit message.
-        await blockSlice(
-          d.slice,
-          d.attention ??
-            `Worker for ${d.id} exited without success — see the session JSON-log.`,
-        );
-        output.appendLine(`⚑ ${d.slice}: ${d.id} failed → requires-attention.`);
-        // Run-halt policy (SP-2/TEP-6 AC5). A footprint VIOLATION (the containment hard-stop, flagged
-        // by the clean `containment` boolean — NOT a reason-string match) halts on the FIRST one: a
-        // breach is systemic, not isolated. An ordinary failure accrues a count and halts once it
-        // reaches the threshold N. Once halted, `fill()` (below) stops dispatching new units; the loop
-        // drains the in-flight ones, then finalizes + returns. In-flight units are never killed.
-        if (!halt) {
-          // Fast abort (2026-07-08): on halt, ABORT every in-flight worker's SDK query
-          // immediately — a doomed run must not keep burning tokens while it "drains".
-          // The aborted workers surface as non-success and the loop still collects them.
-          const abortInFlight = () => {
-            for (const [id, ac] of this.liveAborts) {
-              ac.abort();
-              output.appendLine(`■ aborting in-flight ${id}`);
+        if (d.outcome === "needs-input") {
+          // Non-resident needs-input: a worker that RETURNED a question instead of parking its live
+          // session. runViaSdk parks resident via onPark and never returns this; this branch covers a
+          // runUnit seam (tests) / a future exit-model runner. No live session to feed → flag via the
+          // thinking space for resume-by-session-id (/attend fallback).
+          await this.flagNeedsInput(
+            d.slice,
+            d.question ?? "(no question text)",
+            d.sessionId,
+            d.id,
+          );
+          (unitsBySlice.get(d.slice) ?? []).forEach((u) =>
+            state.blocked.add(u.id),
+          );
+          remaining.delete(d.slice);
+          if (!result.needsInput.includes(d.slice))
+            result.needsInput.push(d.slice);
+          output.appendLine(
+            `❓ ${d.slice}: ${d.id} asked a question → needs-input (slot freed).`,
+          );
+        } else if (d.outcome === "failed") {
+          // A footprint-containment hard-stop (SP-6/2 AC3) carries its own diagnosis naming the
+          // offending out-of-footprint path; otherwise fall back to the generic exit message.
+          await blockSlice(
+            d.slice,
+            d.attention ??
+              `Worker for ${d.id} exited without success — see the session JSON-log.`,
+          );
+          output.appendLine(
+            `⚑ ${d.slice}: ${d.id} failed → requires-attention.`,
+          );
+          // Run-halt policy (SP-2/TEP-6 AC5). A footprint VIOLATION (the containment hard-stop, flagged
+          // by the clean `containment` boolean — NOT a reason-string match) halts on the FIRST one: a
+          // breach is systemic, not isolated. An ordinary failure accrues a count and halts once it
+          // reaches the threshold N. Once halted, `fill()` (below) stops dispatching new units; the loop
+          // drains the in-flight ones, then finalizes + returns. In-flight units are never killed.
+          if (!halt) {
+            // Fast abort (2026-07-08): on halt, ABORT every in-flight worker's SDK query
+            // immediately — a doomed run must not keep burning tokens while it "drains".
+            // The aborted workers surface as non-success and the loop still collects them.
+            const abortInFlight = () => {
+              for (const [id, ac] of this.liveAborts) {
+                ac.abort();
+                output.appendLine(`■ aborting in-flight ${id}`);
+              }
+            };
+            if (d.containment) {
+              halt = true;
+              output.appendLine(
+                `■ SP-${specNumber}: footprint violation in ${d.id} → run halted (no new units dispatched; aborting ${activeCount()} in-flight).`,
+              );
+              abortInFlight();
+            } else if (++failCount >= threshold) {
+              halt = true;
+              output.appendLine(
+                `■ SP-${specNumber}: ${failCount} unit failure(s) reached the halt threshold (${threshold}) → run halted (no new units dispatched; aborting ${activeCount()} in-flight).`,
+              );
+              abortInFlight();
             }
-          };
-          if (d.containment) {
-            halt = true;
-            output.appendLine(
-              `■ SP-${specNumber}: footprint violation in ${d.id} → run halted (no new units dispatched; aborting ${activeCount()} in-flight).`,
+          }
+        } else {
+          state.done.add(d.id);
+          markUnitDone(d.id); // graph: show this worker's node done (lime) until re-dispatch
+          // Checkpoint (2026-07-11): commit the landed unit's footprint NOW so a
+          // later reset returns TO this work instead of deleting it — completed
+          // units survive every re-dispatch; only unfinished/implicated units
+          // re-run (and rework starts from the checkpoint, not from zero).
+          //
+          // Held-out probes (2026-07-14): a `role: test` unit's output lives in the
+          // TESTER worktree and is deliberately never committed — persist it to the
+          // oracle store FIRST, and record the unit done only once its probes are
+          // durable. A `units_done` entry with no persisted probe is exactly the lie
+          // that let a rework re-run wipe the oracle and ENOENT the closing gate.
+          const landedUnit = (unitsBySlice.get(d.slice) ?? []).find(
+            (u) => u.id === d.id,
+          );
+          let durable = true;
+          if ((landedUnit?.role ?? "code") === "test") {
+            try {
+              await persistProbes(
+                probeStore,
+                testerPath ?? worktreePath, // mirror the unit's authoring cwd
+                landedUnit?.footprint ?? [],
+                acContractHash,
+              );
+            } catch (err) {
+              durable = false;
+              output.appendLine(
+                `⚑ ${d.id}: probe persist failed (${(err as Error).message}) — unit NOT checkpointed; it re-authors on the next run.`,
+              );
+            }
+          }
+          if (durable)
+            await this.checkpointUnit(
+              worktreePath,
+              d.slice,
+              d.id,
+              landedUnit?.footprint ?? [],
             );
-            abortInFlight();
-          } else if (++failCount >= threshold) {
-            halt = true;
+          const rem = (remaining.get(d.slice) ?? 1) - 1;
+          remaining.set(d.slice, rem);
+          if (rem <= 0) {
+            // Slice's units all LANDED. No per-slice verify any more — verification is the Spec's
+            // declared per-AC plan, run once at quiescence (the closing gate below). Mark the slice
+            // done for SCHEDULING (so dependents unblock) and record it as a gate candidate; it only
+            // becomes Done-on-the-thinking space when the closing gate passes for the ACs it satisfies.
+            state.done.add(d.slice);
+            landed.add(d.slice);
+            remaining.delete(d.slice);
             output.appendLine(
-              `■ SP-${specNumber}: ${failCount} unit failure(s) reached the halt threshold (${threshold}) → run halted (no new units dispatched; aborting ${activeCount()} in-flight).`,
+              `✓ ${d.slice}: all units landed (verification deferred to the closing gate).`,
             );
-            abortInFlight();
           }
         }
-      } else {
-        state.done.add(d.id);
-        markUnitDone(d.id); // graph: show this worker's node done (lime) until re-dispatch
-        // Checkpoint (2026-07-11): commit the landed unit's footprint NOW so a
-        // later reset returns TO this work instead of deleting it — completed
-        // units survive every re-dispatch; only unfinished/implicated units
-        // re-run (and rework starts from the checkpoint, not from zero).
-        await this.checkpointUnit(
-          worktreePath,
-          d.slice,
-          d.id,
-          (unitsBySlice.get(d.slice) ?? []).find((u) => u.id === d.id)
-            ?.footprint ?? [],
-        );
-        const rem = (remaining.get(d.slice) ?? 1) - 1;
-        remaining.set(d.slice, rem);
-        if (rem <= 0) {
-          // Slice's units all LANDED. No per-slice verify any more — verification is the Spec's
-          // declared per-AC plan, run once at quiescence (the closing gate below). Mark the slice
-          // done for SCHEDULING (so dependents unblock) and record it as a gate candidate; it only
-          // becomes Done-on-the-thinking space when the closing gate passes for the ACs it satisfies.
-          state.done.add(d.slice);
-          landed.add(d.slice);
-          remaining.delete(d.slice);
-          output.appendLine(
-            `✓ ${d.slice}: all units landed (verification deferred to the closing gate).`,
-          );
-        }
+        fill();
       }
-      fill();
-    }
     };
 
     fill();
@@ -2572,7 +2663,10 @@ export class OrchestratorService {
             intent: stripAcceptanceCriteria(
               freshSpec?.body ?? this.promptCtx.specBody ?? "",
             ),
-            acSection: sectionText(freshSpec?.body ?? "", "Acceptance Criteria"),
+            acSection: sectionText(
+              freshSpec?.body ?? "",
+              "Acceptance Criteria",
+            ),
             contract: s?.contract,
             unitNotes: (s?.workUnits ?? []).map(
               (u) => (u as WorkUnit & { note?: string }).note ?? "",
@@ -2596,7 +2690,13 @@ export class OrchestratorService {
           continue;
         }
         try {
-          await this.applyPlanRepair(specNumber, h, proposal, round, worktreePath);
+          await this.applyPlanRepair(
+            specNumber,
+            h,
+            proposal,
+            round,
+            worktreePath,
+          );
         } catch (err) {
           await escalateRepair(
             `Applying the plan repair failed: ${(err as Error).message}`,
@@ -2834,7 +2934,7 @@ export class OrchestratorService {
    * full plan against the worktree, then classify each landed slice as **AC-green** iff the ACs it
    * `satisfies` all ran green. Returns a map of the green slices → the AC ordinals they satisfy (the
    * input to the per-slice commit-before-Done step, which commits then advances + ticks those
- * ordinals ). No skip: a Spec with no declaration (or a red / un-runnable check)
+   * ordinals ). No skip: a Spec with no declaration (or a red / un-runnable check)
    * leaves the affected slices `requires-attention` in place (not green, never returned). The per-AC
    * results land on `result.acResults` (and the auditable report). Mutates `state` / `result`; does
    * NOT advance / commit / check ordinals — that is the caller's per-slice commit responsibility.
@@ -2955,7 +3055,12 @@ export class OrchestratorService {
               /* judge unavailable → unrouted block, as before */
             }
           }
-          await blockSlice(s.handle, diagnosis, fault, prep.output.slice(-4000));
+          await blockSlice(
+            s.handle,
+            diagnosis,
+            fault,
+            prep.output.slice(-4000),
+          );
         }
         output.appendLine(
           `⚑ SP-${specNumber}: build gate FAILED → landed slices require attention (per-AC runs skipped).`,
@@ -3152,7 +3257,8 @@ export class OrchestratorService {
         // judgment needed, no role to blame, no attempt to burn. (The self-heal
         // retry above already ran and did not produce a runnable probe.)
         const redResults = acResults.filter(
-          (r) => !r.pass && (failedAcs.length ? failedAcs.includes(r.ac) : true),
+          (r) =>
+            !r.pass && (failedAcs.length ? failedAcs.includes(r.ac) : true),
         );
         const gateDefect =
           redResults.length > 0 &&
@@ -4297,10 +4403,7 @@ export class OrchestratorService {
     try {
       const m = /^TEP-(\d+)_SP-(\d+)_SL-(\d+)$/.exec(handle);
       if (!m) return;
-      const rel = this.deps.store.pathForSlice(
-        `${m[1]}/${m[2]}`,
-        Number(m[3]),
-      );
+      const rel = this.deps.store.pathForSlice(`${m[1]}/${m[2]}`, Number(m[3]));
       const parsed = await this.deps.store.getFile(rel);
       if (!parsed?.frontmatter) return;
       await this.deps.store.writeFile(

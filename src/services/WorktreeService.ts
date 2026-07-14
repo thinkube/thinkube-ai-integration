@@ -27,13 +27,24 @@ function specBranchName(specNumber: string): string {
   return sp ? `spec/TEP-${tep}_SP-${sp}` : `spec/SP-${specNumber}`;
 }
 /** Worktree directory leaf for a Spec (the tep-qualified handle, or legacy). */
-function specWtName(specNumber: string): string {
+export function specWtName(specNumber: string): string {
   const [tep, sp] = specNumber.split("/");
   return sp ? `TEP-${tep}_SP-${sp}` : `SP-${specNumber}`;
 }
 /** Worktree directory leaf for a Spec's TESTER snapshot (SP-6/7 structural independence). */
 export function testerWtName(specNumber: string): string {
   return `${specWtName(specNumber)}-test`;
+}
+/** Root directory holding a repo's worktrees — `<repo>-worktrees` beside the repo,
+ *  or the explicit baseDir override. Also hosts the held-out probe `oracle-store`. */
+export function worktreesRoot(canonicalRepo: string, baseDir?: string): string {
+  return (
+    baseDir ??
+    path.join(
+      path.dirname(canonicalRepo),
+      `${path.basename(canonicalRepo)}-worktrees`,
+    )
+  );
 }
 
 export interface WorktreeEntry {
@@ -417,7 +428,12 @@ export class WorktreeService {
     // it does. A rebase that cannot apply cleanly is the one real exception — it throws so the
     // dispatch halts for the human (running outdated is never an option, so there is nothing
     // to ask). A freshly-cut branch is already at HEAD ⇒ behind 0 ⇒ this is a no-op.
-    await this.ensureCurrentWithBase(canonicalRepo, worktreePath, specNumber, log);
+    await this.ensureCurrentWithBase(
+      canonicalRepo,
+      worktreePath,
+      specNumber,
+      log,
+    );
 
     // Machine-locally connect the worktree: inject THINKUBE_THINKING_SPACE_ROOT
     // (the central sidecar thinking space, AC7) into its .mcp.json kanban-server
@@ -476,12 +492,7 @@ export class WorktreeService {
       { timeout: 5000 },
     );
     const sha = shaRaw.trim();
-    const root =
-      baseDir ??
-      path.join(
-        path.dirname(canonicalRepo),
-        `${path.basename(canonicalRepo)}-worktrees`,
-      );
+    const root = worktreesRoot(canonicalRepo, baseDir);
     const wtPath = path.join(root, testerWtName(specNumber));
     const existing = (await this.list(canonicalRepo)).find(
       (e) => path.resolve(e.path) === path.resolve(wtPath),
