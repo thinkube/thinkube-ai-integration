@@ -4537,13 +4537,27 @@ export class OrchestratorService {
         try {
           let tepBody: string | undefined;
           const impl = specDoc?.frontmatter?.implements;
+          // pathForTep PREPENDS "TEP-": pass the bare id or the path doubles to
+          // teps/TEP-TEP-21 and the lookup fails (seen live — the intent check
+          // then vanished from the report instead of reporting itself missing).
           const bare =
-            typeof impl === "string" ? impl.replace(/^.*:/, "").trim() : "";
+            typeof impl === "string"
+              ? impl.replace(/^.*:/, "").trim().replace(/^TEP-/i, "")
+              : "";
           if (bare) {
             const tepDoc = await this.deps.store.getFile(
               this.deps.store.pathForTep(bare),
             );
             tepBody = tepDoc?.body;
+          }
+          if (!tepBody) {
+            // NEVER silent: an intent check that could not run is a fact the
+            // human Accept must see, not an absent section.
+            intentCheck = {
+              fulfilled: false,
+              gaps: [],
+              unavailable: `parent TEP body unresolvable (implements: ${String(impl ?? "unset")})`,
+            };
           }
           if (tepBody) {
             const acSummary = result.acResults

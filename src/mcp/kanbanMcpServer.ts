@@ -4027,7 +4027,10 @@ export async function writeSpec(
           (typeof existing?.frontmatter?.implements === "string"
             ? (existing.frontmatter.implements as string)
             : "");
-        const bare = tepId.replace(/^.*:/, "").trim();
+        const bare = tepId
+          .replace(/^.*:/, "")
+          .trim()
+          .replace(/^TEP-/i, ""); // pathForTep prepends "TEP-" itself
         if (bare) {
           const tepDoc = await store.getFile(store.pathForTep(bare));
           tepBody = tepDoc?.body;
