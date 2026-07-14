@@ -111,9 +111,16 @@ async function walk(root: string, rel = ""): Promise<string[]> {
 }
 
 /**
- * Restore every persisted probe into `toRoot` (the freshly re-snapshotted tester).
- * Returns the relative paths restored; empty when the store is absent or its
- * contract hash no longer matches (stale probes stay out of the tester).
+ * Restore persisted probes into `toRoot` (the freshly re-snapshotted tester).
+ * Returns the relative paths actually restored; empty when the store is absent
+ * or its contract hash no longer matches (stale probes stay out of the tester).
+ *
+ * Committed-wins (2026-07-14): a probe that already exists in the fresh snapshot
+ * is COMMITTED on the branch — newer truth than the store (an /attend or
+ * auto-attend fix lands on the branch, not in the store). Restoring over it
+ * would shadow the fix with a stale copy — the exact clobber that kept
+ * TEP-21_SP-1_SL-3 red while its fix sat committed. The store fills in only
+ * what the reset wiped: the uncommitted probes.
  */
 export async function restoreProbes(
   storeDir: string,
@@ -123,13 +130,20 @@ export async function restoreProbes(
   const meta = await readMeta(storeDir);
   if (!hashOk(meta, acHash)) return [];
   const filesRoot = path.join(storeDir, FILES);
-  const rels = await walk(filesRoot);
-  for (const rel of rels) {
+  const restored: string[] = [];
+  for (const rel of await walk(filesRoot)) {
     const dst = path.join(toRoot, rel);
+    try {
+      await fs.access(dst);
+      continue; // committed on the branch — the snapshot's copy wins
+    } catch {
+      /* absent — the reset wiped it; restore from the store */
+    }
     await fs.mkdir(path.dirname(dst), { recursive: true });
     await fs.copyFile(path.join(filesRoot, rel), dst);
+    restored.push(rel);
   }
-  return rels;
+  return restored;
 }
 
 /**

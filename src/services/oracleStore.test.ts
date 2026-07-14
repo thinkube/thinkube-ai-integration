@@ -137,6 +137,34 @@ test("removeProbes drops an implicated unit's probes; missing targets are a no-o
   await removeProbes(store, [P1, "never/existed.test.ts"]); // no throw
 });
 
+test("restore is committed-wins: an existing (branch-committed) file is never overwritten by the store", async () => {
+  // WHY (INVARIANT): an /attend or auto-attend probe fix lands on the BRANCH, so it
+  // exists in the fresh tester snapshot. The store's older copy must not clobber it —
+  // that shadowing is exactly what kept TEP-21_SP-1_SL-3 red while its fix sat
+  // committed. The store only fills in files the reset actually wiped.
+  const store = await tmpdir();
+  const tester = await tmpdir();
+  const fresh = await tmpdir();
+  await author(tester, P1, "stale store copy");
+  await author(tester, P2, "only-in-store probe");
+  await persistProbes(store, tester, [P1, P2], "hash-a");
+
+  await author(fresh, P1, "FIXED on the branch"); // committed → present in the snapshot
+  const restored = await restoreProbes(store, fresh, "hash-a");
+
+  assert.deepEqual(restored, [P2], "only the wiped (absent) probe is restored");
+  assert.equal(
+    await fs.readFile(path.join(fresh, P1), "utf8"),
+    "FIXED on the branch",
+    "the committed fix survives the restore",
+  );
+  assert.equal(
+    await fs.readFile(path.join(fresh, P2), "utf8"),
+    "only-in-store probe",
+    "the wiped probe comes back from the store",
+  );
+});
+
 test("empty footprint is vacuously present; absent store restores nothing", async () => {
   // WHY: a test unit with no declared probe files has nothing to persist or
   // lose — treating it as absent would re-author it forever. And restoring from
