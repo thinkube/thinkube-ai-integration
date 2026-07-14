@@ -1,0 +1,110 @@
+= Scratchpad — Authoring TEPs
+:description: How to author a TEP using the live Scratchpad surface in Thinkube Tandem.
+
+The Scratchpad is a live, persistent authoring surface for TEPs (Tandem Enhancement Proposals).
+It replaces the old "New TEP" quick-create command with a structured, AI-assisted workflow where every change is tracked, resumable, and explicit.
+
+== Opening the Scratchpad
+
+Click the *Author TEP (Scratchpad)* icon (pencil) in the *TEPs* view title bar, or run `Tandem Scratchpad: Author TEP (Scratchpad)` from the command palette.
+
+The panel opens with the view type `thinkubeScratchpad` and the title *Thinkube Scratchpad*.
+If you previously had an in-progress session, it resumes exactly where you left off (see xref:scratchpad.adoc#resume[Resume after close or restart]).
+
+== Authoring with visible deltas
+
+The Scratchpad renders every section of the working model alongside its state marker:
+
+[cols="1,3",options="header"]
+|===
+| Marker | State
+
+| ○ | empty — not yet written
+| ◌ | proposed — a worker has suggested content, awaiting your review
+| ◑ | shaping — content is in progress
+| ● | settled — you have accepted this content
+|===
+
+Below the sections, the *Changes* panel logs every applied action in order, showing the field path, the value *before* the change, and the value *after* the change.
+This gives you a full audit trail of how the model evolved, including worker proposals.
+
+== Authoring in the panel
+
+The Scratchpad panel exposes four authoring controls, each wired to one enumerated webview message.
+Every control routes through the single reducer path — the same as programmatic `dispatch()` calls.
+
+=== Goal input
+
+The *Goal* textarea (`#goal-input`) at the top of the panel pre-fills with the current goal text when the panel renders.
+Click *Confirm goal* to commit your text:
+
+* If the goal section was *empty* when the panel last rendered, clicking confirm sends `seedGoal` — this also advances the model phase from `drafting` to `shaping`.
+* If the goal section already had *content* when the panel last rendered, clicking confirm sends `editGoal` — this updates the goal text without changing the phase.
+
+The textarea is pre-filled with the model's current goal text, so a reopened panel shows exactly what you left.
+
+=== Per-section edit control
+
+Every rendered section has a *Save edit* button (`class="edit-section"`, `data-section-id`).
+Edit the textarea above the button, then click *Save edit* to post an `editSection` message with the section ID and the new text.
+The section text updates immediately and the change appears in the delta log.
+
+=== Per-section add-note control
+
+Every rendered section has an *Add note* button (`class="add-note"`, `data-section-id`).
+Type a short note in the input field beside it and click *Add note* to post an `addNote` message.
+Notes accumulate under their section in the order they were added and persist with the model.
+
+=== Ask for structure
+
+Click the *Ask for structure* button (`#ask-structure`) to invoke the gap-filling worker.
+
+== Asking for structure
+
+Click *Ask for structure* (or call `askForStructure()` through the API) to invoke the gap-filling worker.
+The worker analyses the current model and proposes sections that are missing or underdeveloped.
+Each proposal lands through the same reducer path as a manual edit, so it appears immediately in the section list and in the delta log.
+
+The worker always uses the model configured at `thinkube.orchestrator.workerModel` (default: `sonnet`).
+
+== The Freeze control
+
+The *Freeze* button in the *Freeze* panel reflects the live readiness state of the model:
+
+* *Disabled* (`disabled` attribute present) — the latest readiness record does not have both `covered` and `cleanCut` set to `true`, or no readiness record exists yet.
+* *Enabled* (no `disabled` attribute) — the latest readiness record confirms full coverage and a clean cut, so the artifact is ready to be signed.
+
+Use `recordReadiness` (dispatched through the panel or the API) to update the readiness state after reviewing coverage and slice decomposition.
+
+[#resume]
+== Resume after close or restart
+
+The session is persisted automatically to `<thinkingSpaceRoot>/scratchpad/current.json` after every change (with a short debounce).
+`thinkingSpaceRoot` is read from the `thinkube.thinkingSpace.root` setting.
+
+When you reopen the Scratchpad panel (or restart the extension host), the session resumes from disk:
+
+* The full working model is restored, including all sections, objections, and readiness history.
+* The delta log shown in the panel reflects the deltas accumulated in the current session (since the last `openScratchpad()` call), not the full historical log.
+
+If `thinkube.thinkingSpace.root` is empty, the session runs in-memory only — no file is written and closing VS Code discards the state.
+
+== Configuration
+
+[cols="2,3",options="header"]
+|===
+| Setting | Description
+
+| `thinkube.thinkingSpace.root`
+| Root directory for the session file.
+  Empty = in-memory only.
+
+| `thinkube.orchestrator.workerModel`
+| Model id used by gap-filling and other workers.
+  Default: `sonnet`.
+|===
+
+== See also
+
+* xref:hierarchy.adoc[TEPs, Specs, and Slices] — how a TEP becomes a Spec
+* xref:lifecycle.adoc[The Spec lifecycle] — what happens after a TEP is frozen

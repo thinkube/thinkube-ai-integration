@@ -51,9 +51,22 @@ import {
 import { registerWorktreeCommands } from "./commands/worktree";
 import { registerOrchestrateCommands } from "./commands/orchestrate";
 import { showFreshMarkdownPreview } from "./commands/freshPreview";
-import { registerScratchpadCommands } from "./scratchpad";
+import {
+  registerScratchpadCommands,
+  openScratchpad,
+  getScratchpadSession,
+} from "./scratchpad";
+import type { ScratchpadSessionDeps, ScratchpadSession } from "./scratchpad";
 
-export function activate(context: vscode.ExtensionContext) {
+/** Public API returned by activate() — the runtime seam for extension-host probes. */
+export interface TandemExtensionApi {
+  scratchpad: {
+    openScratchpad(deps?: ScratchpadSessionDeps): Promise<ScratchpadSession>;
+    getScratchpadSession(): ScratchpadSession | undefined;
+  };
+}
+
+export function activate(context: vscode.ExtensionContext): TandemExtensionApi {
   console.log("Thinkube Tandem is now active!");
 
   // Create status bar item to show active project
@@ -384,27 +397,6 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("thinkube.teps.refresh", () =>
       tepsProvider.refresh(),
     ),
-    // "+ New TEP" (TEP-0009): mint a conflict-free id from the selected space's
-    // thinking space and open a Claude session with `/tep <id>` prefilled — mirrors
-    // "+ New Spec" → `/spec-prepare <n>`.
-    vscode.commands.registerCommand("thinkube.teps.new", async () => {
-      const repo = tepsProvider.repoEntry;
-      if (!repo || !repo.enabled) {
-        vscode.window.showInformationMessage(
-          "Select an enabled thinking space to add a TEP.",
-        );
-        return;
-      }
-      try {
-        const store = new ThinkubeStore(repo.path, repo.thinkingSpaceDir);
-        const id = await store.nextTepId();
-        await launcher.openHere(vscode.Uri.file(repo.path), `/tep ${id} `);
-      } catch (err) {
-        vscode.window.showErrorMessage(
-          `Couldn't start a new TEP: ${(err as Error).message}`,
-        );
-      }
-    }),
   );
 
   // Archive / unarchive Specs + TEPs and the per-view "Show archived" toggle
@@ -457,6 +449,14 @@ export function activate(context: vscode.ExtensionContext) {
   controlWatcher.activate().catch((err) => {
     console.error("ControlRequestWatcher activation failed:", err);
   });
+
+  // Return the public extension API — the runtime seam for extension-host probes.
+  return {
+    scratchpad: {
+      openScratchpad,
+      getScratchpadSession,
+    },
+  };
 }
 
 /**

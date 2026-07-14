@@ -305,12 +305,6 @@
         "icon": "$(refresh)"
       },
       {
-        "command": "thinkube.teps.new",
-        "title": "New TEP",
-        "category": "Tandem TEPs",
-        "icon": "$(add)"
-      },
-      {
         "command": "thinkube.specs.startWorktree",
         "title": "Start Spec in Worktree — create an isolated git worktree + branch and open a Claude session there",
         "shortTitle": "Start Spec in Worktree",
@@ -386,7 +380,7 @@
       },
       {
         "command": "thinkube.scratchpad.open",
-        "title": "Open Scratchpad",
+        "title": "Author TEP (Scratchpad)",
         "category": "Tandem Scratchpad",
         "icon": "$(edit)"
       }
@@ -454,7 +448,7 @@
           "group": "navigation@3"
         },
         {
-          "command": "thinkube.teps.new",
+          "command": "thinkube.scratchpad.open",
           "when": "view == thinkubeTeps",
           "group": "navigation@0"
         },
