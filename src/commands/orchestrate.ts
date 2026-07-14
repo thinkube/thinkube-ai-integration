@@ -11,6 +11,7 @@ import { WorktreeService } from "../services/WorktreeService";
 import {
   OrchestratorService,
   createSdkContractCheck,
+  createSdkIntentCheck,
   createSdkPlanRepair,
 } from "../services/OrchestratorService";
 import type { WorkerModelConfig } from "../services/workerModel";
@@ -265,6 +266,13 @@ export function registerOrchestrateCommands(
                 // contradiction (a unit note an AC forbids) is caught at the cheapest
                 // point instead of after every worker ran. Runs on the judge's model.
                 checkContract: createSdkContractCheck({
+                  cwd: canonical,
+                  model: resolveWorkerModel(workerModel, "judge"),
+                  log: (l) => output.appendLine(l),
+                }),
+                // Intent check (2026-07-14): the north-star reading at delivery —
+                // reads the parent TEP + the delivered tree, informs the Accept.
+                checkIntent: createSdkIntentCheck({
                   cwd: canonical,
                   model: resolveWorkerModel(workerModel, "judge"),
                   log: (l) => output.appendLine(l),

@@ -2399,3 +2399,29 @@ test("unmetDocsObligation: met when every declared doc page exists; docs n/a and
   // Legacy slice with no docs key: not gated (compat — create_slice always writes one now).
   assert.equal(unmetDocsObligation({}, () => false), undefined);
 });
+
+// ── Intent check in the delivery report (2026-07-14) ──────────────────────────
+test("delivery report: an intent gap renders first-class and forbids a quiet Accept; unavailable is never a pass", () => {
+  const base = {
+    specNumber: "21/2",
+    sha: "abc1234",
+    files: ["a.ts"],
+    units: [{ id: "u", outcome: "success" as const }],
+    declared: [{ ac: 1, run: "check" }],
+    acResults: [{ ac: 1, pass: true, evidence: "ok" }],
+    advanced: ["TEP-21_SP-2_SL-1"],
+    committed: true,
+  };
+  const gapped = buildDeliveryReport({
+    ...base,
+    intentCheck: { fulfilled: false, gaps: ["a person can type into the Goal area — no input exists"] },
+  });
+  assert.match(gapped, /## Intent check — the TEP as north star/);
+  assert.match(gapped, /ALL ACCEPTANCE CRITERIA ARE GREEN — AND THE INTENT IS NOT FULFILLED/);
+  assert.match(gapped, /a person can type into the Goal area/);
+  assert.match(gapped, /Do not Accept until each gap is delivered or explicitly waived/);
+  const ok = buildDeliveryReport({ ...base, intentCheck: { fulfilled: true, gaps: [] } });
+  assert.match(ok, /assessed to fulfill the parent TEP's intent/);
+  const unavail = buildDeliveryReport({ ...base, intentCheck: { fulfilled: false, gaps: [], unavailable: "no session" } });
+  assert.match(unavail, /NOT intent-checked/);
+});

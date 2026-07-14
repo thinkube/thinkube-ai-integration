@@ -328,3 +328,14 @@ test("fillProbeTemplate sanitizes a composite spec id and substitutes both slots
     "node --test out-test/acceptance/SP-6_3_AC-2.test.js",
   );
 });
+
+// ── Intent fidelity (2026-07-14): the parent TEP arms the north-star check ───
+test("buildAuditPrompt: a supplied TEP body arms the INTENT FIDELITY rule and rides as context", () => {
+  const acs = [{ ordinal: 1, text: "The session API accepts a seedGoal action." }];
+  const withTep = buildAuditPrompt(acs, "spec body", "## Goal\nA person writes directly in the document.");
+  assert.match(withTep, /INTENT FIDELITY/);
+  assert.match(withTep, /<tep>/);
+  assert.match(withTep, /person writes directly in the document/);
+  const without = buildAuditPrompt(acs, "spec body");
+  assert.doesNotMatch(without, /INTENT FIDELITY/, "no TEP → the rule is not armed (fail-open, as documented)");
+});

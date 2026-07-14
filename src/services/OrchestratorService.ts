@@ -218,6 +218,8 @@ export interface OrchestratorDeps {
    *  as a CONTRACT defect (no attempt burned, no worker spawned). Absent ⇒ no check;
    *  production wires {@link createSdkContractCheck} at the command layer. */
   checkContract?: ContractCheck;
+  /** Intent check (2026-07-14): the north-star reading at delivery — informs Accept. */
+  checkIntent?: IntentCheck;
   /** Append one round's judge guidance to the slice card (tests): defaults to the
    *  append-only `## ⚖ Judge guidance — round N → <role>-author` body write (the auditable
    *  rework channel, 2026-07-12). Never replaced, never pruned — the card keeps the full
@@ -1060,6 +1062,125 @@ export function createSdkContractCheck(deps: SdkAssessorDeps): ContractCheck {
     }
     if (!sawSuccess) return { consistent: true };
     return parseContractCheck(resultText || assistantText);
+  };
+}
+
+// ── Intent check (2026-07-14): the TEP as north star at delivery ────────────
+//
+// A green gate proves the SPEC's criteria; it cannot prove the criteria served
+// the INTENT. Seen live twice on TEP-21: every AC green while the delivered
+// surface betrayed the TEP's own words ("a person writes a rough draft directly
+// in the document" — and the person could not type). At delivery, an independent
+// session reads the PARENT TEP + the spec + what was delivered and answers the
+// only question the checkboxes cannot: does this fulfill the intent? The verdict
+// is stamped into DELIVERY.md and the spec frontmatter so the human Accept is
+// informed — it INFORMS the human gate, it never replaces it.
+
+export interface IntentCheckInput {
+  spec: string;
+  tepBody: string;
+  specBody: string;
+  files: string[];
+  acSummary: string;
+}
+
+export interface IntentCheckVerdict {
+  fulfilled: boolean;
+  /** User-visible promises of the TEP not observable in the delivery. */
+  gaps: string[];
+  /** The check could not run — reported as such, never as a pass. */
+  unavailable?: string;
+}
+
+export type IntentCheck = (input: IntentCheckInput) => Promise<IntentCheckVerdict>;
+
+export function buildIntentCheckPrompt(input: IntentCheckInput): string {
+  return [
+    "You are the INTENT CHECK at the end of an orchestrated delivery — the north-star reading.",
+    "Every acceptance criterion below is GREEN; that is already established and not your question.",
+    "Your question: does the DELIVERED CHANGE fulfill the PARENT TEP's intent — the Goal and the",
+    "User Expectation as written — for the ACTOR the TEP names, at the SURFACE it names?",
+    "The classic failure you exist to catch: the spec's criteria quietly substituted a lower layer",
+    "for the TEP's actor (an API for a person, a component for a surface), every box is honestly",
+    "checked, and the person still cannot perform the promised act. Read the TEP's own verbs and",
+    "check each promise is OBSERVABLE in the delivery (the files below are in your cwd — read them).",
+    "Do NOT re-litigate the criteria, style, or scope the TEP itself defers; ONLY user-visible",
+    "promises of the TEP.",
+    "",
+    "<tep>",
+    input.tepBody.trim(),
+    "</tep>",
+    "",
+    "<spec>",
+    input.specBody.trim(),
+    "</spec>",
+    "",
+    `Delivered files (in cwd): ${input.files.join(", ")}`,
+    `Acceptance results: ${input.acSummary}`,
+    "",
+    "Respond with ONLY JSON:",
+    '  {"fulfilled": true} — every user-visible TEP promise is observable in the delivery, or',
+    '  {"fulfilled": false, "gaps": ["<promise> — <what is missing, concretely>", …]}',
+  ].join("\n");
+}
+
+export function parseIntentCheck(text: string): IntentCheckVerdict {
+  const m = text.match(/\{[\s\S]*\}/);
+  if (!m) return { fulfilled: false, gaps: [], unavailable: "unparseable intent-check reply" };
+  try {
+    const j = JSON.parse(m[0]) as { fulfilled?: unknown; gaps?: unknown };
+    const gaps = Array.isArray(j.gaps)
+      ? j.gaps.filter((g): g is string => typeof g === "string")
+      : [];
+    return { fulfilled: j.fulfilled === true && gaps.length === 0, gaps };
+  } catch {
+    return { fulfilled: false, gaps: [], unavailable: "unparseable intent-check reply" };
+  }
+}
+
+export function createSdkIntentCheck(deps: SdkAssessorDeps): IntentCheck {
+  const log = deps.log ?? (() => {});
+  const loadQuery =
+    deps.loadQuery ??
+    (async () =>
+      (await import("@anthropic-ai/claude-agent-sdk"))
+        .query as unknown as AssessorSdkQuery);
+  return async (input): Promise<IntentCheckVerdict> => {
+    const prompt = buildIntentCheckPrompt(input);
+    let resultText = "";
+    let assistantText = "";
+    let sawSuccess = false;
+    try {
+      const query = await loadQuery();
+      for await (const msg of query({
+        prompt,
+        options: {
+          cwd: deps.cwd,
+          model: deps.model,
+          permissionMode: "bypassPermissions",
+        },
+      })) {
+        const rec = msg as Record<string, unknown>;
+        const line = summarizeEvent(rec);
+        if (line) log(`  [intent-check ${input.spec}] ${line}`);
+        if (rec.type === "assistant") {
+          const m = rec.message as { content?: unknown } | undefined;
+          const content = Array.isArray(m?.content) ? m!.content : [];
+          for (const b of content as Array<Record<string, unknown>>)
+            if (b.type === "text" && typeof b.text === "string")
+              assistantText += b.text;
+        }
+        if (rec.type === "result") {
+          if (typeof rec.result === "string") resultText = rec.result;
+          sawSuccess = isResultSuccess(rec);
+        }
+      }
+    } catch (err) {
+      return { fulfilled: false, gaps: [], unavailable: (err as Error).message };
+    }
+    if (!sawSuccess)
+      return { fulfilled: false, gaps: [], unavailable: "intent-check session did not complete" };
+    return parseIntentCheck(resultText || assistantText);
   };
 }
 
@@ -4342,6 +4463,7 @@ export class OrchestratorService {
     verifs: AcVerification[],
     trace: VerificationTraceEntry[],
     acTexts?: string[],
+    intentCheck?: { fulfilled: boolean; gaps: string[]; unavailable?: string },
   ): string {
     // Caught problems for the audit trail: each failed / parked unit, surfaced from the run.
     const problems = result.results
@@ -4357,6 +4479,7 @@ export class OrchestratorService {
       units: result.results.map((r) => ({ id: r.id, outcome: r.outcome })),
       declared: verifs,
       acResults: result.acResults,
+      intentCheck,
       problems,
       advanced: result.advanced,
       attention: result.attention,
@@ -4404,6 +4527,64 @@ export class OrchestratorService {
         maxAc > 0
           ? Array.from({ length: maxAc }, (_, i) => acTextMap.get(i + 1) ?? "")
           : undefined;
+      // Intent check (2026-07-14): on a COMMITTED delivery, ask the north-star
+      // question the checkboxes cannot answer. Fail-soft: an unavailable check is
+      // REPORTED as unavailable (never as fulfilled).
+      let intentCheck:
+        | { fulfilled: boolean; gaps: string[]; unavailable?: string }
+        | undefined;
+      if (result.committed && this.deps.checkIntent) {
+        try {
+          let tepBody: string | undefined;
+          const impl = specDoc?.frontmatter?.implements;
+          const bare =
+            typeof impl === "string" ? impl.replace(/^.*:/, "").trim() : "";
+          if (bare) {
+            const tepDoc = await this.deps.store.getFile(
+              this.deps.store.pathForTep(bare),
+            );
+            tepBody = tepDoc?.body;
+          }
+          if (tepBody) {
+            const acSummary = result.acResults
+              .map((r) => `AC#${r.ac}:${r.pass ? "pass" : "fail"}`)
+              .join(" ");
+            intentCheck = await this.deps.checkIntent({
+              spec: specNumber,
+              tepBody,
+              specBody: specDoc?.body ?? "",
+              files,
+              acSummary,
+            });
+            this.deps.output.appendLine(
+              intentCheck.unavailable
+                ? `⚠ SP-${specNumber}: intent check unavailable (${intentCheck.unavailable}).`
+                : intentCheck.fulfilled
+                  ? `✓ SP-${specNumber}: intent check — the delivery fulfills the parent TEP's intent.`
+                  : `⚑ SP-${specNumber}: INTENT GAP — all ACs green, but: ${intentCheck.gaps.join(" | ")}`,
+            );
+            // Durable marker for the human Accept: gaps ride the spec frontmatter.
+            try {
+              const rel = this.deps.store.pathForSpecDoc(specNumber);
+              const cur = await this.deps.store.getFile(rel);
+              if (cur?.frontmatter) {
+                const fm = { ...cur.frontmatter } as Record<string, unknown>;
+                if (intentCheck.gaps.length) fm.intent_gaps = intentCheck.gaps;
+                else delete fm.intent_gaps;
+                await this.deps.store.writeFile(rel, fm, cur.body);
+              }
+            } catch {
+              /* marker is best-effort; the report still carries the verdict */
+            }
+          }
+        } catch (err) {
+          intentCheck = {
+            fulfilled: false,
+            gaps: [],
+            unavailable: (err as Error).message,
+          };
+        }
+      }
       // SP-6/7 AC5: persist the DURABLE, structured verification trace alongside DELIVERY.md, merging
       // this run's entries into the accumulated per-Spec file (keyed by AC + rework round) so the record
       // grows across runs rather than being overwritten. The merged trace is what the report renders.
@@ -4428,6 +4609,7 @@ export class OrchestratorService {
         verifs,
         trace,
         acTexts,
+        intentCheck,
       );
       const rel = this.deps.store
         .pathForSpecDoc(specNumber)

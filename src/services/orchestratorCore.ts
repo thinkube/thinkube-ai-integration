@@ -2233,6 +2233,8 @@ const NEXT_HINTS: Record<ExitActionId, string> = {
 
 /** Everything the auditable delivery report (DELIVERY.md) records. */
 export interface DeliveryReportInput {
+  /** The north-star verdict at delivery (2026-07-14): unavailable is reported, never passed off. */
+  intentCheck?: { fulfilled: boolean; gaps: string[]; unavailable?: string };
   specNumber: string;
   /** Short HEAD sha the Spec was committed at (or "" when nothing committed). */
   sha: string;
@@ -2309,6 +2311,8 @@ export interface DeliveryReportInput {
  * with the per-unit outcomes and any caught problems. Pure → unit-tested.
  */
 export function buildDeliveryReport(i: DeliveryReportInput): string {
+  // Intent check (2026-07-14): rendered FIRST-CLASS, right after What happened —
+  // "all ACs green" must never again read as "the intent is fulfilled".
   const tep = `TEP-${i.specNumber.replace("/", "_SP-")}`;
   const branch = `spec/${tep}`;
   const failed = !i.committed || i.acResults.some((r) => !r.pass);
@@ -2374,6 +2378,34 @@ export function buildDeliveryReport(i: DeliveryReportInput): string {
         "",
       ]
     : [];
+
+  // ── ## Intent check — the TEP as north star (2026-07-14) ─────────────────────
+  const intentSection = !i.intentCheck
+    ? []
+    : i.intentCheck.unavailable
+      ? [
+          "## Intent check — the TEP as north star",
+          "",
+          `**Unavailable** (${i.intentCheck.unavailable}) — the delivery was NOT intent-checked; judge it yourself against the parent TEP before accepting.`,
+          "",
+        ]
+      : i.intentCheck.fulfilled
+        ? [
+            "## Intent check — the TEP as north star",
+            "",
+            "✓ The delivered change is assessed to fulfill the parent TEP's intent — every user-visible promise is observable in the delivery.",
+            "",
+          ]
+        : [
+            "## Intent check — the TEP as north star",
+            "",
+            "**⚑ ALL ACCEPTANCE CRITERIA ARE GREEN — AND THE INTENT IS NOT FULFILLED.** The spec's criteria did not cover these promises of the parent TEP:",
+            "",
+            ...i.intentCheck.gaps.map((g, k) => `${k + 1}. ${g}`),
+            "",
+            "Do not Accept until each gap is delivered or explicitly waived — green checkboxes do not overrule the north star.",
+            "",
+          ];
 
   // ── ## Acceptance criteria — criterion text + verdict, or the ordinal table ───
   const resultFor = new Map(i.acResults.map((r) => [r.ac, r]));
@@ -2528,6 +2560,7 @@ export function buildDeliveryReport(i: DeliveryReportInput): string {
     "",
     whatHappened,
     "",
+    ...intentSection,
     ...planChangesSection,
     ...buildFailSection,
     ...acSection,

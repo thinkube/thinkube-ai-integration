@@ -4011,9 +4011,29 @@ export async function writeSpec(
     // write). Editing a Spec that carries no ACs leaves any existing `ac_verifications` untouched.
     const acItems = acceptanceCriteriaItems(trimmed);
     if (acVerifications !== undefined && acItems.length > 0) {
+      // INTENT FIDELITY (2026-07-14): hand the auditor the parent TEP — the north
+      // star — so a criterion that narrows the TEP's actor/surface into a lower
+      // layer is flagged at certification instead of shipping a tricycle. Fail-soft:
+      // an unresolvable TEP just audits without the check (as before).
+      let tepBody: string | undefined;
+      try {
+        const tepId =
+          (typeof implementsRef === "string" && implementsRef.trim()) ||
+          (typeof existing?.frontmatter?.implements === "string"
+            ? (existing.frontmatter.implements as string)
+            : "");
+        const bare = tepId.replace(/^.*:/, "").trim();
+        if (bare) {
+          const tepDoc = await store.getFile(store.pathForTep(bare));
+          tepBody = tepDoc?.body;
+        }
+      } catch {
+        /* fail-soft — audit runs without the intent check */
+      }
       const result = await audit.runner({
         acs: acItems,
         specBody: trimmed,
+        tepBody,
         cwd: audit.cwd,
       });
       if (result.error) {

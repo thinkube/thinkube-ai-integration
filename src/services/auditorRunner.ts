@@ -77,6 +77,11 @@ export interface AuditRequest {
   acs: AuditAc[];
   /** The full Spec body, for context (Design / Constraints inform what "verifiable" means here). */
   specBody?: string;
+  /** The parent TEP's body — the INTENT the Spec serves. Arms the INTENT FIDELITY
+   *  check: an AC that quietly narrows the TEP's named actor/surface into a lower
+   *  layer (a person at a panel → an API call) is flagged needs-reframe. Optional
+   *  (fail-open) — but a Spec audited without its TEP loses the north-star check. */
+  tepBody?: string;
   /** Working directory for the headless session. Required for the real runner; stubs ignore it. */
   cwd: string;
 }
@@ -158,12 +163,32 @@ export function computePassed(
  * have minted a package.json `grep` that passes forever — while this prompt kept the WEAKER rubric
  * and so held the signing pen. When you change the questions in either place, change both.
  */
-export function buildAuditPrompt(acs: AuditAc[], specBody?: string): string {
+export function buildAuditPrompt(
+  acs: AuditAc[],
+  specBody?: string,
+  tepBody?: string,
+): string {
   const acBlock = acs
     .map((ac) => `${ac.ordinal}. ${ac.text.trim()}`)
     .join("\n");
   const context = specBody?.trim()
     ? `\n\nFor context, the full Spec body:\n\n<spec>\n${specBody.trim()}\n</spec>`
+    : "";
+  const tepContext = tepBody?.trim()
+    ? `\n\nThe PARENT TEP this Spec implements — the INTENT, the north star every criterion must serve:\n\n<tep>\n${tepBody.trim()}\n</tep>`
+    : "";
+  const intentRule = tepBody?.trim()
+    ? [
+        "  - it fails INTENT FIDELITY: compare the criterion's ACTOR and SURFACE against the parent",
+        "    TEP's Goal and User Expectation. A TEP that promises A PERSON acting at A SURFACE",
+        '    ("writes a rough draft directly in the document") is BETRAYED by a criterion whose',
+        "    subject is the layer underneath (a session API, a dispatch call, a component) — the",
+        "    criterion will verify green while the person still cannot perform the promised act",
+        "    (seen live: a full spec delivered all-green with no way to type into the Goal). The",
+        "    substitution is seductive because the lower layer is easier to probe; NEVER accept it",
+        "    silently. Flag `needs-reframe` naming the substitution: which TEP actor/surface the",
+        "    criterion dropped, and what the person-altitude restatement is.",
+      ].join("\n")
     : "";
   return [
     "You are an adversarial verifiability auditor for a software Spec's Acceptance Criteria.",
@@ -195,6 +220,7 @@ export function buildAuditPrompt(acs: AuditAc[], specBody?: string): string {
     "    criterion to `assessment` — where the assessor must EXERCISE the delivered surface, not",
     "    re-read its components — or `needs-reframe` naming the split: a machine-verifiable",
     "    component core plus a surface-level assessment claim.",
+    ...(intentRule ? [intentRule] : []),
     "When a criterion CAN be judged before merge but no runnable command fits it, call it",
     "`assessment` — an independent assessor session reads the delivered artifact and grades it",
     "pass/fail with a rationale (DISTINCT from `needs-reframe`, which leaves the AC un-gateable).",
@@ -215,6 +241,7 @@ export function buildAuditPrompt(acs: AuditAc[], specBody?: string): string {
     "Acceptance Criteria:",
     acBlock,
     context,
+    tepContext,
     "",
     "Respond with ONLY a JSON array (no prose, no markdown fence needed) of one object per",
     "criterion, in ordinal order:",
@@ -568,7 +595,7 @@ export function createSdkAuditRunner(deps: SdkAuditDeps): AuditRunner {
         error: "no acceptance criteria to audit",
       };
 
-    const prompt = buildAuditPrompt(req.acs, req.specBody);
+    const prompt = buildAuditPrompt(req.acs, req.specBody, req.tepBody);
     let sessionId: string | undefined;
     let resultText = "";
     let assistantText = "";
