@@ -2720,8 +2720,50 @@ export class OrchestratorService {
               this.promptCtx.sliceBodies.get(h) ?? "",
               sliceDiagnoses.get(h) ?? "(no diagnosis recorded)",
             );
-            if (ok) fixedAny = true;
-            else
+            if (ok) {
+              fixedAny = true;
+              // Probe-fix propagation (2026-07-14): the fixer edits in the CODE
+              // worktree, but the gate re-copies every probe tester→code before
+              // each round — so a fix to a held-out probe file was clobbered by
+              // the stale tester copy and graded as if never made (seen live:
+              // be649df fixed the {} matchers, the re-grade ran against the
+              // broken originals). Copy the slice's test-unit footprint files
+              // code→tester and persist them to the oracle store, so from here
+              // on the fix IS the probe — in this round and every later run.
+              const probeRels = (unitsBySlice.get(h) ?? [])
+                .filter((u) => (u.role ?? "code") === "test")
+                .flatMap((u) => u.footprint ?? []);
+              if (probeRels.length > 0 && testerPath) {
+                try {
+                  const propagated: string[] = [];
+                  for (const rel of probeRels) {
+                    const src = path.join(worktreePath, rel);
+                    if (!fs.existsSync(src)) continue;
+                    const dst = path.join(testerPath, rel);
+                    await fs.promises.mkdir(path.dirname(dst), {
+                      recursive: true,
+                    });
+                    await fs.promises.copyFile(src, dst);
+                    propagated.push(rel);
+                  }
+                  if (propagated.length > 0) {
+                    await persistProbes(
+                      probeStore,
+                      testerPath,
+                      propagated,
+                      acContractHash,
+                    );
+                    output.appendLine(
+                      `↷ ${h}: ${propagated.length} held-out probe file(s) propagated to the tester + oracle store — the gate grades the fix, not a stale copy.`,
+                    );
+                  }
+                } catch (err) {
+                  output.appendLine(
+                    `⚑ ${h}: probe propagation failed (${(err as Error).message}) — the gate may re-grade stale probe copies.`,
+                  );
+                }
+              }
+            } else
               output.appendLine(
                 `⚑ ${h}: auto-attend session did not complete — left for a human.`,
               );
