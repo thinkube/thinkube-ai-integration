@@ -387,7 +387,7 @@
       {
         "command": "thinkube.scratchpad.open",
         "title": "Open Scratchpad",
-        "category": "Thinkube Scratchpad",
+        "category": "Tandem Scratchpad",
         "icon": "$(edit)"
       }
     ],

@@ -1,5 +1,10 @@
 import type { Action, ToolName, WorkingModel } from "../model";
 
+// Re-export ToolName from the worker seam: QueryOptions/QueryFn/GATES here are all
+// expressed in terms of it, so a consumer importing the gating API from this module
+// expects the ToolName type alongside them.
+export type { ToolName } from "../model";
+
 // ===== Phase-worker seam =====
 
 export interface WorkerMessage {
