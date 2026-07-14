@@ -66,6 +66,31 @@ const dispatchLock = new ConcurrencyLock();
  *  shared handle a palette command can use). */
 const liveOrchestrators = new Set<OrchestratorService>();
 
+/** The always-visible abort control (2026-07-14): a red status-bar item shown
+ *  while any run is in flight. The view-title icon only renders when its view
+ *  is on screen — the human watching the Orchestrator output panel never saw
+ *  it. The status bar is visible from anywhere. */
+let stopStatusItem: vscode.StatusBarItem | undefined;
+function showStopControl(spec: string): void {
+  if (!stopStatusItem) {
+    stopStatusItem = vscode.window.createStatusBarItem(
+      vscode.StatusBarAlignment.Left,
+      10000,
+    );
+    stopStatusItem.command = "thinkube.orchestrate.stop";
+    stopStatusItem.backgroundColor = new vscode.ThemeColor(
+      "statusBarItem.errorBackground",
+    );
+  }
+  stopStatusItem.text = `$(debug-stop) Stop SP-${spec}`;
+  stopStatusItem.tooltip =
+    "Stop the orchestration run: aborts every in-flight worker; the run drains and finalizes.";
+  stopStatusItem.show();
+}
+function hideStopControl(): void {
+  stopStatusItem?.hide();
+}
+
 /** Normalize a spec arg from the ▶ button / a card — the tep-qualified handle
  *  `TEP-n_SP-m` — (or a bare / `SP-`-prefixed id) into the composite spec id
  *  `n/m` that `listSpecDirs` returns. The card carries the full handle, so the
@@ -310,16 +335,19 @@ export function registerOrchestrateCommands(
                 "thinkube.orchestrationRunning",
                 true,
               );
+              showStopControl(spec);
               const r = await orchestrator
                 .dispatchSpec(spec, cap)
                 .finally(() => {
                   liveOrchestrators.delete(orchestrator);
-                  if (liveOrchestrators.size === 0)
+                  if (liveOrchestrators.size === 0) {
                     void vscode.commands.executeCommand(
                       "setContext",
                       "thinkube.orchestrationRunning",
                       false,
                     );
+                    hideStopControl();
+                  }
                 });
               if (!r.ok) {
                 vscode.window.showErrorMessage(
