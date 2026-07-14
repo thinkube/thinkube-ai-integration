@@ -671,8 +671,8 @@
             "advisory",
             "blocking"
           ],
-          "default": "advisory",
-          "description": "→ Done documentation gate (TEP-tgh6iy). A slice marked `docs: required` must have its docs updated (pass `docs_done`) before reaching Done. `advisory` (default): the move is allowed but returns a warning — for rolling the gate out. `blocking`: an unsatisfied docs obligation refuses the move."
+          "default": "blocking",
+          "description": "→ Done documentation gate (TEP-tgh6iy). A slice marked `docs: required` must have its docs updated (pass `docs_done`) before reaching Done. `blocking` (default — fail closed): an unsatisfied docs obligation refuses the move. `advisory`: the move is allowed but returns a warning (the rollout mode; every TEP-21/SP-1 slice reached Done undocumented under it)."
         },
         "thinkube.worktree.baseDir": {
           "type": "string",

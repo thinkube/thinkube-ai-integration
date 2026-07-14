@@ -41,6 +41,7 @@ import {
   reDispatchDecision,
   isEscalated,
   hasEscalationMarker,
+  unmetDocsObligation,
   markEscalated,
   MAX_REWORK_ATTEMPTS,
   ESCALATION_MARKER,
@@ -2357,4 +2358,44 @@ test("criterion rows name what was exercised — run command for verifiable, ass
     /#2 — No local-inference path exists.*✓ pass · graded by independent assessment \(judged, not driven\)/,
     "an assessment criterion is labeled as judged, never masquerading as a driven probe",
   );
+});
+
+// ── The → Done docs obligation on the orchestrated path (2026-07-14) ──────────
+//
+// WHY (INVARIANT): the orchestrator stamps `status: done` directly (never via
+// move_slice), so the docs gate must be enforced here — under advisory-by-default
+// plus the direct stamp, every TEP-21/SP-1 `docs: required` slice reached Done
+// with zero documentation.
+
+test("unmetDocsObligation: a docs-required slice with no docs/ path in its footprint is unmet", () => {
+  const why = unmetDocsObligation(
+    { docs: "required", files: ["src/a.ts"], work_units: [{ footprint: ["src/a.ts"] }] },
+    () => true,
+  );
+  assert.ok(why && /declares no doc-module path/.test(why));
+});
+
+test("unmetDocsObligation: a declared doc page that never landed is unmet, naming the path", () => {
+  const why = unmetDocsObligation(
+    { docs: "required", files: ["src/a.ts", "docs/modules/ROOT/pages/x.adoc"] },
+    (p: string) => p !== "docs/modules/ROOT/pages/x.adoc",
+  );
+  assert.ok(why && why.includes("docs/modules/ROOT/pages/x.adoc"));
+});
+
+test("unmetDocsObligation: met when every declared doc page exists; docs n/a and docs_done pass through", () => {
+  assert.equal(
+    unmetDocsObligation(
+      { docs: "required", creates: ["docs/modules/ROOT/pages/x.adoc"] },
+      () => true,
+    ),
+    undefined,
+  );
+  assert.equal(unmetDocsObligation({ docs: "n/a" }, () => false), undefined);
+  assert.equal(
+    unmetDocsObligation({ docs: "required", docs_done: true }, () => false),
+    undefined,
+  );
+  // Legacy slice with no docs key: not gated (compat — create_slice always writes one now).
+  assert.equal(unmetDocsObligation({}, () => false), undefined);
 });

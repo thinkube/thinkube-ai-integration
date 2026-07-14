@@ -101,8 +101,11 @@ export function kanbanServerEntry(
     .getConfiguration("thinkube.thinkingSpace")
     .get<string>("root")
     ?.trim();
+  // Fail closed (2026-07-14): blocking unless advisory is EXPLICITLY chosen —
+  // under advisory-by-default every TEP-21/SP-1 docs-required slice reached
+  // Done undocumented, with the warning lost in tool results nobody read.
   const docsGateMode =
-    cfg.get<string>("docsGateMode") === "blocking" ? "blocking" : "advisory";
+    cfg.get<string>("docsGateMode") === "advisory" ? "advisory" : "blocking";
   const gs = context.globalStorageUri.fsPath;
 
   const env: Record<string, string> = {

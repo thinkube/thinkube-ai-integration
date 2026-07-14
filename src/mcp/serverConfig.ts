@@ -100,10 +100,11 @@ export function resolveServerConfig(
         ? f.allowAIWrites
         : true;
 
+  // Fail closed (2026-07-14): blocking unless advisory is EXPLICITLY chosen.
   const docsGateMode: DocsGateMode =
-    (env.THINKUBE_DOCS_GATE_MODE ?? "").toLowerCase() === "blocking"
-      ? "blocking"
-      : "advisory";
+    (env.THINKUBE_DOCS_GATE_MODE ?? "").toLowerCase() === "advisory"
+      ? "advisory"
+      : "blocking";
 
   const legacyWorkspace = (env.THINKUBE_WORKSPACE ?? "").trim() || undefined;
 

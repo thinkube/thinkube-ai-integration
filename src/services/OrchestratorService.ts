@@ -60,6 +60,7 @@ import {
   reDispatchDecision,
   markEscalated,
   hasEscalationMarker,
+  unmetDocsObligation,
   normalizeEvidenceHash,
   ESCALATION_MARKER,
   CONTRACT_DEFECT_MARKER,
@@ -3006,7 +3007,7 @@ export class OrchestratorService {
         continue;
       }
       doneSlices.add(handle);
-      await this.advance(handle);
+      await this.advance(handle, worktreePath);
       result.advanced.push(handle);
       checkedOrdinals.push(...(greenByGate.get(handle) ?? []));
       output.appendLine(`✓ ${handle}: committed → Done.`);
@@ -4460,20 +4461,43 @@ export class OrchestratorService {
     }
   }
 
-  private advance(handle: string): Promise<void> {
-    return (this.deps.advance ?? ((h) => this.defaultAdvance(h)))(handle);
+  private advance(handle: string, worktreePath?: string): Promise<void> {
+    return (this.deps.advance ?? ((h) => this.defaultAdvance(h, worktreePath)))(
+      handle,
+    );
   }
 
-  /** Default advance: stamp the slice `status: done` in its file. */
-  private async defaultAdvance(handle: string): Promise<void> {
+  /** Default advance: stamp the slice `status: done` in its file — AFTER the
+   *  docs gate (2026-07-14). The orchestrated path writes status directly and
+   *  never goes through `move_slice`, so this is where the `docs: required`
+   *  obligation is enforced for automated Dones: a slice whose declared doc
+   *  pages did not land goes to requires-attention with a naming diagnosis
+   *  instead of silently completing undocumented (every TEP-21/SP-1 slice did
+   *  exactly that). A met obligation stamps `docs_done: true` alongside. */
+  private async defaultAdvance(
+    handle: string,
+    worktreePath?: string,
+  ): Promise<void> {
     const m = /^TEP-(\d+)_SP-(\d+)_SL-(\d+)$/.exec(handle);
     if (!m) return;
     const rel = this.deps.store.pathForSlice(`${m[1]}/${m[2]}`, Number(m[3]));
     const parsed = await this.deps.store.getFile(rel);
     if (!parsed?.frontmatter) return;
+    const unmet = unmetDocsObligation(parsed.frontmatter, (p) =>
+      worktreePath ? fs.existsSync(path.join(worktreePath, p)) : false,
+    );
+    if (unmet) {
+      this.deps.output.appendLine(`⚑ ${handle}: ${unmet}`);
+      await this.flagAttention(handle, unmet);
+      return;
+    }
     await this.deps.store.writeFile(
       rel,
-      { ...parsed.frontmatter, status: "done" },
+      {
+        ...parsed.frontmatter,
+        status: "done",
+        ...(parsed.frontmatter.docs === "required" ? { docs_done: true } : {}),
+      },
       parsed.body,
     );
   }

@@ -31,13 +31,16 @@ test("falls back to the file when env is absent", () => {
   assert.deepEqual(cfg.folders, [{ name: "Platform", path: "/home/u/thinkube-platform" }]);
 });
 
-test("no env, no file → safe defaults (writes on, advisory, empty)", () => {
+test("no env, no file → safe defaults (writes on, docs gate BLOCKING, empty)", () => {
   const cfg = resolveServerConfig({}, null, ":");
   assert.equal(cfg.thinkingSpaceRoot, undefined);
   assert.deepEqual(cfg.roots, []);
   assert.deepEqual(cfg.folders, []);
   assert.equal(cfg.allowAIWrites, true);
-  assert.equal(cfg.docsGateMode, "advisory");
+  // Fail closed (2026-07-14): under advisory-by-default every TEP-21/SP-1
+  // docs-required slice reached Done undocumented. Blocking is the default;
+  // advisory must be an explicit choice.
+  assert.equal(cfg.docsGateMode, "blocking");
 });
 
 test("THINKUBE_FOLDERS env parses and overrides the file", () => {
@@ -55,9 +58,10 @@ test("allowAIWrites: env 'false' wins; else file; else true", () => {
   assert.equal(resolveServerConfig({}, {}).allowAIWrites, true);
 });
 
-test("docsGateMode blocking only when env says so", () => {
+test("docsGateMode: advisory only when env EXPLICITLY says so (blocking otherwise — fail closed)", () => {
+  assert.equal(resolveServerConfig({ THINKUBE_DOCS_GATE_MODE: "advisory" }, null).docsGateMode, "advisory");
   assert.equal(resolveServerConfig({ THINKUBE_DOCS_GATE_MODE: "blocking" }, null).docsGateMode, "blocking");
-  assert.equal(resolveServerConfig({}, null).docsGateMode, "advisory");
+  assert.equal(resolveServerConfig({}, null).docsGateMode, "blocking");
 });
 
 test("malformed file folders are ignored (not thrown)", () => {

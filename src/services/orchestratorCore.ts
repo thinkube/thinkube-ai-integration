@@ -727,6 +727,61 @@ export function reDispatchDecision(
  * reads this on a reloaded slice to know the bounded loop already gave up, so it never re-seeds the
  * slice into the ready frontier. Pure.
  */
+/**
+ * The → Done DOCS obligation, enforced on the ORCHESTRATED path (2026-07-14).
+ *
+ * `move_slice` carries a docs gate, but the orchestrator advances slices by
+ * writing `status: done` directly — so every `docs: required` slice sailed to
+ * Done with zero documentation (all four TEP-21/SP-1 slices, live). This pure
+ * check is the automated path's equivalent: a `docs: required` slice may be
+ * stamped done only when its declared doc-module paths (any `docs/`-prefixed
+ * path in `files`/`creates`/unit footprints) all EXIST in the landed tree.
+ * Returns `undefined` when the obligation is met (or not applicable), else a
+ * human-readable diagnosis naming exactly what is missing. Existence — not a
+ * diff — is the v1 check: it catches the real failure mode (a worker that
+ * never wrote the doc page); a slice editing an existing page vacuously
+ * passes, which the per-slice review still covers. Pure: the caller supplies
+ * `exists`.
+ */
+export function unmetDocsObligation(
+  fm: {
+    docs?: unknown;
+    docs_done?: unknown;
+    files?: unknown;
+    creates?: unknown;
+    work_units?: unknown;
+  },
+  exists: (relPath: string) => boolean,
+): string | undefined {
+  if (fm.docs !== "required" || fm.docs_done === true) return undefined;
+  const paths = new Set<string>();
+  const take = (v: unknown) => {
+    if (Array.isArray(v))
+      for (const p of v)
+        if (typeof p === "string" && p.startsWith("docs/")) paths.add(p);
+  };
+  take(fm.files);
+  take(fm.creates);
+  if (Array.isArray(fm.work_units))
+    for (const u of fm.work_units)
+      take((u as { footprint?: unknown })?.footprint);
+  if (paths.size === 0)
+    return (
+      "docs obligation unmet: the slice is `docs: required` but declares no " +
+      "doc-module path (no `docs/`-prefixed file in its footprint). Add the " +
+      "doc page to the slice's files/footprint, or re-cut it `docs: n/a` " +
+      "with a reason."
+    );
+  const missing = [...paths].filter((p) => !exists(p));
+  if (missing.length)
+    return (
+      `docs obligation unmet: declared doc-module path(s) not present in the ` +
+      `landed tree: ${missing.join(", ")}. The documentation must land with ` +
+      `the slice before it can reach Done.`
+    );
+  return undefined;
+}
+
 export function hasEscalationMarker(body: string): boolean {
   return (body ?? "").includes(ESCALATION_MARKER);
 }
