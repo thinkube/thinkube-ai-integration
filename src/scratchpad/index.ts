@@ -55,7 +55,11 @@ export {
 // ===== Session seams (SP-2) =====
 
 export { openScratchpad, getScratchpadSession } from "./session";
-export type { ScratchpadSessionDeps, ScratchpadSession } from "./session";
+export type {
+  ScratchpadSessionDeps,
+  ScratchpadSession,
+  ScratchpadInboundMessage,
+} from "./session";
 
 // ===== Command registration =====
 

@@ -10,6 +10,10 @@ import { gapFiller } from "./workers/worker";
 import type { QueryFn } from "./workers/worker";
 import { createLoop } from "./loop";
 import { buildScratchpadHtml, ScratchpadDocumentView } from "./views/document";
+import type { ScratchpadInboundMessage } from "./views/document";
+
+// Re-export so callers can import the message type from session / index.
+export type { ScratchpadInboundMessage } from "./views/document";
 
 // ===== Public types =====
 
@@ -68,6 +72,15 @@ export interface ScratchpadSession {
    * asserting on the session file).
    */
   flush(): Promise<void>;
+  /**
+   * The panel's REAL inbound path, exposed as a seam: the SAME function the
+   * webview channel's onDidReceiveMessage invokes. seedGoal/editGoal/editSection/
+   * addNote map to dispatch(action) (same shapes as SP-1 Actions); askStructure
+   * awaits askForStructure(). A message produces the SAME model change and
+   * render as its programmatic equivalent. Returns after the message is fully
+   * applied (including askStructure's worker round).
+   */
+  postFromWebview(message: ScratchpadInboundMessage): Promise<void>;
 }
 
 // ===== Module-level state =====
@@ -171,6 +184,40 @@ class ScratchpadSessionImpl implements ScratchpadSession {
     await this._persistNow();
   }
 
+  /**
+   * The REAL inbound path — the same function the webview channel's
+   * onDidReceiveMessage invokes. Maps each enumerated ScratchpadInboundMessage
+   * onto dispatch (for the four action messages) or askForStructure (for
+   * askStructure). Returns after the message is fully applied.
+   */
+  async postFromWebview(message: ScratchpadInboundMessage): Promise<void> {
+    switch (message.type) {
+      case "seedGoal":
+        this.dispatch({ type: "seedGoal", text: message.text });
+        break;
+      case "editGoal":
+        this.dispatch({ type: "editGoal", text: message.text });
+        break;
+      case "editSection":
+        this.dispatch({
+          type: "editSection",
+          id: message.id,
+          text: message.text,
+        });
+        break;
+      case "addNote":
+        this.dispatch({
+          type: "addNote",
+          sectionId: message.sectionId,
+          text: message.text,
+        });
+        break;
+      case "askStructure":
+        await this.askForStructure();
+        break;
+    }
+  }
+
   /** Reveal an existing panel or create a new one. */
   revealPanel(): void {
     if (!_extensionUri) {
@@ -180,8 +227,8 @@ class ScratchpadSessionImpl implements ScratchpadSession {
     if (!this._view) {
       this._view = new ScratchpadDocumentView();
     }
-    this._view.show(_extensionUri, this._model, this._deltas, (action) =>
-      this.dispatch(action),
+    this._view.show(_extensionUri, this._model, this._deltas, (msg) =>
+      this.postFromWebview(msg),
     );
   }
 

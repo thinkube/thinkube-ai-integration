@@ -28,6 +28,37 @@ The Scratchpad renders every section of the working model alongside its state ma
 Below the sections, the *Changes* panel logs every applied action in order, showing the field path, the value *before* the change, and the value *after* the change.
 This gives you a full audit trail of how the model evolved, including worker proposals.
 
+== Authoring in the panel
+
+The Scratchpad panel exposes four authoring controls, each wired to one enumerated webview message.
+Every control routes through the single reducer path — the same as programmatic `dispatch()` calls.
+
+=== Goal input
+
+The *Goal* textarea (`#goal-input`) at the top of the panel pre-fills with the current goal text when the panel renders.
+Click *Confirm goal* to commit your text:
+
+* If the goal section was *empty* when the panel last rendered, clicking confirm sends `seedGoal` — this also advances the model phase from `drafting` to `shaping`.
+* If the goal section already had *content* when the panel last rendered, clicking confirm sends `editGoal` — this updates the goal text without changing the phase.
+
+The textarea is pre-filled with the model's current goal text, so a reopened panel shows exactly what you left.
+
+=== Per-section edit control
+
+Every rendered section has a *Save edit* button (`class="edit-section"`, `data-section-id`).
+Edit the textarea above the button, then click *Save edit* to post an `editSection` message with the section ID and the new text.
+The section text updates immediately and the change appears in the delta log.
+
+=== Per-section add-note control
+
+Every rendered section has an *Add note* button (`class="add-note"`, `data-section-id`).
+Type a short note in the input field beside it and click *Add note* to post an `addNote` message.
+Notes accumulate under their section in the order they were added and persist with the model.
+
+=== Ask for structure
+
+Click the *Ask for structure* button (`#ask-structure`) to invoke the gap-filling worker.
+
 == Asking for structure
 
 Click *Ask for structure* (or call `askForStructure()` through the API) to invoke the gap-filling worker.
