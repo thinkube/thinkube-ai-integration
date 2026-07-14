@@ -302,9 +302,25 @@ export function registerOrchestrateCommands(
                   .getConfiguration("thinkube.orchestrator")
                   .get<number>("maxConcurrent") ?? 4;
               liveOrchestrators.add(orchestrator);
+              // The Stop BUTTON's visibility key: a command with an icon only
+              // renders when placed in a menu, and the menu entry shows only
+              // while a run is actually in flight.
+              void vscode.commands.executeCommand(
+                "setContext",
+                "thinkube.orchestrationRunning",
+                true,
+              );
               const r = await orchestrator
                 .dispatchSpec(spec, cap)
-                .finally(() => liveOrchestrators.delete(orchestrator));
+                .finally(() => {
+                  liveOrchestrators.delete(orchestrator);
+                  if (liveOrchestrators.size === 0)
+                    void vscode.commands.executeCommand(
+                      "setContext",
+                      "thinkube.orchestrationRunning",
+                      false,
+                    );
+                });
               if (!r.ok) {
                 vscode.window.showErrorMessage(
                   `SP-${spec}: malformed DAG — ${r.reason?.split("\n")[0] ?? "rejected"}`,

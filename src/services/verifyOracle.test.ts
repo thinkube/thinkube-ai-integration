@@ -10,6 +10,7 @@ import {
   parsePorcelain,
   classifyPrepareFailure,
   probeEvidence,
+  sharedFailureSignature,
   formatVerifyReply,
   createVerifyOracle,
   type VerifyOracleDeps,
@@ -258,4 +259,108 @@ test("confirmGreen: a red round never confirms green", async () => {
   await oracle.verify(); // build-failed
   const g = await oracle.confirmGreen();
   assert.equal(g.green, false);
+});
+
+// ── Evidence widening, root-cause collapse, stall breaker (2026-07-14) ────────
+//
+// WHY: seen live on TEP-21/SP-2 — every host probe died at the same boundary
+// (a stale singleton socket) and the runner swallowed the error, so the coder
+// got "0/6, nothing attached" for round after round and started probing the
+// fences. The oracle must (a) disclose every safe detail from round 1,
+// (b) name one boundary failure ONCE instead of n masked copies, and
+// (c) stop an information-free loop instead of letting it burn the budget.
+
+test("probeEvidence names EVERY failing test and carries all failing blocks (TAP)", () => {
+  const out = [
+    "not ok 1 - the panel must be shown immediately on the first call",
+    "  ---",
+    "  error: boom-one",
+    "not ok 2 - the session file must exist after flush",
+    "  ---",
+    "  error: boom-two",
+  ].join("\n");
+  const ev = probeEvidence("run", 1, out);
+  assert.match(ev, /failing tests:/);
+  assert.match(ev, /panel must be shown immediately/);
+  assert.match(ev, /session file must exist after flush/);
+  assert.match(ev, /boom-one/);
+  assert.match(ev, /boom-two/, "the SECOND failing block is included, not only the first");
+});
+
+test("probeEvidence surfaces assertion blocks from non-TAP (extension-host) output", () => {
+  const out = [
+    "Loading development extension…",
+    "AssertionError [ERR_ASSERTION]: a tab labelled 'Thinkube Scratchpad' must be open",
+    "    at Object.run (/x/SP-21_2_AC-1.host.js:98:12)",
+    "Exit code:   1",
+  ].join("\n");
+  const ev = probeEvidence("run", 1, out);
+  assert.match(ev, /a tab labelled 'Thinkube Scratchpad' must be open/);
+});
+
+test("sharedFailureSignature: identical failures collapse, differing ones do not, single failure never does", () => {
+  const mk = (ac: number, pass: boolean, body: string) => ({
+    ac,
+    pass,
+    evidence: `$ run${ac} → exit ${pass ? 0 : 1}\n${body}`,
+  });
+  assert.ok(
+    sharedFailureSignature([mk(1, false, "same wall"), mk(2, false, "same wall"), mk(3, true, "")]),
+  );
+  assert.equal(
+    sharedFailureSignature([mk(1, false, "wall A"), mk(2, false, "wall B")]),
+    undefined,
+  );
+  assert.equal(sharedFailureSignature([mk(1, false, "same wall")]), undefined);
+});
+
+test("formatVerifyReply: a rootCause is named ONCE, first, as one boundary failure", () => {
+  const msg = formatVerifyReply({
+    kind: "results",
+    rootCause: "Error: listen EADDRINUSE — singleton lock",
+    results: [
+      { ac: 1, pass: false, evidence: "$ r1 → exit 1\nErr" },
+      { ac: 2, pass: false, evidence: "$ r2 → exit 1\nErr" },
+    ],
+  });
+  assert.match(msg, /ALL 2 FAILING PROBES FAIL IDENTICALLY/);
+  assert.match(msg, /one boundary failure, not 2 independent bugs/);
+  assert.match(msg, /EADDRINUSE/);
+});
+
+test("oracle: three identical failing rounds trip the stall breaker; the fourth call runs nothing and says stop", async () => {
+  const w = makeWorld({
+    probeCodes: {
+      "node --test out-test/acceptance/SP-17_1_AC-1.test.js": 1,
+      "node --test out-test/acceptance/SP-17_1_AC-2.test.js": 1,
+    },
+  });
+  const oracle = createVerifyOracle(w.deps);
+  await oracle.verify();
+  await oracle.verify();
+  await oracle.verify();
+  const execsBefore = w.execs.length;
+  const r = await oracle.verify();
+  assert.equal(r.kind, "stalled", "identical outcome x3 → stalled");
+  assert.equal(w.execs.length, execsBefore, "a stalled round runs no commands");
+  assert.match(formatVerifyReply(r), /STALLED: 3 consecutive verify rounds/);
+});
+
+test("oracle: an outcome CHANGE resets the stall counter", async () => {
+  let failBoth = true;
+  const w = makeWorld();
+  const origExec = w.deps.exec;
+  w.deps.exec = async (cmd, cwd) => {
+    if (cmd.startsWith("npx tsc")) return origExec(cmd, cwd);
+    w.execs.push({ cmd, cwd });
+    const fails = failBoth || cmd.includes("AC-1");
+    return { code: fails ? 1 : 0, output: fails ? "not ok 1 - failed" : "ok" };
+  };
+  const oracle = createVerifyOracle(w.deps);
+  await oracle.verify(); // fail/fail (1)
+  await oracle.verify(); // fail/fail (2)
+  failBoth = false;      // the coder fixed AC-2 — outcome changes
+  await oracle.verify(); // fail/pass — resets the counter
+  const r = await oracle.verify(); // fail/pass again (count 2) — still runs
+  assert.equal(r.kind, "results", "progress resets the stall counter — no premature stop");
 });

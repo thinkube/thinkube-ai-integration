@@ -424,6 +424,11 @@
           "group": "navigation@1"
         },
         {
+          "command": "thinkube.orchestrate.stop",
+          "when": "view == thinkubeSpecs && thinkube.orchestrationRunning",
+          "group": "navigation@0"
+        },
+        {
           "command": "thinkube.specs.new",
           "when": "view == thinkubeSpecs",
           "group": "navigation@0"

@@ -120,13 +120,24 @@ export type VerifyResult =
       /** Bounded raw compiler output. */
       output: string;
     }
-  | { kind: "results"; results: OracleAcResult[] }
+  | { kind: "results"; results: OracleAcResult[]; rootCause?: string }
+  /** Stall breaker (2026-07-14): N consecutive rounds returned an identical
+   *  outcome — further iteration is information-free; the worker must stop. */
+  | { kind: "stalled"; rounds: number }
   | { kind: "exhausted"; invocations: number };
 
 const clip = (s: string, n: number): string =>
   s.length > n ? s.slice(0, n - 1) + "…" : s;
 
-/** Bounded evidence for one probe run: exit line + first failing assertion block. */
+/**
+ * Bounded evidence for one probe run. On failure it carries EVERYTHING safe to
+ * disclose (2026-07-14 — behavior vs mechanism, not results vs nothing):
+ * every failing TEST NAME (node:test titles are behavioral sentences — the
+ * densest safe hint the runner produces), every failing assertion block (not
+ * only the first), and for non-TAP output (an extension-host probe) the
+ * assertion/error blocks themselves. Withholding any of this never protected
+ * the probe's mechanism — it only bought blind rounds.
+ */
 export function probeEvidence(
   run: string,
   code: number | null,
@@ -135,15 +146,48 @@ export function probeEvidence(
   const lines = output.split("\n").map((l) => l.replace(/\s+$/, ""));
   const head = `$ ${run} → exit ${code ?? "null"}`;
   if (code === 0) return head;
-  const at = lines.findIndex((l) => /^\s*not ok /.test(l));
-  const detail =
-    at !== -1
-      ? lines
-          .slice(at, at + 14)
-          .join("\n")
-          .trim()
-      : lines.slice(-10).join("\n").trim();
-  return detail ? `${head}\n${clip(detail, 900)}` : head;
+  const failIdx = lines
+    .map((l, i) => (/^\s*not ok /.test(l) ? i : -1))
+    .filter((i) => i !== -1);
+  const parts: string[] = [];
+  if (failIdx.length > 0) {
+    // TAP (node:test): name every failing test, then each failing block.
+    parts.push(
+      "failing tests:",
+      ...failIdx.map((i) => `  - ${lines[i].replace(/^\s*not ok \d+ -? ?/, "")}`),
+    );
+    for (const i of failIdx.slice(0, 6))
+      parts.push(lines.slice(i, i + 14).join("\n").trim());
+  } else {
+    // Non-TAP (extension-host probe): surface assertion/error blocks verbatim.
+    const errIdx = lines
+      .map((l, i) => (/(AssertionError|^\s*Error:|ERR_ASSERTION)/.test(l) ? i : -1))
+      .filter((i) => i !== -1)
+      .slice(0, 4);
+    if (errIdx.length > 0)
+      for (const i of errIdx)
+        parts.push(lines.slice(Math.max(0, i - 1), i + 8).join("\n").trim());
+    else parts.push(lines.slice(-14).join("\n").trim());
+  }
+  const detail = parts.filter(Boolean).join("\n");
+  return detail ? `${head}\n${clip(detail, 2600)}` : head;
+}
+
+/**
+ * When several probes fail with an IDENTICAL signature, that is one boundary
+ * failure wearing n masks (seen live: every host probe dying at the same
+ * singleton-lock error read as "everything is wrong" instead of "one wall").
+ * The signature is the evidence minus its per-AC `$ run…` head. Deterministic.
+ */
+export function sharedFailureSignature(
+  results: OracleAcResult[],
+): string | undefined {
+  const failing = results.filter((r) => !r.pass);
+  if (failing.length < 2) return undefined;
+  const sig = (e: string) => e.split("\n").slice(1).join("\n").trim();
+  const first = sig(failing[0].evidence);
+  if (!first) return undefined;
+  return failing.every((f) => sig(f.evidence) === first) ? first : undefined;
 }
 
 /**
@@ -155,6 +199,12 @@ export function probeEvidence(
 export function formatVerifyReply(r: VerifyResult): string {
   if (r.kind === "exhausted") {
     return `VERIFY LIMIT REACHED (${r.invocations} invocations). Stop iterating; summarize where you are and what remains — the run will park for review.`;
+  }
+  if (r.kind === "stalled") {
+    return [
+      `STALLED: ${r.rounds} consecutive verify rounds returned an IDENTICAL outcome — your edits are not changing the result, so further rounds carry no information.`,
+      "Stop iterating NOW. State plainly in your final summary: what you implemented, and what you believe blocks the remaining criteria. The run will route this for review.",
+    ].join("\n");
   }
   if (r.kind === "build-failed") {
     if (r.testFault) {
@@ -171,10 +221,15 @@ export function formatVerifyReply(r: VerifyResult): string {
   }
   const pass = r.results.filter((x) => x.pass).length;
   const head = `PROBES: ${pass}/${r.results.length} pass`;
+  // One boundary failure wearing n masks reads as "everything is wrong" —
+  // name it once, first, so the worker fixes the wall instead of guessing.
+  const rootCause = r.rootCause
+    ? `\n\nALL ${r.results.filter((x) => !x.pass).length} FAILING PROBES FAIL IDENTICALLY — one boundary failure, not ${r.results.filter((x) => !x.pass).length} independent bugs. Fix this first:\n${clip(r.rootCause, 1200)}`
+    : "";
   const body = r.results
     .map((x) => `AC-${x.ac}: ${x.pass ? "PASS" : "FAIL"}\n${x.evidence}`)
     .join("\n\n");
-  return `${head}\n\n${body}`;
+  return `${head}${rootCause}\n\n${body}`;
 }
 
 /** Injectable effects for {@link createVerifyOracle} — all defaulted to real I/O by the caller. */
@@ -270,7 +325,16 @@ export function createVerifyOracle(deps: VerifyOracleDeps): VerifyOracle {
     return h.digest("hex");
   };
 
+  // Stall breaker (2026-07-14): consecutive rounds with an identical outcome
+  // are information-free — a worker whose edits don't move the result must be
+  // stopped, not left to grind the whole invocation budget (seen live: 0/6,
+  // round after round, until the worker started probing the fences instead).
+  let stallSig: string | undefined;
+  let stallCount = 0;
+  const STALL_AFTER = 3;
+
   const round = async (): Promise<VerifyResult> => {
+    if (stallCount >= STALL_AFTER) return { kind: "stalled", rounds: stallCount };
     if (used >= max) return { kind: "exhausted", invocations: used };
     used++;
     // 1. Fresh runner at the coder's base commit, then overlay the coder's dirty delta.
@@ -317,8 +381,27 @@ export function createVerifyOracle(deps: VerifyOracleDeps): VerifyOracle {
       `  [oracle] round ${used}/${max}: ${results.filter((r) => r.pass).length}/${results.length} pass`,
     );
     const out: VerifyResult = { kind: "results", results };
+    const rootCause = sharedFailureSignature(results);
+    if (rootCause) out.rootCause = rootCause;
+    // Stall accounting: an outcome identical to the previous round's (same
+    // per-AC pass/fail and same failure signatures) increments the counter;
+    // any change resets it. Green never stalls.
+    const green = results.length > 0 && results.every((r) => r.pass);
+    const sig = JSON.stringify(
+      results.map((r) => [r.ac, r.pass, r.evidence.split("\n").slice(1).join("\n")]),
+    );
+    if (!green && sig === stallSig) {
+      stallCount++;
+      if (stallCount >= STALL_AFTER)
+        log(
+          `  [oracle] STALL: ${stallCount} identical rounds — further verify calls return 'stalled'.`,
+        );
+    } else {
+      stallSig = sig;
+      stallCount = green ? 0 : 1;
+    }
     lastRecord = {
-      green: results.length > 0 && results.every((r) => r.pass),
+      green,
       stateHash: hash,
       result: out,
     };

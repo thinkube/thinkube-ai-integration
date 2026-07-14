@@ -53,6 +53,12 @@ async function main(): Promise<void> {
   delete process.env.ELECTRON_RUN_AS_NODE;
   for (const k of Object.keys(process.env))
     if (k.startsWith("VSCODE_")) delete process.env[k];
+  // Instance isolation (2026-07-14): WITHOUT a per-launch --user-data-dir,
+  // every launch shares the default one inside the shared cache — and a killed
+  // run's stale singleton socket there makes EVERY later launch die at VS
+  // Code's instance lock, before the extension even loads (seen live: a flat
+  // 0/6 that read as "everything is wrong" when it was one dead socket).
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tandem-vsc-ud-"));
   try {
     const vscodeExecutablePath = await downloadAndUnzipVSCode({ cachePath });
     for (let phase = 0; phase < phases; phase++) {
@@ -66,6 +72,8 @@ async function main(): Promise<void> {
         },
         launchArgs: [
           wsDir,
+          "--user-data-dir",
+          userDataDir,
           "--disable-workspace-trust",
           "--disable-gpu",
           "--no-sandbox",
@@ -73,8 +81,16 @@ async function main(): Promise<void> {
         ],
       });
     }
-  } catch {
+  } catch (err) {
+    // NEVER swallow (2026-07-14): a silent exit(1) here starved the verify
+    // oracle of all evidence — the coder saw "0/6, nothing attached" and
+    // ground blind. The error IS the evidence; print it before failing.
+    console.error(
+      `[runAcceptanceHost] ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
+    );
     process.exit(1);
+  } finally {
+    fs.rmSync(userDataDir, { recursive: true, force: true });
   }
 }
 
