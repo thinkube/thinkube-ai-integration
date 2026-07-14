@@ -145,11 +145,32 @@ const ghOps: PrOps = {
   async openPr(branch, cwd) {
     // Push the branch (the "push" the accept land always promised); a no-op when
     // already up to date, a throw when the remote rejects it.
+    //
+    // Lease-guarded replace (2026-07-14): the orchestrator legitimately REBASES a
+    // spec branch (the stale-base refresh re-anchors it on the moved main), so the
+    // remote can hold an older, fully-superseded twin of the same line — a plain
+    // push then rejects non-fast-forward and Accept dies at the finish line (seen
+    // live on TEP-21_SP-1). The branch is orchestrator-owned and squash-merged at
+    // Accept, so replacing the remote line is correct; --force-with-lease against
+    // the just-fetched tracking ref still refuses to overwrite remote work this
+    // clone has never seen.
     try {
-      await execFileAsync("git", ["push", "-u", "origin", branch], {
+      await execFileAsync("git", ["fetch", "origin", branch, "--quiet"], {
         cwd,
         timeout: 60000,
       });
+    } catch {
+      /* branch not on the remote yet — the push below simply creates it */
+    }
+    try {
+      await execFileAsync(
+        "git",
+        ["push", "-u", "--force-with-lease", "origin", branch],
+        {
+          cwd,
+          timeout: 60000,
+        },
+      );
     } catch (err) {
       const e = err as { stderr?: string; message?: string };
       const detail = (e.stderr || e.message || "").trim();
