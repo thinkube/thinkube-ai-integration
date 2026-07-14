@@ -1418,6 +1418,24 @@ export const TOOL_DEFS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "check_approval",
+    description:
+      "READ the human-approval state for a spec — the same content-bound verification the create_slice/→Ready gate runs, exposed as a query so an agent can know whether Approve has been clicked for the CURRENT spec body without attempting the gated action. Returns { approved, reason? } where reason is `no-approval` (never approved), `content-mismatch` (approved, but the body changed since — the panel re-arms), or `invalid`. Never mutates anything; never mints or reveals tokens.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        spec: {
+          type: "string",
+          description:
+            "Spec ref — `<tep>/<sp>` (e.g. `22/1`), `TEP-22/SP-1`, `TEP-22_SP-1`, or a unique bare SP number.",
+        },
+        ...THINKING_SPACE_PARAM,
+      },
+      required: ["spec"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 export async function dispatchTool(
@@ -1832,6 +1850,9 @@ export async function dispatchTool(
         ),
         store.workspaceRoot,
       );
+    case "check_approval":
+      // Read-only by construction: the same verification the gate runs, as a query.
+      return checkApproval(store, asString(args, "spec"));
     case "open_review":
       // Deliberately NOT write-gated: it mutates nothing in the thinking space — it
       // asks the host to show the review panel so the MAINTAINER can act. A
@@ -1899,6 +1920,25 @@ function openReviewRequestFile(subjectKey: string): string {
  * instance is wired to a gate here; the `tep:` instance is the follow-up
  * Accept-TEP flow reusing this same primitive.
  */
+async function checkApproval(
+  store: ThinkubeStore,
+  specRef: string,
+): Promise<string> {
+  const canonical = /^TEP-([A-Za-z0-9]+)[\/_]SP-([A-Za-z0-9]+)$/i.exec(specRef.trim());
+  const spec = canonical
+    ? `${canonical[1]}/${canonical[2]}`
+    : specRef.includes("/")
+      ? specRef.trim()
+      : await resolveCompositeSpecId(
+          () => store.listSpecDirs(),
+          specRef.trim().replace(/^SP-/i, ""),
+        );
+  const doc = await store.getFile(store.pathForSpecDoc(spec));
+  if (!doc?.body) throw new Error(`SP-${spec}: no spec document found.`);
+  const state = specApprovalState(spec, doc.body, resolveApprovalDir(process.argv[1]));
+  return JSON.stringify(state);
+}
+
 async function openReview(
   store: ThinkubeStore,
   kind: string,
@@ -3220,12 +3260,13 @@ export function resolveControlDir(invocationPath: string): string {
  *   axis (SP-6/11), so there is no expiry: an approval for unchanged content is honored however long
  *   the maintainer took, while a `content-mismatch` reason means the spec changed since approval.
  */
-export function assertSpecApprovedForSlicing(
+/** The gate's verification, as a pure query — one implementation for the gate AND the
+ *  `check_approval` read tool, so a check can never diverge from the enforcement. */
+export function specApprovalState(
   specId: string,
   specBody: string,
   approvalDir: string,
-): void {
-  // `specId` is the composite `<tep>/<sp>` here (resolved + existence-checked by the caller).
+): { approved: boolean; reason?: "no-approval" | "content-mismatch" | "invalid"; subjectKey: string } {
   const [tep, sp] = specId.split("/");
   const subjectKey = `spec:TEP-${tep}/SP-${sp}`;
   const secret = loadOrCreateApprovalSecret(approvalDir);
@@ -3236,6 +3277,24 @@ export function assertSpecApprovedForSlicing(
     contentHash: approvalContentHash(specBody),
     secret,
   });
+  if (status.ok) return { approved: true, subjectKey };
+  if (token === undefined) return { approved: false, reason: "no-approval", subjectKey };
+  if (status.reason === "content-mismatch")
+    return { approved: false, reason: "content-mismatch", subjectKey };
+  return { approved: false, reason: "invalid", subjectKey };
+}
+
+export function assertSpecApprovedForSlicing(
+  specId: string,
+  specBody: string,
+  approvalDir: string,
+): void {
+  // `specId` is the composite `<tep>/<sp>` here (resolved + existence-checked by the caller).
+  const state = specApprovalState(specId, specBody, approvalDir);
+  const [tep, sp] = specId.split("/");
+  const subjectKey = state.subjectKey;
+  const token = state.reason === "no-approval" ? undefined : state.reason;
+  const status = { ok: state.approved, reason: state.reason } as { ok: boolean; reason?: string };
   if (status.ok) return;
   const approveAction =
     `open the review panel (\`open_review({ kind: "spec", id: "TEP-${tep}/SP-${sp}" })\`) ` +
