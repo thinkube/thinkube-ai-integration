@@ -133,14 +133,23 @@ export function activate(context: vscode.ExtensionContext): TandemExtensionApi {
   context.subscriptions.push(sessionLinks);
   sessionLinks.activate();
 
+  // Machine-state hygiene (2026-07-14): the extension also activates inside the
+  // acceptance-probe TEST HOST (@vscode/test-electron), where these writers are
+  // sabotage — a probe run overwrote the real machine MCP config with the
+  // throwaway test workspace (folders: /tmp/tandem-host-probe-ws, seen live)
+  // and the launcher tried to write user settings in a host that has none.
+  // Under ExtensionMode.Test the extension must observe, never configure.
+  const isTestHost = context.extensionMode === vscode.ExtensionMode.Test;
+
   // Launcher (process-wrapper) — activate async; openHere works even if the
   // wrapper config update is still in flight because the wrapper falls back
   // to its own dir for state.
   const launcher = new LauncherService(context, sessionLinks);
   context.subscriptions.push(launcher);
-  launcher.activate().catch((err) => {
-    console.error("LauncherService activation failed:", err);
-  });
+  if (!isTestHost)
+    launcher.activate().catch((err) => {
+      console.error("LauncherService activation failed:", err);
+    });
 
   // Agent-teams fake-tmux display backend: run the IPC server the
   // on-PATH `tmux` shim forwards to, so Claude Code agent teams render as VS
@@ -192,11 +201,12 @@ export function activate(context: vscode.ExtensionContext): TandemExtensionApi {
   // Machine-level MCP config: write thinking space root / folders
   // so the plugin-shipped kanban server self-configures without per-repo
   // `.mcp.json` env injection. Best-effort; refreshed when the thinkingSpaces root changes.
-  writeMachineMcpConfig().catch((err) => {
-    kanbanOutput.appendLine(
-      `[thinkube] machine MCP config write failed: ${(err as Error).message}`,
-    );
-  });
+  if (!isTestHost)
+    writeMachineMcpConfig().catch((err) => {
+      kanbanOutput.appendLine(
+        `[thinkube] machine MCP config write failed: ${(err as Error).message}`,
+      );
+    });
 
   // User-scope kanban server registration ( follow-up): the plugin no
   // longer vendors the server and per-repo `.mcp.json` only reaches code repos, so a
@@ -204,11 +214,12 @@ export function activate(context: vscode.ExtensionContext): TandemExtensionApi {
   // `write_spec`. Register the server in Claude's user-scope `mcpServers` so EVERY
   // session sees it, cwd-independent — the channel Claude Code reads (it ignores VS
   // Code's MCP provider API the old KanbanMcpProvider used). Best-effort.
-  ensureKanbanMcpRegistration(context).catch((err) => {
-    kanbanOutput.appendLine(
-      `[thinkube] kanban MCP registration failed: ${(err as Error).message}`,
-    );
-  });
+  if (!isTestHost)
+    ensureKanbanMcpRegistration(context).catch((err) => {
+      kanbanOutput.appendLine(
+        `[thinkube] kanban MCP registration failed: ${(err as Error).message}`,
+      );
+    });
 
   // Approval directory: the ONE machine-local directory both sides of the
   // human-approval gate agree on — the kanban panel's Approve mints tokens into it
