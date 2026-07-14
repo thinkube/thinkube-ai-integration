@@ -17,7 +17,10 @@ host_probe="out-test/acceptance/SP-${spec}_AC-${ac}.host.js"
 if [ -f "$host_probe" ]; then
   # `// TANDEM_PHASES=N` in the probe → N sequential FRESH extension hosts
   # (phase 0 authors state, phase 1 asserts it survived the restart).
-  phases=$(grep -oE 'TANDEM_PHASES=[0-9]+' "$host_probe" | head -1 | cut -d= -f2)
+  # `|| true`: under `set -e` a probe WITHOUT the marker made grep kill the
+  # script silently (exit 1, zero output) — five ACs failed with no evidence
+  # while the one marked probe passed (seen live on SP-21/2).
+  phases=$(grep -oE 'TANDEM_PHASES=[0-9]+' "$host_probe" | head -1 | cut -d= -f2 || true)
   exec xvfb-run -a node out-test/harness/runAcceptanceHost.js "$host_probe" "${phases:-1}"
 elif [ -f "$node_probe" ]; then
   exec node --test "$node_probe"
