@@ -9,3 +9,4 @@
 * xref:gates.adoc[Gates and verification]
 * xref:artifacts.adoc[Artifact shapes]
 * xref:toolkit.adoc[Skills, subagents, and tools]
+* xref:scratchpad.adoc[Scratchpad — Authoring TEPs]

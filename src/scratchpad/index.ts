@@ -1,8 +1,11 @@
 import * as vscode from "vscode";
-import { emptyModel, reduce } from "./model";
-import { ScratchpadDocumentView } from "./views/document";
+import {
+  openScratchpad,
+  getScratchpadSession,
+  _bootstrapExtensionUri,
+} from "./session";
 
-// ===== Public re-exports =====
+// ===== Public re-exports from SP-1 modules =====
 
 export { emptyModel, goalSection, reduce, freezeEnabled } from "./model";
 export type {
@@ -43,11 +46,18 @@ export type {
 export { createLoop, ScratchpadLoop } from "./loop";
 export type { PhaseWorkerMap, ScratchpadLoopDeps } from "./loop";
 
-export { ScratchpadDocumentView, STATE_MARKERS } from "./views/document";
+export {
+  buildScratchpadHtml,
+  ScratchpadDocumentView,
+  STATE_MARKERS,
+} from "./views/document";
+
+// ===== Session seams (SP-2) =====
+
+export { openScratchpad, getScratchpadSession } from "./session";
+export type { ScratchpadSessionDeps, ScratchpadSession } from "./session";
 
 // ===== Command registration =====
-
-let _view: ScratchpadDocumentView | undefined;
 
 /**
  * Register the Scratchpad commands with VS Code.
@@ -56,18 +66,12 @@ let _view: ScratchpadDocumentView | undefined;
 export function registerScratchpadCommands(
   context: vscode.ExtensionContext,
 ): void {
+  // Provide the extension URI to session.ts so it can create webview panels.
+  _bootstrapExtensionUri(context.extensionUri);
+
   context.subscriptions.push(
-    vscode.commands.registerCommand("thinkube.scratchpad.open", () => {
-      if (!_view) {
-        _view = new ScratchpadDocumentView();
-        context.subscriptions.push(_view);
-      }
-      const model = emptyModel("tep");
-      _view.show(context.extensionUri, model, (action) => {
-        // Dispatch actions through the reducer — in a real session the model
-        // would be held in state and updated here.
-        void reduce(model, action);
-      });
+    vscode.commands.registerCommand("thinkube.scratchpad.open", async () => {
+      await openScratchpad();
     }),
   );
 }
