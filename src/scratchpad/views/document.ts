@@ -335,6 +335,10 @@ export function buildScratchpadHtml(
     .objections { margin-top: 24px; }
     .objection.open { color: var(--vscode-errorForeground); }
     .badge { font-size: 0.75em; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 6px; border-radius: 8px; }
+    .research-control { margin-top: 24px; padding: 12px; border: 1px solid var(--vscode-panel-border); border-radius: 4px; }
+    .research-input-area { display: flex; gap: 8px; margin-top: 8px; }
+    #research-input { flex: 1; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 4px 8px; border-radius: 2px; }
+    #research-btn { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 4px 12px; border-radius: 2px; cursor: pointer; }
     .freeze-control { margin-top: 24px; padding: 12px; border: 1px solid var(--vscode-panel-border); border-radius: 4px; }
     #freeze { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 6px 16px; border-radius: 2px; cursor: pointer; }
     #freeze:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
@@ -346,6 +350,13 @@ export function buildScratchpadHtml(
   ${goalHtml}
   ${sectionsHtml}
   ${objectionsHtml}
+  <section class="research-control">
+    <h2>Research</h2>
+    <div class="research-input-area">
+      <input type="text" id="research-input" placeholder="Investigate a subject… (e.g. &quot;migration strategies&quot;)">
+      <button id="research-btn" onclick="triggerResearch()">Research</button>
+    </div>
+  </section>
   <section class="freeze-control">
     <h2>Freeze</h2>
     ${freezeBtn}
@@ -378,6 +389,14 @@ export function buildScratchpadHtml(
 
     function triggerReframe() {
       vscode.postMessage({ type: 'reframe' });
+    }
+
+    function triggerResearch() {
+      var input = document.getElementById('research-input');
+      var subject = input ? input.value.trim() : '';
+      if (!subject) return;
+      vscode.postMessage({ type: 'research', subject: subject });
+      if (input) input.value = '';
     }
 
     // Checkbox toggle handler

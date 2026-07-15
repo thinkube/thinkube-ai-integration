@@ -12,6 +12,9 @@ import {
   makeProductionQueryFnThunk,
 } from "./workers/worker";
 import { reframe } from "./workers/reframe";
+import { research, makeDefaultDossierStore } from "./workers/research";
+import type { DossierStore, ResearchTarget } from "./workers/research";
+export type { DossierStore } from "./workers/research";
 import type { QueryFn } from "./workers/worker";
 import { createLoop } from "./loop";
 import { buildScratchpadHtml, ScratchpadDocumentView } from "./views/document";
@@ -45,15 +48,6 @@ export interface SigningTool {
     status: string;
     body: string;
   }): Promise<{ tep: string }>;
-}
-
-/**
- * Persistent store for research dossiers.
- * Default is rooted at <sidecarRoot>/<namespace>/research/ (SL-3 wires it).
- */
-export interface DossierStore {
-  read(topic: string): Promise<string | undefined>;
-  write(topic: string, markdown: string): Promise<{ dossierRef: string }>;
 }
 
 // ===== Public types =====
@@ -177,6 +171,8 @@ class ScratchpadSessionImpl implements ScratchpadSession {
   private readonly _space: string;
   private readonly _loadQueryFn: () => QueryFn;
   private readonly _workerModelId: string;
+  private readonly _dossier: DossierStore | undefined;
+  private readonly _now: () => Date;
   private _view: ScratchpadDocumentView | undefined;
 
   /** Tracks whether any worker round is currently in flight. */
@@ -193,6 +189,8 @@ class ScratchpadSessionImpl implements ScratchpadSession {
     space: string,
     workerModelId: string,
     loadQueryFn: () => QueryFn,
+    dossier?: DossierStore,
+    now?: () => Date,
   ) {
     this._model = model;
     this._sidecarRoot = sidecarRoot;
@@ -200,6 +198,8 @@ class ScratchpadSessionImpl implements ScratchpadSession {
     this._space = space;
     this._workerModelId = workerModelId;
     this._loadQueryFn = loadQueryFn;
+    this._dossier = dossier;
+    this._now = now ?? (() => new Date());
   }
 
   get model(): WorkingModel {
@@ -243,6 +243,14 @@ class ScratchpadSessionImpl implements ScratchpadSession {
   }
 
   renderedHtml(): string {
+    const allEvidence = this._model.sections.flatMap((s) =>
+      s.items.flatMap((it) =>
+        it.evidence.map((ev) => `${it.id}:${ev.dossierRef ?? "NO-REF"}`),
+      ),
+    );
+    console.error(
+      `[renderedHtml] items with evidence: ${JSON.stringify(allEvidence)}`,
+    );
     return buildScratchpadHtml(this._model, undefined, this._roundActivity);
   }
 
@@ -284,6 +292,68 @@ class ScratchpadSessionImpl implements ScratchpadSession {
       });
       return worker.run(this._model, []);
     });
+  }
+
+  /**
+   * Run the RESEARCH worker for a specific item or a free subject.
+   * Wired to the research{} message.
+   *
+   * Dossier-first: reads the dossier BEFORE any query round; existing markdown
+   * is included verbatim in the prompt. Findings land as unchecked proposals
+   * plus evidence chips with method, date, and dossierRef.
+   */
+  async runResearch(target: ResearchTarget): Promise<void> {
+    // Use the injected/default dossier store, or fall back to an in-memory
+    // no-op store so research always runs (findings and chips still land).
+    const dossier: DossierStore = this._dossier ?? {
+      async read(_topic: string) {
+        return undefined;
+      },
+      async write(topic: string, _markdown: string) {
+        return { dossierRef: `research/${topic}.md` };
+      },
+    };
+
+    // Target all non-goal sections (research may propose items to any of them)
+    const targetedKinds = this._model.sections
+      .filter((s) => s.kind !== "goal")
+      .map((s) => s.kind);
+
+    console.error(
+      `[runResearch] calling _runWorkerRound, target=${JSON.stringify(target)}`,
+    );
+    await this._runWorkerRound("research", targetedKinds, async () => {
+      console.error(`[runResearch work()] building worker and calling run`);
+      const worker = research(
+        {
+          loadQuery: this._loadQueryFn,
+          dossier,
+          now: this._now,
+          sidecarRoot: this._sidecarRoot,
+          namespace: this._namespace,
+        },
+        target,
+      );
+      const result = await worker.run(this._model, []);
+      console.error(
+        `[runResearch work()] run() returned ${result.length} actions`,
+      );
+      return result;
+    });
+    console.error(`[runResearch] _runWorkerRound complete`);
+    const modelEvidence = this._model.sections.flatMap((s) =>
+      s.items.flatMap((it) =>
+        it.evidence.map((ev) => `${it.id}:${ev.dossierRef ?? "NO-REF"}`),
+      ),
+    );
+    console.error(
+      `[runResearch] after round, model evidence: ${JSON.stringify(modelEvidence)}, total items: ${this._model.sections.reduce((n, s) => n + s.items.length, 0)}`,
+    );
+    // Flush immediately: the research round writes a dossier to disk, so the
+    // model (with evidence chips) must also be persisted now rather than waiting
+    // for the 500ms debounce — a host restart in a multi-phase probe would
+    // otherwise lose the chips before phase 1 reads them back.
+    await this.flush();
   }
 
   /**
@@ -434,7 +504,11 @@ class ScratchpadSessionImpl implements ScratchpadSession {
         await this.runReframe();
         break;
       case "research":
-        // SL-3 wires this to the research worker
+        // Run the research worker for a specific item or a free subject.
+        await this.runResearch({
+          itemId: message.itemId,
+          subject: message.subject,
+        });
         break;
       case "checkReadiness":
         // SL-4 wires this to runSlicer → recordReadiness
@@ -503,6 +577,9 @@ class ScratchpadSessionImpl implements ScratchpadSession {
       this._roundInFlight = false;
       // Apply all returned actions (dispatch updates the panel with "landed")
       for (const action of actions) {
+        console.error(
+          `[_runWorkerRound] dispatching action.type=${action.type}`,
+        );
         this.dispatch(action);
       }
       // Final update to ensure the panel reflects the settled landed state
@@ -511,6 +588,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
     } catch (err) {
       // Mark failed — render error inside each targeted section
       const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[_runWorkerRound] CAUGHT ERROR: ${errorMsg}`);
       const errors: Partial<Record<SectionKind, string>> = {};
       for (const kind of targetedKinds) {
         errors[kind] = errorMsg;
@@ -647,6 +725,15 @@ export async function openScratchpad(
   const loadQueryFn: () => QueryFn =
     deps?.loadQuery ?? makeProductionQueryFnThunk(workerModel);
 
+  // Resolve clock: use injected fake or system clock
+  const nowFn: () => Date = deps?.now ?? (() => new Date());
+
+  // Resolve dossier store: use injected store or create the default one
+  // rooted at <sidecarRoot>/<namespace>/research/
+  const dossierStore: DossierStore | undefined =
+    deps?.dossier ??
+    (sidecarRoot ? makeDefaultDossierStore(sidecarRoot, namespace) : undefined);
+
   const session = new ScratchpadSessionImpl(
     model,
     sidecarRoot,
@@ -654,6 +741,8 @@ export async function openScratchpad(
     space,
     workerModel,
     loadQueryFn,
+    dossierStore,
+    nowFn,
   );
   _session = session;
   session.revealPanel();
