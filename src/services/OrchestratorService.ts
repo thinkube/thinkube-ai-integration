@@ -4757,18 +4757,53 @@ export class OrchestratorService {
     } catch {
       /* best-effort */
     }
+    // Dispatch-time HONESTY scan (2026-07-15): the stub scanner guarded only the
+    // delivery door — the most expensive moment. A worker building on a baseline
+    // that fakes results inherits the lie. Scan the provisioned footprint at
+    // dispatch; hits land in the brief as an explicit removal obligation and in
+    // the channel, so dishonest baseline code is named BEFORE tokens are spent.
+    let baselineStubNote = "";
+    if (!isTest) {
+      try {
+        const hits = unit.footprint
+          .filter((f) => !/(^|\/)acceptance\//.test(f))
+          .flatMap((f) => {
+            try {
+              return scanStubMarkers(
+                f,
+                fs.readFileSync(path.join(cwd, f), "utf8"),
+              );
+            } catch {
+              return [];
+            }
+          });
+        if (hits.length) {
+          baselineStubNote =
+            "\n──── BASELINE HONESTY FINDINGS (your starting code contains flagged stubs/fakes — REMOVING them and implementing the real behaviour is part of THIS task; never build on them) ────\n" +
+            hits
+              .map((h) => `- ${h.file}:${h.line} — ${h.text}`)
+              .join("\n") +
+            "\n";
+          this.deps.output.appendLine(
+            `  [${unit.id}] baseline honesty scan: ${hits.length} flagged line(s) — removal added to the task.`,
+          );
+        }
+      } catch {
+        /* scan is best-effort */
+      }
+    }
     // Dispatch-time information audit (2026-07-15): completeness is static —
     // a missing decidable fact is missing at round zero, so the supervisor
     // audits brief-vs-probes BEFORE the coder spends anything. A DISCLOSE
     // verdict appends the (ledgered) facts to the brief; CAPABILITY/ESCALATE
     // dispatch unchanged.
-    let prompt2 = prompt;
+    let prompt2 = prompt + baselineStubNote;
     if (!isTest && oracle?.preflight) {
       try {
         const pf = await oracle.preflight();
         if (pf && /^DISCLOSE:/.test(pf.trim())) {
           prompt2 =
-            prompt +
+            prompt2 +
             "\n──── SUPERVISOR PRE-FLIGHT DISCLOSURES (facts your brief lacked — ledgered as contract gaps; align with these exactly) ────\n" +
             pf.trim().slice(9).trim() +
             "\n";
