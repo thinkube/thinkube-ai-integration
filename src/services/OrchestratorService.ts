@@ -1590,11 +1590,13 @@ export function createSdkWorker(deps: SdkWorkerDeps): RunWorker {
         cwd: deps.cwd,
         // SP-17/1: pin the worker's model explicitly so it never inherits the session/env model.
         model: deps.model,
-        // Thinking budget (2026-07-15): unbounded thinking over a 100KB brief produced a
-        // worker with 27.7k thinking tokens and ZERO tool calls in a whole session —
-        // rumination without action. Cap it hard; deep reasoning belongs in the artifacts
-        // (contract/spec), not in a worker's private monologue.
-        thinking: { type: "enabled", budgetTokens: 6000 },
+        // Thinking OFF for workers (2026-07-15, documented): Sonnet 5 removed manual
+        // thinking budgets (budgetTokens → 400/no-op) and defaults to ADAPTIVE thinking,
+        // which produced 23k+-token opening monologues over 100KB briefs. "disabled" is
+        // the only hard guarantee. A worker's reasoning lives in the artifacts it is
+        // handed (contract/spec/files) and the verify loop that corrects it — not in a
+        // private monologue. Judges/assessors are separate paths and keep thinking.
+        thinking: { type: "disabled" },
         permissionMode: "bypassPermissions",
         disallowedTools: deps.disallowedTools,
         ...(deps.mcpServers ? { mcpServers: deps.mcpServers } : {}),
