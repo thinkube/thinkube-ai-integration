@@ -233,11 +233,16 @@ function checklistSectionHtml(
  *  - Per-section data-activity states when roundActivity is provided.
  *  - Round errors render inside the targeted section as <div class="round-error">.
  *  - The prefill/reframe buttons carry disabled when a round is in flight.
+ *  - The #command-input field renders under the sections; disabled while a command
+ *    interpretation is in flight; a <div class="command-error"> appears under the
+ *    field when commandMessage is present.
  */
 export function buildScratchpadHtml(
   model: WorkingModel,
   _deltas?: unknown[],
   roundActivity?: RoundActivity,
+  commandMessage?: string,
+  commandInFlight?: boolean,
 ): string {
   const goalSec = model.sections.find((s) => s.kind === "goal");
   const nonGoalSections = model.sections.filter((s) => s.kind !== "goal");
@@ -369,7 +374,13 @@ export function buildScratchpadHtml(
     #freeze { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 6px 16px; border-radius: 2px; cursor: pointer; }
     #freeze:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
     #freeze:disabled { opacity: 0.5; cursor: not-allowed; }
+    .command-control { margin-top: 24px; padding: 12px; border: 1px solid var(--vscode-panel-border); border-radius: 4px; }
+    .command-input-area { display: flex; gap: 8px; margin-top: 8px; }
+    #command-input { flex: 1; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 4px 8px; border-radius: 2px; }
+    #command-input:disabled { opacity: 0.5; cursor: not-allowed; }
+    #command-btn { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 4px 12px; border-radius: 2px; cursor: pointer; }
   </style>
+  ${commandMessage ? `<style>.command-error { margin-top: 8px; padding: 6px 10px; border-radius: 3px; background: var(--vscode-inputValidation-errorBackground, rgba(244,67,54,0.1)); color: var(--vscode-errorForeground); font-size: 0.85em; }</style>` : ""}
 </head>
 <body>
   <h1>Thinking Space <span style="opacity:0.5;font-size:0.8em;">${esc(model.phase)}</span></h1>
@@ -382,6 +393,14 @@ export function buildScratchpadHtml(
       <input type="text" id="research-input" placeholder="Investigate a subject… (e.g. &quot;migration strategies&quot;)">
       <button id="research-btn" onclick="triggerResearch()">Research</button>
     </div>
+  </section>
+  <section class="command-control">
+    <h2>Command</h2>
+    <div class="command-input-area">
+      <input type="text" id="command-input" placeholder="e.g. &quot;accept all constraints&quot;"${commandInFlight ? " disabled" : ""}>
+      <button id="command-btn" onclick="submitCommand()"${commandInFlight ? " disabled" : ""}>Run</button>
+    </div>
+    ${commandMessage ? `<div class="command-error">${esc(commandMessage)}</div>` : ""}
   </section>
   <section class="freeze-control">
     <h2>Freeze</h2>
@@ -422,6 +441,14 @@ export function buildScratchpadHtml(
       var subject = input ? input.value.trim() : '';
       if (!subject) return;
       vscode.postMessage({ type: 'research', subject: subject });
+      if (input) input.value = '';
+    }
+
+    function submitCommand() {
+      var input = document.getElementById('command-input');
+      var utterance = input ? input.value.trim() : '';
+      if (!utterance) return;
+      vscode.postMessage({ type: 'command', utterance: utterance });
       if (input) input.value = '';
     }
 
@@ -504,14 +531,22 @@ export class ScratchpadDocumentView implements vscode.Disposable {
 
   /**
    * Push an updated model into the already-open panel, with optional
-   * round-activity overlay (running/landed/failed + per-section errors).
+   * round-activity overlay (running/landed/failed + per-section errors) and
+   * optional command-field state (in-flight flag + last error message).
    */
-  update(model: WorkingModel, roundActivity?: RoundActivity): void {
+  update(
+    model: WorkingModel,
+    roundActivity?: RoundActivity,
+    commandMessage?: string,
+    commandInFlight?: boolean,
+  ): void {
     if (this._panel) {
       this._panel.webview.html = buildScratchpadHtml(
         model,
         undefined,
         roundActivity,
+        commandMessage,
+        commandInFlight,
       );
     }
   }

@@ -19,6 +19,7 @@ import type { QueryFn } from "./workers/worker";
 import { createLoop } from "./loop";
 import { buildScratchpadHtml, ScratchpadDocumentView } from "./views/document";
 import type { RoundActivity, ScratchpadInboundMessage } from "./views/document";
+import { interpret } from "./workers/interpreter";
 import { freeze as doFreeze } from "./freeze";
 import type { ApprovalToken, SigningTool } from "./freeze";
 export type { SigningTool } from "./freeze";
@@ -167,6 +168,10 @@ class ScratchpadSessionImpl implements ScratchpadSession {
   private _integratorDebounceTimer: ReturnType<typeof setTimeout> | undefined;
   /** Current round activity (for panel rendering). */
   private _roundActivity: RoundActivity | undefined;
+  /** Whether a command interpretation round is currently in flight. */
+  private _commandInFlight = false;
+  /** The last command error/explanation message (cleared on the next command attempt). */
+  private _commandMessage: string | undefined;
 
   constructor(
     model: WorkingModel,
@@ -208,9 +213,14 @@ class ScratchpadSessionImpl implements ScratchpadSession {
     for (const listener of this._listeners) {
       listener(this._model);
     }
-    // Push updated model into the open panel (with current round activity)
+    // Push updated model into the open panel (with current round activity + command state)
     if (this._view) {
-      this._view.update(this._model, this._roundActivity);
+      this._view.update(
+        this._model,
+        this._roundActivity,
+        this._commandMessage,
+        this._commandInFlight,
+      );
     }
     // Debounce-persist to disk
     this._scheduleFlush();
@@ -241,7 +251,13 @@ class ScratchpadSessionImpl implements ScratchpadSession {
     console.error(
       `[renderedHtml] items with evidence: ${JSON.stringify(allEvidence)}`,
     );
-    return buildScratchpadHtml(this._model, undefined, this._roundActivity);
+    return buildScratchpadHtml(
+      this._model,
+      undefined,
+      this._roundActivity,
+      this._commandMessage,
+      this._commandInFlight,
+    );
   }
 
   /**
@@ -544,9 +560,32 @@ class ScratchpadSessionImpl implements ScratchpadSession {
           }
         }
         break;
-      case "command":
-        // SL-5 wires this to the interpreter
+      case "command": {
+        // SL-5: interpret the utterance, dispatch returned actions, render message.
+        const utterance = message.utterance;
+        // Clear prior message, mark in-flight, update panel to disable the field.
+        this._commandMessage = undefined;
+        this._commandInFlight = true;
+        this._updatePanel();
+        try {
+          const result = await interpret(utterance, this._model, {
+            loadQuery: this._loadQueryFn,
+          });
+          // Dispatch all returned actions (each carries actor:"human")
+          for (const action of result.actions) {
+            this.dispatch(action);
+          }
+          // Render the message (if any) under the command field
+          this._commandMessage = result.message;
+        } catch (err) {
+          this._commandMessage =
+            err instanceof Error ? err.message : String(err);
+        } finally {
+          this._commandInFlight = false;
+          this._updatePanel();
+        }
         break;
+      }
     }
   }
 
@@ -633,10 +672,15 @@ class ScratchpadSessionImpl implements ScratchpadSession {
     }
   }
 
-  /** Push the current model + round activity into the open panel. */
+  /** Push the current model + round activity + command state into the open panel. */
   private _updatePanel(): void {
     if (this._view) {
-      this._view.update(this._model, this._roundActivity);
+      this._view.update(
+        this._model,
+        this._roundActivity,
+        this._commandMessage,
+        this._commandInFlight,
+      );
     }
   }
 
