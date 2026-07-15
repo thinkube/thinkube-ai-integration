@@ -4438,6 +4438,62 @@ export class OrchestratorService {
     return createVerifyOracle({
       codeWorktree: args.worktreePath,
       testerWorktree: args.testerPath,
+      // Supervisor (2026-07-15): when a worker's rounds stall, an Opus session
+      // primed with the governing artifacts answers the wall BY CITATION — the
+      // guidance rides the verify reply the worker already reads. Escalation
+      // (no citable answer) falls through to the stalled park unchanged.
+      supervise: async (evidence: string) => {
+        const model = resolveWorkerModel(this.deps.workerModel, "judge");
+        const prompt = [
+          "You are the RUN SUPERVISOR for an autonomous delivery. A worker's verify rounds",
+          "are stalling on IDENTICAL evidence. Answer the wall — but ONLY by citation into",
+          "the governing artifacts below: quote the exact contract/spec lines that decide",
+          "the question, then state in 2-4 sentences what the worker should change. If the",
+          "artifacts do NOT decide it, reply with exactly: ESCALATE",
+          "",
+          "──── SPEC CONTRACT (union) ────",
+          (args.unitsBySlice.get(args.sliceHandle)?.[0]?.contract ?? "").slice(0, 8000),
+          "",
+          "──── PARENT SPEC ────",
+          this.promptCtx.specBody.slice(0, 8000),
+          "",
+          "──── THE REPEATED FAILURE EVIDENCE ────",
+          evidence.slice(0, 4000),
+        ].join("\n");
+        let text = "";
+        try {
+          const query = (await import("@anthropic-ai/claude-agent-sdk"))
+            .query as unknown as AssessorSdkQuery;
+          for await (const msg of query({
+            prompt,
+            options: {
+              cwd: args.worktreePath,
+              model,
+              permissionMode: "bypassPermissions",
+              thinking: { type: "disabled" },
+              disallowedTools: ["Bash", "Write", "Edit", "Task", "WebFetch"],
+            },
+          })) {
+            const rec = msg as Record<string, unknown>;
+            if (rec.type === "result" && typeof rec.result === "string")
+              text = rec.result;
+          }
+        } catch (err) {
+          args.log(
+            `  [supervisor ${args.sliceHandle}] errored: ${(err as Error).message}`,
+          );
+          return undefined;
+        }
+        const t = text.trim();
+        if (!t || /^ESCALATE\b/.test(t)) {
+          args.log(
+            `  [supervisor ${args.sliceHandle}] escalated — artifacts do not decide it.`,
+          );
+          return undefined;
+        }
+        args.log(`  [supervisor ${args.sliceHandle}] guidance issued (cited).`);
+        return t;
+      },
       runnerDir,
       probeFiles,
       prepare: recipe.prepare,

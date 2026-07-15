@@ -210,6 +210,13 @@ export function formatVerifyReply(r: VerifyResult): string {
   if (r.kind === "exhausted") {
     return `VERIFY LIMIT REACHED (${r.invocations} invocations). Stop iterating; summarize where you are and what remains — the run will park for review.`;
   }
+  if ((r as { kind: string }).kind === "supervised") {
+    const g = (r as unknown as { guidance: string }).guidance;
+    return [
+      "SUPERVISOR GUIDANCE (cited from the governing artifacts — follow it before your next verify):",
+      g,
+    ].join("\n");
+  }
   if (r.kind === "stalled") {
     return [
       `STALLED: ${r.rounds} consecutive verify rounds returned an IDENTICAL outcome — your edits are not changing the result, so further rounds carry no information.`,
@@ -256,6 +263,11 @@ export interface VerifyOracleDeps {
   codeWorktree: string;
   /** The tester snapshot holding the probe sources. */
   testerWorktree: string;
+  /** Supervisor (2026-07-15): consulted ONCE when rounds stall — receives the
+   *  repeated evidence, answers by CITATION into the governing artifacts (or
+   *  escalates). Returns guidance text to inject into the verify reply, or
+   *  undefined to fall through to the stalled park. */
+  supervise?: (evidence: string) => Promise<string | undefined>;
   /** The isolated runner directory (a detached worktree the caller prepared). */
   runnerDir: string;
   /** Repo-relative probe source paths (the slice's role:test footprints). */
@@ -351,7 +363,26 @@ export function createVerifyOracle(deps: VerifyOracleDeps): VerifyOracle {
   let stallCount = 0;
   const STALL_AFTER = 3;
 
+  let supervised = false;
   const round = async (): Promise<VerifyResult> => {
+    if (stallCount >= STALL_AFTER && deps.supervise && !supervised) {
+      // One supervisor consult per invocation-budget: answer the wall instead of
+      // parking at it. The stall counter resets so the guidance gets real rounds.
+      supervised = true;
+      try {
+        const g = await deps.supervise(stallSig ?? "");
+        if (g?.trim()) {
+          stallCount = 0;
+          stallSig = undefined;
+          return {
+            kind: "supervised",
+            guidance: g.trim(),
+          } as unknown as VerifyResult;
+        }
+      } catch {
+        /* fall through to stalled */
+      }
+    }
     if (stallCount >= STALL_AFTER) return { kind: "stalled", rounds: stallCount };
     if (used >= max) return { kind: "exhausted", invocations: used };
     used++;
