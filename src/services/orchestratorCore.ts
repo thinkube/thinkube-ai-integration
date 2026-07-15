@@ -1169,6 +1169,11 @@ export function buildWorkerPrompt(
     /** Orientation (2026-07-15): the worker's absolute cwd — stated up front so no
      *  worker ever guesses its own checkout path or ls-walks the tree to orient. */
     cwd?: string;
+    /** Provisioned footprint contents (2026-07-15, speed): the CURRENT content of the
+     *  unit's existing footprint files at dispatch, so the coder starts with its files
+     *  in context instead of a serial read phase. Characters are cheap; round trips
+     *  are the latency. Truncated/omitted files carry a marker instead of content. */
+    footprintFiles?: { path: string; content: string; omitted?: string }[];
   },
 ): string {
   const fp = unit.footprint.join(", ") || "(no declared footprint)";
@@ -1225,6 +1230,17 @@ export function buildWorkerPrompt(
   // BEFORE the implementation, so the contract's modules are not on disk yet — that is expected,
   // not an error to fix. Independence is structural (its cwd is a pre-feature snapshot; it never
   // sees the implementer's in-progress work) and stated as fact.
+  const footprintFilesBlock = (context?.footprintFiles ?? []).length
+    ? `\n──── YOUR FOOTPRINT FILES (current content at dispatch — start from these instead of reading them; re-read a file only after YOUR OWN edits) ────\n` +
+      (context!.footprintFiles ?? [])
+        .map((f) =>
+          f.omitted
+            ? `── ${f.path} ── (${f.omitted})\n`
+            : `── ${f.path} ──\n${f.content}\n`,
+        )
+        .join("") +
+      `──── END FOOTPRINT FILES ────\n`
+    : "";
   const workspaceBlock = isTest
     ? `\nYou are writing the tests FIRST: the implementation named in the SPEC CONTRACT does not exist in your working directory yet — that is expected and correct, NOT an error to fix or an implementation to hunt for. Your working directory is the codebase as it stands BEFORE this feature. Read anything here you need — the test harness, helpers, existing tests, import/type conventions — and write your test file(s) at your footprint (${fp}) using paths relative to the working directory. Import the contract's modules by the exact path/name it gives; they resolve once the implementer builds to the same contract. Write your tests purely from the contract + the criteria below — do not wait for or look for the implementation.\n`
     : "";
@@ -1346,6 +1362,7 @@ export function buildWorkerPrompt(
     conventionBlock +
     exampleBlock +
     orientationBlock +
+    footprintFilesBlock +
     workspaceBlock +
     consumesBlock +
     tepBlock +

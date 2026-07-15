@@ -4464,6 +4464,29 @@ export class OrchestratorService {
       oracleAvailable: !!oracle,
       // Orientation (2026-07-15): the worker's cwd, stated instead of discovered.
       cwd,
+      // Speed (2026-07-15): provision the coder's footprint files in the brief —
+      // characters are cheap, serial read round-trips are the latency. Test-shaped
+      // entries (retired probes) and missing/creates files are skipped; oversized
+      // files carry a marker so the worker knows to read them itself.
+      footprintFiles: !isTest
+        ? unit.footprint
+            .filter(
+              (f) => !/(^|\/)acceptance\/|\.test\.[cm]?[jt]sx?$/.test(f),
+            )
+            .map((f) => {
+              try {
+                const abs = path.join(cwd, f);
+                const st = fs.statSync(abs);
+                if (!st.isFile()) return undefined;
+                if (st.size > 64_000)
+                  return { path: f, content: "", omitted: "too large — read it yourself" };
+                return { path: f, content: fs.readFileSync(abs, "utf8") };
+              } catch {
+                return undefined; // absent (a `creates:` file) — nothing to provision
+              }
+            })
+            .filter((x): x is { path: string; content: string } => !!x)
+        : [],
     });
     // Prompt audit (2026-07-15): persist the EXACT brief this worker received as the
     // session log's first record — the SDK stream carries everything after the start,
