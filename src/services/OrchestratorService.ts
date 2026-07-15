@@ -1134,6 +1134,10 @@ export function createSdkContractCheck(deps: SdkAssessorDeps): ContractCheck {
 // informed — it INFORMS the human gate, it never replaces it.
 
 export interface IntentCheckInput {
+  /** The DELIVERY worktree (2026-07-15): the tree the intent verdict must read.
+   *  Grading the canonical repo judged pre-merge main and reported the whole
+   *  increment absent — a phantom-gap verdict on a complete delivery. */
+  cwd?: string;
   spec: string;
   tepBody: string;
   specBody: string;
@@ -1236,7 +1240,7 @@ export function createSdkIntentCheck(deps: SdkAssessorDeps): IntentCheck {
       for await (const msg of query({
         prompt,
         options: {
-          cwd: deps.cwd,
+          cwd: input.cwd ?? deps.cwd,
           model: deps.model,
           permissionMode: "bypassPermissions",
         },
@@ -5547,6 +5551,7 @@ export class OrchestratorService {
               .map((r) => `AC#${r.ac}:${r.pass ? "pass" : "fail"}`)
               .join(" ");
             intentCheck = await this.deps.checkIntent({
+              cwd: worktreePath,
               spec: specNumber,
               tepBody,
               specBody: specDoc?.body ?? "",
