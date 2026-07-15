@@ -4470,16 +4470,23 @@ export class OrchestratorService {
         }
         const prompt = [
           "You are the RUN SUPERVISOR — the disclosure authority of an autonomous delivery.",
-          "A coder has failed the SAME acceptance checks for several consecutive rounds.",
           "You see BOTH sides of the blinding wall: the coder's exact brief, and the failing",
-          "checks' SOURCE. Audit ONE question: does the coder's brief contain the information",
-          "the failing checks require?",
-          "Reply with EXACTLY ONE verdict line, then its content:",
-          '- "CAPABILITY: <2-3 sentences citing where in its OWN brief the answer already is>"',
-          '  (the coder has everything — no new information may cross)',
-          '- "DISCLOSE: <the MINIMAL decidable fact(s) the brief lacks — exact literals,',
-          '   semantics — stated as facts, NEVER quoting check source or assertions>"',
-          '- "ESCALATE" (the gap is intent-level; a human must decide)',
+          "checks' SOURCE. Your mandate: END THE GUESSING GAME — the coder must never have to",
+          "infer by trial what a check expects — WHILE PRESERVING THE INTENT AS NORTH STAR:",
+          "the TEP/spec intent in the brief below is the reference every disclosure is",
+          "balanced against. Checks serve the intent; they do not define it.",
+          "Your FIRST line must be EXACTLY one verdict word with content after it:",
+          '- "DISCLOSE: <EVERYTHING the failing checks require that the brief does not state',
+          '   explicitly AND that is CONSISTENT WITH THE INTENT: every exact expected',
+          '   literal, value, path, ordering, selector, semantic, precondition — complete',
+          '   and concrete, plain language. Do NOT minimize. Verbatim check source never',
+          "   crosses; everything it MEANS crosses in full.>",
+          '- "TEST-FAULT: <a check expects something that CONTRADICTS or distorts the',
+          '   intent — name the expectation and the intent it violates. It will be routed',
+          '   for repair; the coder must NOT be told to conform to it.>',
+          '- "CAPABILITY: <only when the brief already states every required fact',
+          '   explicitly — cite exactly where>',
+          '- "ESCALATE" (the gap is intent-level ambiguity; a human must decide)',
           "",
           "──── THE CODER'S BRIEF (what it was given) ────",
           brief.slice(0, 60000),
@@ -4515,6 +4522,25 @@ export class OrchestratorService {
           return undefined;
         }
         const t = text.trim();
+        if (/^TEST-FAULT:/.test(t)) {
+          this.logDefect({
+            spec: args.specNumber,
+            slice: args.sliceHandle,
+            activity: "verify: supervisor",
+            trigger: "judge contradiction",
+            type: "test fidelity",
+            qualifier: "incorrect",
+            impact: "prevented",
+            detail: `Supervisor test-fault (check deviates from intent): ${t.slice(11, 500)}`,
+          } as unknown as Parameters<typeof this.logDefect>[0]);
+          for (const ln of t.split("\n").slice(0, 14))
+            args.log(`  [supervisor ${args.sliceHandle}] ${ln}`);
+          return (
+            "SUPERVISOR: a failing check's expectation CONFLICTS WITH THE INTENT and has been " +
+            "flagged for repair — do NOT chase it. Implement to the contract and the intent; " +
+            "treat that check's red as not-yours. Flagged: " + t.slice(11, 400)
+          );
+        }
         // Verbose supervision (2026-07-15, maintainer request): the supervisor's
         // FULL verdict is narrated to the channel every time it works — the human
         // watches the audit happen, not a one-word summary of it.
