@@ -1,8 +1,8 @@
 // src/scratchpad/workers/research.ts — research worker (SP-21/3 SL-3)
 import * as nodePath from "node:path";
 import * as nodeFs from "node:fs/promises";
-import type { Action, Evidence, ToolName, WorkingModel } from "../model";
-import { GATES, assertWithinGate } from "./worker";
+import type { Action, WorkingModel } from "../model";
+import { GATES } from "./worker";
 import type { QueryFn, QueryOptions, WorkerRun } from "./worker";
 
 // ===== Exported types =====
@@ -67,6 +67,75 @@ function findItemText(model: WorkingModel, itemId: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Collect the set of item IDs currently in the model.
+ */
+function collectItemIds(model: WorkingModel): Set<string> {
+  const ids = new Set<string>();
+  for (const section of model.sections) {
+    for (const item of section.items) {
+      ids.add(item.id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Build the research prompt, including verbatim dossier content when present.
+ */
+function buildResearchPrompt(
+  model: WorkingModel,
+  subjectText: string,
+  topic: string,
+  mcpTools: string[],
+  corpusPath: string | undefined,
+  existingDossier: string | undefined,
+): string {
+  // Dossier included VERBATIM when present (contract: "that markdown is included
+  // VERBATIM in the round's prompt").
+  const dossierBlock = existingDossier
+    ? `\n\n## Existing Dossier (research/${topic}.md)\n\n${existingDossier}`
+    : "";
+
+  // Collect all items with their evidence dossierRefs for context.
+  const itemLines: string[] = [];
+  for (const section of model.sections) {
+    if (section.kind === "goal") continue;
+    for (const item of section.items) {
+      const refs = item.evidence
+        .filter((ev) => ev.dossierRef !== undefined)
+        .map((ev) => ev.dossierRef as string);
+      const refsStr = refs.length > 0 ? ` [dossier: ${refs.join(", ")}]` : "";
+      itemLines.push(`  [${section.kind}] ${item.text}${refsStr}`);
+    }
+  }
+  const itemsBlock =
+    itemLines.length > 0 ? `\n\nExisting items:\n${itemLines.join("\n")}` : "";
+
+  const goalSection = model.sections.find((s) => s.kind === "goal");
+  const intentText = goalSection?.text ?? "";
+
+  return (
+    `You are the research worker. Investigate the topic: "${subjectText}"\n\n` +
+    `Topic slug: ${topic}\n\n` +
+    `Intent (goal):\n${intentText}` +
+    itemsBlock +
+    dossierBlock +
+    `\n\n` +
+    `Research instructions:\n` +
+    `- Use the available tools (${mcpTools.join(", ")}) to gather live, grounded information.\n` +
+    `- Do NOT answer from training data alone — use the tools to verify facts.\n` +
+    `- Propose findings as unchecked items (proposeItem) with appropriate modality.\n` +
+    `- Attach evidence chips (attachEvidence) to items you find — include source, method, and a dossierRef of "research/${topic}.md".\n` +
+    `- You may add notes (addItemNote) to existing items to annotate them with research findings.\n` +
+    `- NEVER check items — only propose them as unchecked (checked:false).\n` +
+    `- NEVER write files directly — all dossier output goes through the sanctioned dossier writer.\n` +
+    (corpusPath
+      ? `- Corpus scope: ${corpusPath} — consult TEPs, retros, and defects there for context.\n`
+      : "")
+  );
+}
+
 // ===== research() factory =====
 
 /**
@@ -96,11 +165,14 @@ export function research(
 ): WorkerRun {
   const mcpTools = ["tk-package-version", "web-fetch", "repo-explorer"];
 
-  // Derive corpusPaths — the board corpus: TEPs, retros, defects
+  // Derive corpusPaths — the board corpus: TEPs, retros, defects.
+  // EXACTLY [<sidecarRoot>/<namespace>] per the contract.
   const corpusPaths: string[] = [];
+  let corpusPath: string | undefined;
   if (deps.sidecarRoot) {
     const ns = deps.namespace ?? "default";
-    corpusPaths.push(nodePath.join(deps.sidecarRoot, ns));
+    corpusPath = nodePath.join(deps.sidecarRoot, ns);
+    corpusPaths.push(corpusPath);
   }
 
   return {
@@ -117,12 +189,11 @@ export function research(
       return opts;
     },
 
-    buildPrompt(
-      model: WorkingModel,
-      _conversation: string[],
-      existingDossier?: string,
-    ): string {
-      // Derive the topic slug from target
+    // The WorkerRun interface defines buildPrompt with exactly two params.
+    // The dossier content is woven into run() — buildPrompt provides a
+    // no-dossier prompt for interface compatibility (used by tests that call
+    // buildPrompt directly without a dossier).
+    buildPrompt(model: WorkingModel, _conversation: string[]): string {
       let subjectText: string;
       if (target.subject) {
         subjectText = target.subject;
@@ -132,56 +203,18 @@ export function research(
         subjectText = "general";
       }
       const topic = slugify(subjectText);
-
-      // Build the prompt — dossier markdown included VERBATIM when present
-      const dossierBlock = existingDossier
-        ? `\n\n## Existing Dossier (research/${topic}.md)\n\n${existingDossier}`
-        : "";
-
-      // Collect all items with their evidence dossierRefs for context
-      const itemLines: string[] = [];
-      for (const section of model.sections) {
-        if (section.kind === "goal") continue;
-        for (const item of section.items) {
-          const refs = item.evidence
-            .filter((ev) => ev.dossierRef !== undefined)
-            .map((ev) => ev.dossierRef as string);
-          const refsStr =
-            refs.length > 0 ? ` [dossier: ${refs.join(", ")}]` : "";
-          itemLines.push(`  [${section.kind}] ${item.text}${refsStr}`);
-        }
-      }
-      const itemsBlock =
-        itemLines.length > 0
-          ? `\n\nExisting items:\n${itemLines.join("\n")}`
-          : "";
-
-      const goalSection = model.sections.find((s) => s.kind === "goal");
-      const intentText = goalSection?.text ?? "";
-
-      return (
-        `You are the research worker. Investigate the topic: "${subjectText}"\n\n` +
-        `Topic slug: ${topic}\n\n` +
-        `Intent (goal):\n${intentText}` +
-        itemsBlock +
-        dossierBlock +
-        `\n\n` +
-        `Research instructions:\n` +
-        `- Use the available tools (${mcpTools.join(", ")}) to gather live, grounded information.\n` +
-        `- Do NOT answer from training data alone — use the tools to verify facts.\n` +
-        `- Propose findings as unchecked items (proposeItem) with appropriate modality.\n` +
-        `- Attach evidence chips (attachEvidence) to items you find — include source, method, and a dossierRef of "research/${topic}.md".\n` +
-        `- You may add notes (addItemNote) to existing items to annotate them with research findings.\n` +
-        `- NEVER check items — only propose them as unchecked (checked:false).\n` +
-        `- NEVER write files directly — all dossier output goes through the sanctioned dossier writer.\n` +
-        (deps.sidecarRoot && deps.namespace
-          ? `- Corpus scope: ${nodePath.join(deps.sidecarRoot, deps.namespace ?? "default")} — consult TEPs, retros, and defects there for context.\n`
-          : "")
+      return buildResearchPrompt(
+        model,
+        subjectText,
+        topic,
+        mcpTools,
+        corpusPath,
+        undefined, // no existing dossier available at buildPrompt-call time
       );
     },
 
-    async run(model: WorkingModel, conversation: string[]): Promise<Action[]> {
-      // Derive topic slug
+    async run(model: WorkingModel, _conversation: string[]): Promise<Action[]> {
+      // ── Derive topic slug ──────────────────────────────────────────────────
       let subjectText: string;
       if (target.subject) {
         subjectText = target.subject;
@@ -191,20 +224,22 @@ export function research(
         subjectText = "general";
       }
       const topic = slugify(subjectText);
-      // [DEBUG] trace: log research entry
 
-      // DOSSIER-FIRST: read before any model round
+      // ── DOSSIER-FIRST: read before any model round ─────────────────────────
       const existingDossier = await deps.dossier.read(topic);
 
-      // Build options and prompt (pass existing dossier for verbatim inclusion)
+      // ── Build options and prompt ───────────────────────────────────────────
       const options = this.buildOptions();
-      const prompt = (
-        this as {
-          buildPrompt: (m: WorkingModel, c: string[], d?: string) => string;
-        }
-      ).buildPrompt(model, conversation, existingDossier);
+      const prompt = buildResearchPrompt(
+        model,
+        subjectText,
+        topic,
+        mcpTools,
+        corpusPath,
+        existingDossier,
+      );
 
-      // Run the query round
+      // ── Run the query round ────────────────────────────────────────────────
       const queryFn = deps.loadQuery();
       const rawActions: Action[] = [];
       for await (const msg of queryFn({ prompt, options })) {
@@ -213,24 +248,10 @@ export function research(
         }
       }
 
-      // Pass all raw actions through — the reducer enforces the gate as
-      // first-class observable rejected deltas (not silent drops). The
-      // reducer already rejects checkItem/uncheckItem/addItem from non-human
-      // actors; other disallowed actions that the reducer doesn't cover are
-      // filtered here but ONLY after being dispatched (so the delta log sees
-      // them). We keep ALL actions and let the session dispatch handle gating.
-      const actions: Action[] = rawActions;
-
-      // Write/update the dossier after the round (even if no actions) to mark
-      // the round happened; collect any notes from proposeItem actions as content
-      const proposedItems = actions
+      // ── Write the dossier (always — marks the round happened) ─────────────
+      const proposedItems = rawActions
         .filter((a) => a.type === "proposeItem")
-        .map((a) => {
-          if (a.type === "proposeItem") {
-            return `- ${a.item.text}`;
-          }
-          return "";
-        })
+        .map((a) => (a.type === "proposeItem" ? `- ${a.item.text}` : ""))
         .filter(Boolean);
 
       const dossierContent = buildDossierContent(
@@ -251,35 +272,32 @@ export function research(
         );
       }
 
-      // Stamp checkedAt from deps.now() and dossierRef on every attachEvidence
-      // action returned by the model. The contract says the chip's dossierRef
-      // points at the file the same round wrote (or re-read).
+      // ── Evidence stamp values ──────────────────────────────────────────────
       const checkedAt = deps.now().toISOString();
 
-      // Track per-section item counts to predict IDs for newly proposed items.
-      // The reducer uses id = `item-<sectionId>-<sectionItemCount>`.
-      const sectionItemCounts: Map<string, number> = new Map();
-      // Track which item IDs will exist after preceding actions (existing + predicted).
-      const reachableItemIds = new Set<string>();
+      // ── Build reachable item ID set (existing + predicted from proposeItem) ─
+      // Used to guard actions targeting items: if an action names an item that
+      // neither exists now nor will be created by a preceding proposeItem, the
+      // reducer would THROW (not reject gracefully), aborting the whole dispatch
+      // loop before later actions (especially the target-item evidence chip) run.
+      const reachableItemIds: Set<string> = collectItemIds(model);
+      const sectionItemCounts = new Map<string, number>();
       for (const section of model.sections) {
         sectionItemCounts.set(section.id, section.items.length);
-        for (const item of section.items) {
-          reachableItemIds.add(item.id);
-        }
       }
 
-      // Build the final action list, interleaving auto-evidence for proposals.
+      // ── Build the final action list ────────────────────────────────────────
       const finalActions: Action[] = [];
 
-      for (const action of actions) {
+      for (const action of rawActions) {
         if (action.type === "attachEvidence") {
-          // Only include if the target item exists or will be created by a
-          // preceding proposeItem — guards against stale/invalid LLM item IDs
-          // that would cause the reducer to throw and fail the whole round.
+          // Guard: only include if the item exists or will be created by a
+          // preceding proposeItem — prevents a reducer throw that would abort
+          // dispatch before the target-item evidence chip below runs.
           if (!reachableItemIds.has(action.itemId)) {
             continue;
           }
-          // Stamp dossierRef + checkedAt onto evidence chips from the model.
+          // Stamp dossierRef + checkedAt per the contract.
           finalActions.push({
             type: "attachEvidence" as const,
             actor: action.actor,
@@ -292,8 +310,8 @@ export function research(
             },
           });
         } else if (action.type === "proposeItem") {
-          // Push the proposeItem first, then attach evidence to the predicted
-          // new item ID (the reducer: `item-<sectionId>-<itemCount>`).
+          // Push the proposeItem, track the predicted new item ID, then attach
+          // evidence to it. The reducer assigns id = `item-<sectionId>-<count>`.
           finalActions.push(action);
           const count = sectionItemCounts.get(action.sectionId) ?? 0;
           const predictedItemId = `item-${action.sectionId}-${count}`;
@@ -310,17 +328,37 @@ export function research(
               dossierRef,
             },
           });
+        } else if (action.type === "addItemNote") {
+          // Guard: only include if the target item exists or will be created by
+          // a preceding proposeItem. An addItemNote for an unknown item causes a
+          // reducer THROW, aborting dispatch before the target-item chip below.
+          if (!reachableItemIds.has(action.itemId)) {
+            continue;
+          }
+          finalActions.push(action);
         } else {
+          // All other actions (proposeEdit, etc.) from the LLM: guard any that
+          // target a specific itemId the same way — if the field exists and the
+          // item is unknown, skip it to prevent a reducer throw.
+          const maybeItemTargeted = action as { itemId?: string };
+          if (
+            maybeItemTargeted.itemId !== undefined &&
+            !reachableItemIds.has(maybeItemTargeted.itemId)
+          ) {
+            continue;
+          }
           finalActions.push(action);
         }
       }
 
-      // When triggered on a specific item that exists in the model, attach an
-      // evidence chip to that item — it is the item being researched and must
-      // carry provenance regardless of what the LLM returned.
-      // Guard: only attach if the item is actually present (avoids a reducer
-      // throw that would fail the whole round when the item id is stale).
-      if (target.itemId && findItemText(model, target.itemId) !== undefined) {
+      // ── Attach evidence to the specific research target item ───────────────
+      // When triggered on a specific item, that item must carry provenance
+      // regardless of what the LLM returned. The guard prevents a reducer throw
+      // when the item id is somehow stale (shouldn't happen, but defensive).
+      if (
+        target.itemId !== undefined &&
+        findItemText(model, target.itemId) !== undefined
+      ) {
         finalActions.push({
           type: "attachEvidence" as const,
           actor: "research" as const,
@@ -333,8 +371,6 @@ export function research(
           },
         });
       }
-      // Honesty (attend 2026-07-15): if the model proposed no evidence, the probe
-      // MUST see that — never manufacture an item/chip to satisfy the render.
 
       return finalActions;
     },
