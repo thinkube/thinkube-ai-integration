@@ -120,7 +120,13 @@ export type VerifyResult =
       /** Bounded raw compiler output. */
       output: string;
     }
-  | { kind: "results"; results: OracleAcResult[]; rootCause?: string }
+  | {
+      kind: "results";
+      results: OracleAcResult[];
+      rootCause?: string;
+      /** The per-round supervisor verdict (gap-filler) — rendered after the results. */
+      supervisorNote?: string;
+    }
   /** Stall breaker (2026-07-14): N consecutive rounds returned an identical
    *  outcome — further iteration is information-free; the worker must stop. */
   | { kind: "stalled"; rounds: number }
@@ -210,13 +216,6 @@ export function formatVerifyReply(r: VerifyResult): string {
   if (r.kind === "exhausted") {
     return `VERIFY LIMIT REACHED (${r.invocations} invocations). Stop iterating; summarize where you are and what remains — the run will park for review.`;
   }
-  if ((r as { kind: string }).kind === "supervised") {
-    const g = (r as unknown as { guidance: string }).guidance;
-    return [
-      "SUPERVISOR GUIDANCE (cited from the governing artifacts — follow it before your next verify):",
-      g,
-    ].join("\n");
-  }
   if (r.kind === "stalled") {
     return [
       `STALLED: ${r.rounds} consecutive verify rounds returned an IDENTICAL outcome — your edits are not changing the result, so further rounds carry no information.`,
@@ -254,7 +253,10 @@ export function formatVerifyReply(r: VerifyResult): string {
   const body = r.results
     .map((x) => `AC-${x.ac}: ${x.pass ? "PASS" : "FAIL"}\n${x.evidence}`)
     .join("\n\n");
-  return `${head}${rootCause}\n\n${body}`;
+  const sup = (r as { supervisorNote?: string }).supervisorNote
+    ? `\n\n──── SUPERVISOR (gap-filler — reviewed this round with full context; follow it) ────\n${(r as { supervisorNote?: string }).supervisorNote}`
+    : "";
+  return `${head}${rootCause}\n\n${body}${sup}`;
 }
 
 /** Injectable effects for {@link createVerifyOracle} — all defaulted to real I/O by the caller. */
@@ -367,18 +369,15 @@ export function createVerifyOracle(deps: VerifyOracleDeps): VerifyOracle {
   let stallSig: string | undefined;
   let stallCount = 0;
   const STALL_AFTER = 3;
-  const acFailStreak = new Map<number, number>();
-  let lastFailingAcs: number[] = [];
-  const PERSIST_AFTER = 4;
 
-  let supervised = false;
+  let preflightDone = false;
   /** Dispatch-time information audit (2026-07-15): completeness of brief-vs-
    *  probes is STATIC — if a decidable fact is missing it is missing at round
    *  zero. Called once BEFORE the coder spends anything; returns disclosure
    *  text to append to the brief, or undefined (complete / escalated). */
   const preflight = async (): Promise<string | undefined> => {
-    if (!deps.supervise || supervised) return undefined;
-    supervised = true;
+    if (!deps.supervise || preflightDone) return undefined;
+    preflightDone = true;
     try {
       return await deps.supervise(
         "PRE-FLIGHT — no rounds have run. Audit ONLY information completeness of the brief against the checks.",
@@ -389,24 +388,6 @@ export function createVerifyOracle(deps: VerifyOracleDeps): VerifyOracle {
     }
   };
   const round = async (): Promise<VerifyResult> => {
-    if (stallCount >= STALL_AFTER && deps.supervise && !supervised) {
-      // One supervisor consult per invocation-budget: answer the wall instead of
-      // parking at it. The stall counter resets so the guidance gets real rounds.
-      supervised = true;
-      try {
-        const g = await deps.supervise(stallSig ?? "", lastFailingAcs);
-        if (g?.trim()) {
-          stallCount = 0;
-          stallSig = undefined;
-          return {
-            kind: "supervised",
-            guidance: g.trim(),
-          } as unknown as VerifyResult;
-        }
-      } catch {
-        /* fall through to stalled */
-      }
-    }
     if (stallCount >= STALL_AFTER) return { kind: "stalled", rounds: stallCount };
     if (used >= max) return { kind: "exhausted", invocations: used };
     used++;
@@ -453,38 +434,27 @@ export function createVerifyOracle(deps: VerifyOracleDeps): VerifyOracle {
     log(
       `  [oracle] round ${used}/${max}: ${results.filter((r) => r.pass).length}/${results.length} pass`,
     );
-    // Per-AC persistence (2026-07-15): the painful case is the SAME AC red for
-    // rounds on end with EVOLVING evidence — the identical-outcome stall never
-    // fires. Track consecutive per-AC failure streaks; at the threshold, the
-    // supervisor audits information-completeness once per budget.
-    for (const r of results) {
-      if (r.pass) acFailStreak.delete(r.ac);
-      else acFailStreak.set(r.ac, (acFailStreak.get(r.ac) ?? 0) + 1);
-    }
-    lastFailingAcs = results.filter((r) => !r.pass).map((r) => r.ac);
-    const persistent = [...acFailStreak.entries()].filter(
-      ([, n]) => n >= PERSIST_AFTER,
-    );
-    if (persistent.length && deps.supervise && !supervised) {
-      supervised = true;
+    // Supervisor on EVERY iteration (2026-07-15, the maintainer's design): each
+    // failing round is reviewed by the superior-model gap-filler with both-sides
+    // access; its verdict (a citation into the worker's own brief, or a ledgered
+    // disclosure of a missing fact) rides the same reply the worker reads.
+    let supervisorNote: string | undefined;
+    const failingNow = results.filter((r) => !r.pass);
+    if (failingNow.length && deps.supervise) {
       try {
-        const ev = results
-          .filter((r) => !r.pass)
-          .map((r) => r.evidence)
-          .join("\n\n");
-        const g = await deps.supervise(ev, persistent.map(([ac]) => ac));
-        if (g?.trim()) {
-          for (const [ac] of persistent) acFailStreak.set(ac, 0);
-          return {
-            kind: "supervised",
-            guidance: g.trim(),
-          } as unknown as VerifyResult;
-        }
+        supervisorNote = await deps.supervise(
+          failingNow.map((r) => r.evidence).join("\n\n"),
+          failingNow.map((r) => r.ac),
+        );
       } catch {
-        /* fall through to normal results */
+        /* supervision is best-effort — never blocks the round */
       }
     }
-    const out: VerifyResult = { kind: "results", results };
+    const out: VerifyResult = {
+      kind: "results",
+      results,
+      ...(supervisorNote ? { supervisorNote } : {}),
+    };
     const rootCause = sharedFailureSignature(results);
     if (rootCause) out.rootCause = rootCause;
     // Stall accounting: an outcome identical to the previous round's (same
