@@ -4461,6 +4461,8 @@ export class OrchestratorService {
       exampleTest,
       selfVerifyCommand,
       oracleAvailable: !!oracle,
+      // Orientation (2026-07-15): the worker's cwd, stated instead of discovered.
+      cwd,
     });
     // Rework routing (2026-07-12): on a rework round the slice card carries the judge's
     // round-stamped `## ⚖ Judge guidance` sections, addressed to the routed role (blockSlice

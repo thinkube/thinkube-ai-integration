@@ -1166,6 +1166,9 @@ export function buildWorkerPrompt(
       role: "code" | "test";
       note: string;
     }[];
+    /** Orientation (2026-07-15): the worker's absolute cwd — stated up front so no
+     *  worker ever guesses its own checkout path or ls-walks the tree to orient. */
+    cwd?: string;
   },
 ): string {
   const fp = unit.footprint.join(", ") || "(no declared footprint)";
@@ -1224,6 +1227,15 @@ export function buildWorkerPrompt(
   // sees the implementer's in-progress work) and stated as fact.
   const workspaceBlock = isTest
     ? `\nYou are writing the tests FIRST: the implementation named in the SPEC CONTRACT does not exist in your working directory yet — that is expected and correct, NOT an error to fix or an implementation to hunt for. Your working directory is the codebase as it stands BEFORE this feature. Read anything here you need — the test harness, helpers, existing tests, import/type conventions — and write your test file(s) at your footprint (${fp}) using paths relative to the working directory. Import the contract's modules by the exact path/name it gives; they resolve once the implementer builds to the same contract. Write your tests purely from the contract + the criteria below — do not wait for or look for the implementation.\n`
+    : "";
+  // ORIENTATION (2026-07-15): a worker was observed GUESSING its own cwd from its unit
+  // handle (wrong), then ls-walking the tree and brushing the fences to orient itself —
+  // provisioning information that costs three lines. Rendered for BOTH roles, cwd known.
+  const orientationBlock = context?.cwd?.trim()
+    ? `\n──── YOUR WORKSPACE (orientation — read once instead of probing) ────\n` +
+      `- Your working directory IS the repository checkout: ${context.cwd.trim()}. It is complete; every path in this brief is relative to it. Use relative paths in every command and tool call.\n` +
+      `- Your footprint files live at exactly those relative paths — never derive a directory from your unit id or search sibling directories for them.\n` +
+      `- Sibling worktrees (paths ending in -test, other TEP-*/SP-* checkouts) belong to other roles and are fenced — never list, read, or search them.\n`
     : "";
   // SP-6/3: the Spec-wide design-time CONTRACT — the shared interface (union of every slice's
   // declared contract) every unit (code AND held-out test, in ANY slice) builds against. Injected
@@ -1333,6 +1345,7 @@ export function buildWorkerPrompt(
     prohibitionsBlock +
     conventionBlock +
     exampleBlock +
+    orientationBlock +
     workspaceBlock +
     consumesBlock +
     tepBlock +
