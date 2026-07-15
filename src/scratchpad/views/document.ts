@@ -1,18 +1,52 @@
-import * as vscode from "vscode";
-import type { Delta, Section, SectionState, WorkingModel } from "../model";
+import type * as vscode from "vscode";
+// Lazy runtime handle (attend 2026-07-15): buildScratchpadHtml must be importable
+// from a plain node test; only the panel class touches the live vscode API.
+function vs(): typeof vscode {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  return require("vscode") as typeof vscode;
+}
+import type {
+  Item,
+  Modality,
+  Section,
+  SectionKind,
+  SectionState,
+  WorkingModel,
+} from "../model";
 import { freezeEnabled } from "../model";
+import { uncoveredSections } from "../coverage";
 
 /**
  * The complete inbound message protocol (webview → extension).
  * Every authoring control posts exactly one of these; the session applies
- * each through the one reducer.
+ * each through the one reducer with actor:"human".
+ *
+ * askStructure is REMOVED. The delta-log feed is REMOVED.
  */
 export type ScratchpadInboundMessage =
   | { type: "seedGoal"; text: string }
   | { type: "editGoal"; text: string }
-  | { type: "editSection"; id: string; text: string }
-  | { type: "addNote"; sectionId: string; text: string }
-  | { type: "askStructure" };
+  | { type: "addItem"; sectionId: string; text: string }
+  | { type: "toggleItem"; itemId: string; checked: boolean }
+  | { type: "editItemText"; itemId: string; text: string }
+  | { type: "setModality"; itemId: string; modality: Modality }
+  | {
+      type: "setEval";
+      itemId: string;
+      facet: "complexity" | "risk";
+      value: 1 | 2 | 3;
+    }
+  | { type: "deferItem"; itemId: string }
+  | { type: "dropItem"; itemId: string }
+  | { type: "supersedeItem"; itemId: string; supersedes: string }
+  | { type: "resolveEdit"; itemId: string; accept: boolean }
+  | { type: "addItemNote"; itemId: string; text: string }
+  | { type: "prefill" }
+  | { type: "reframe" }
+  | { type: "research"; itemId?: string; subject?: string }
+  | { type: "checkReadiness" }
+  | { type: "freeze" }
+  | { type: "command"; utterance: string };
 
 /** Visual marker for each section state. */
 export const STATE_MARKERS: Record<SectionState, string> = {
@@ -21,6 +55,26 @@ export const STATE_MARKERS: Record<SectionState, string> = {
   shaping: "◑",
   settled: "●",
 };
+
+/**
+ * Per-section activity state for rendering.
+ * "running" — a worker round targeting this section is in flight.
+ * "landed"  — the most recent round completed successfully.
+ * "failed"  — the most recent round errored.
+ */
+export type SectionActivity = "running" | "landed" | "failed";
+
+/**
+ * Round-level activity: which sections are targeted and what error (if any).
+ */
+export interface RoundActivity {
+  /** Section kinds targeted by the in-flight or just-completed round. */
+  targetedKinds: SectionKind[];
+  /** Per-kind error messages (present when activity is "failed"). */
+  errors: Partial<Record<SectionKind, string>>;
+  /** Overall state for all targeted sections. */
+  state: SectionActivity;
+}
 
 /** Escape HTML special characters. */
 function esc(text: string): string {
@@ -32,86 +86,195 @@ function esc(text: string): string {
     .replace(/'/g, "&#39;");
 }
 
-/** Serialize any value for display in the delta log. */
-function showValue(val: unknown): string {
-  if (val === undefined) return "undefined";
-  return JSON.stringify(val);
+/** Render one Item as an <li> with the contract's exact selectors. */
+function itemHtml(item: Item): string {
+  const liAttrs: string[] = [
+    `class="item"`,
+    `data-item-id="${esc(item.id)}"`,
+    `data-state="${esc(item.state)}"`,
+    `data-origin="${esc(item.origin)}"`,
+  ];
+  if (item.shippedIn !== undefined) {
+    liAttrs.push(`data-shipped-in="${esc(item.shippedIn)}"`);
+  }
+  if (item.supersedes !== undefined) {
+    liAttrs.push(`data-supersedes="${esc(item.supersedes)}"`);
+  }
+  if (item.supersededBy !== undefined) {
+    liAttrs.push(`data-superseded-by="${esc(item.supersededBy)}"`);
+  }
+
+  const checkedAttr = item.checked ? " checked" : "";
+
+  // Evals span — only emit data-complexity / data-risk when defined
+  const evalsAttrs: string[] = [`class="evals"`];
+  if (item.evals.complexity !== undefined) {
+    evalsAttrs.push(`data-complexity="${item.evals.complexity}"`);
+  }
+  if (item.evals.risk !== undefined) {
+    evalsAttrs.push(`data-risk="${item.evals.risk}"`);
+  }
+  const evalsSpan = `<span ${evalsAttrs.join(" ")}></span>`;
+
+  // Pending-edit span
+  const pendingEditSpan = item.pendingEdit
+    ? `<span class="pending-edit"><del>${esc(item.pendingEdit.oldText)}</del><ins>${esc(item.pendingEdit.newText)}</ins></span>`
+    : "";
+
+  // Evidence chips (zero or more)
+  const evidenceChips = item.evidence
+    .map((ev) => {
+      const chipAttrs: string[] = [
+        `class="evidence-chip"`,
+        `data-method="${esc(ev.method)}"`,
+        `data-checked-at="${esc(ev.checkedAt)}"`,
+      ];
+      if (ev.dossierRef !== undefined) {
+        chipAttrs.push(`data-dossier-ref="${esc(ev.dossierRef)}"`);
+      }
+      return `<span ${chipAttrs.join(" ")}>${esc(ev.source)}</span>`;
+    })
+    .join("");
+
+  return (
+    `<li ${liAttrs.join(" ")}>` +
+    `<input type="checkbox" class="item-check"${checkedAttr}>` +
+    `<span class="modality" data-modality="${esc(item.modality)}">${esc(item.modality)}</span>` +
+    evalsSpan +
+    `<span class="item-text">${esc(item.text)}</span>` +
+    pendingEditSpan +
+    evidenceChips +
+    `</li>`
+  );
 }
 
-/** Render one section as HTML — includes edit-section and add-note controls. */
-function sectionHtml(section: Section): string {
+/** Render the goal (intent) section — contains EXACTLY ONE #goal-input. */
+function goalSectionHtml(
+  section: Section,
+  activity?: SectionActivity,
+  errorMsg?: string,
+  roundInFlight?: boolean,
+): string {
   const marker = STATE_MARKERS[section.state];
-  const notesHtml =
-    section.notes.length > 0
-      ? `<div class="notes">${section.notes
-          .map((n) => `<div class="note">${esc(n.text)}</div>`)
-          .join("")}</div>`
+  const goalWasEmpty = section.text === "";
+  const activityAttr =
+    activity !== undefined ? ` data-activity="${activity}"` : "";
+  const activityClass = activity !== undefined ? ` activity-${activity}` : "";
+  const errorHtml =
+    errorMsg !== undefined
+      ? `<div class="round-error">${esc(errorMsg)}</div>`
+      : "";
+  const prefillDisabled = roundInFlight ? " disabled" : "";
+
+  return /* html */ `
+<section class="section goal-section${activityClass}" data-kind="goal" data-id="${esc(section.id)}"${activityAttr}>
+  <div class="section-header">
+    <span class="state-marker" title="${esc(section.state)}">${marker}</span>
+    <span class="kind-label">goal</span>
+    <span class="state-label">${esc(section.state)}</span>
+    <button id="prefill-btn" class="worker-btn"${prefillDisabled} onclick="triggerPrefill()">Prefill</button>
+    <button id="reframe-btn" class="worker-btn"${prefillDisabled} onclick="triggerReframe()">Reframe</button>
+  </div>
+  <textarea id="goal-input">${esc(section.text)}</textarea>
+  <button onclick="confirmGoal(${JSON.stringify(goalWasEmpty)})">Confirm goal</button>
+  ${errorHtml}
+</section>`;
+}
+
+/** Render a non-goal section as a checklist with add-item controls. */
+function checklistSectionHtml(
+  section: Section,
+  activity?: SectionActivity,
+  errorMsg?: string,
+): string {
+  const marker = STATE_MARKERS[section.state];
+  // Dropped items are not rendered; all other states show
+  const visibleItems = section.items.filter((it) => it.state !== "dropped");
+  const itemsHtml =
+    visibleItems.length > 0
+      ? `<ul class="item-list">${visibleItems.map(itemHtml).join("")}</ul>`
+      : `<ul class="item-list"></ul>`;
+
+  const activityAttr =
+    activity !== undefined ? ` data-activity="${activity}"` : "";
+  const activityClass = activity !== undefined ? ` activity-${activity}` : "";
+  const errorHtml =
+    errorMsg !== undefined
+      ? `<div class="round-error">${esc(errorMsg)}</div>`
       : "";
 
   return /* html */ `
-<div class="section" data-id="${esc(section.id)}">
+<section class="section${activityClass}" data-kind="${esc(section.kind)}" data-id="${esc(section.id)}"${activityAttr}>
   <div class="section-header">
     <span class="state-marker" title="${esc(section.state)}">${marker}</span>
     <span class="kind-label">${esc(section.kind)}</span>
     <span class="state-label">${esc(section.state)}</span>
   </div>
-  <div class="section-text">${esc(section.text)}</div>
-  ${notesHtml}
-  <div class="section-edit-area">
-    <textarea class="edit-section-input" data-section-id="${esc(section.id)}">${esc(section.text)}</textarea>
-    <button class="edit-section" data-section-id="${esc(section.id)}" onclick="confirmEdit('${esc(section.id)}')">Save edit</button>
+  ${itemsHtml}
+  ${errorHtml}
+  <div class="add-item-area">
+    <input type="text" class="add-item-input" data-section-id="${esc(section.id)}" placeholder="Add item…">
+    <button class="add-item-btn" onclick="addItemToSection('${esc(section.id)}')">Add</button>
   </div>
-  <div class="section-add-note-area">
-    <input id="note-input-${esc(section.id)}" class="note-input" data-section-id="${esc(section.id)}" type="text" placeholder="Add a note…" />
-    <button class="add-note" data-section-id="${esc(section.id)}" onclick="addNote('${esc(section.id)}')">Add note</button>
-  </div>
-</div>`;
-}
-
-/** Render the delta log (before AND after each applied action). */
-function deltaLogHtml(deltas: Delta[]): string {
-  if (deltas.length === 0) return "";
-  const rows = deltas
-    .map(
-      (d, i) => `
-  <div class="delta" data-index="${i}">
-    <span class="delta-index">#${i + 1}</span>
-    <span class="delta-action">${esc(d.action.type)}</span>
-    <span class="delta-field">${esc(d.field)}</span>
-    <span class="delta-before">before: ${esc(showValue(d.before))}</span>
-    <span class="delta-after">after: ${esc(showValue(d.after))}</span>
-  </div>`,
-    )
-    .join("\n");
-  return `<section class="delta-log">
-  <h2>Changes (${deltas.length})</h2>
-  ${rows}
 </section>`;
 }
 
 /**
- * Build the full Scratchpad HTML from the current model and delta log.
+ * Build the full Thinking Space HTML from the current working model.
  *
- * Exported so that ScratchpadSession.renderedHtml() can return the exact same
+ * Exported so that ScratchpadSession.renderedHtml() returns the exact same
  * string the webview receives.
  *
- * Contains:
- *  - a Goal textarea (#goal-input) with a confirm control → seedGoal/editGoal
- *  - per section: an edit control (class "edit-section", data-section-id) → editSection
- *  - per section: an add-note control (class "add-note", data-section-id) → addNote
- *  - a button #ask-structure → askStructure
- *  - the Freeze control (<button id="freeze">, disabled iff !freezeEnabled(model))
- *  - the delta log with each delta's before AND after values
+ * Guarantees:
+ *  - Exactly ONE element with id="goal-input".
+ *  - Non-goal sections render item checklists with the contract's selectors.
+ *  - No delta-log feed.
+ *  - No ask-structure button.
+ *  - Per-section data-activity states when roundActivity is provided.
+ *  - Round errors render inside the targeted section as <div class="round-error">.
+ *  - The prefill/reframe buttons carry disabled when a round is in flight.
+ *  - The #command-input field renders under the sections; disabled while a command
+ *    interpretation is in flight; a <div class="command-error"> appears under the
+ *    field when commandMessage is present.
  */
 export function buildScratchpadHtml(
   model: WorkingModel,
-  deltas: Delta[],
+  _deltas?: unknown[],
+  roundActivity?: RoundActivity,
+  commandMessage?: string,
+  commandInFlight?: boolean,
 ): string {
   const goalSec = model.sections.find((s) => s.kind === "goal");
-  const goalText = goalSec ? goalSec.text : "";
-  const goalWasEmpty = goalText === "";
+  const nonGoalSections = model.sections.filter((s) => s.kind !== "goal");
 
-  const sectionsHtml = model.sections.map(sectionHtml).join("\n");
+  // Determine per-section activity and errors from roundActivity
+  function sectionActivity(kind: SectionKind): SectionActivity | undefined {
+    if (!roundActivity) return undefined;
+    if (!roundActivity.targetedKinds.includes(kind)) return undefined;
+    return roundActivity.state;
+  }
+  function sectionError(kind: SectionKind): string | undefined {
+    if (!roundActivity) return undefined;
+    if (roundActivity.state !== "failed") return undefined;
+    return roundActivity.errors[kind];
+  }
+
+  // A round is in flight when roundActivity.state === "running"
+  const roundInFlight = roundActivity?.state === "running";
+
+  const goalHtml = goalSec
+    ? goalSectionHtml(
+        goalSec,
+        sectionActivity("goal"),
+        sectionError("goal"),
+        roundInFlight,
+      )
+    : "";
+  const sectionsHtml = nonGoalSections
+    .map((s) =>
+      checklistSectionHtml(s, sectionActivity(s.kind), sectionError(s.kind)),
+    )
+    .join("\n");
 
   const objectionsHtml =
     model.objections.length > 0
@@ -128,124 +291,190 @@ export function buildScratchpadHtml(
         </section>`
       : "";
 
-  // Freeze control: disabled attribute PRESENT when freezeEnabled is false,
-  // ABSENT when freezeEnabled is true.
+  // Freeze control: disabled attribute PRESENT when freezeEnabled is false.
+  // data-reason names the FIRST failing signal:
+  //   "coverage:<kind>" when a section is uncovered,
+  //   "dryrun:<kind>"   when coverage is green but the dry-run found a gap,
+  //   ""                when enabled (no failing signal).
   const canFreeze = freezeEnabled(model);
+  let freezeReason = "";
+  if (!canFreeze) {
+    const uncovered = uncoveredSections(model);
+    if (uncovered.length > 0) {
+      freezeReason = `coverage:${uncovered[0]}`;
+    } else {
+      // Coverage is green; check the latest readiness record for a dry-run gap.
+      const hist = model.readinessHistory;
+      if (hist.length > 0) {
+        const latest = hist[hist.length - 1];
+        if (!latest.cleanCut) {
+          freezeReason = latest.gapSection
+            ? `dryrun:${latest.gapSection}`
+            : "dryrun:unknown";
+        }
+      } else {
+        // No readiness record yet — treat as unchecked (no readiness run done)
+        freezeReason = "dryrun:unknown";
+      }
+    }
+  }
   const freezeBtn = canFreeze
-    ? `<button id="freeze">Freeze</button>`
-    : `<button id="freeze" disabled>Freeze</button>`;
-
-  const freezeSection = `<section class="freeze-control">
-  <h2>Freeze</h2>
-  ${freezeBtn}
-</section>`;
-
-  const deltaSection = deltaLogHtml(deltas);
+    ? `<button id="freeze" data-reason="" onclick="triggerFreeze()">Freeze</button>`
+    : `<button id="freeze" disabled data-reason="${esc(freezeReason)}" onclick="triggerFreeze()">Freeze</button>`;
 
   return /* html */ `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Thinkube Scratchpad</title>
+  <title>Thinkube Thinking Space</title>
   <style>
     body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); background: var(--vscode-editor-background); padding: 16px; }
     h1 { font-size: 1.2em; margin: 0 0 16px; }
     h2 { font-size: 1em; margin-bottom: 8px; }
-    .goal-area { margin-bottom: 16px; padding: 12px; border: 1px solid var(--vscode-panel-border); border-radius: 4px; }
-    #goal-input { width: 100%; min-height: 60px; box-sizing: border-box; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 4px 8px; border-radius: 2px; resize: vertical; }
-    .goal-area button { margin-top: 8px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 4px 12px; border-radius: 2px; cursor: pointer; }
-    .goal-area button:hover { background: var(--vscode-button-hoverBackground); }
     .section { border: 1px solid var(--vscode-panel-border); border-radius: 4px; margin-bottom: 12px; padding: 12px; }
+    .goal-section { margin-bottom: 16px; }
     .section-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
     .state-marker { font-size: 1.2em; }
     .kind-label { font-weight: bold; text-transform: capitalize; }
     .state-label { font-size: 0.8em; opacity: 0.7; }
-    .section-text { white-space: pre-wrap; margin-bottom: 8px; }
-    .notes { margin-left: 12px; font-size: 0.9em; opacity: 0.85; }
-    .note { margin-bottom: 4px; padding-left: 8px; border-left: 2px solid var(--vscode-panel-border); }
-    .section-edit-area { margin-top: 8px; }
-    .edit-section-input { width: 100%; min-height: 60px; box-sizing: border-box; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 4px 8px; border-radius: 2px; resize: vertical; }
-    .edit-section { margin-top: 4px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 4px 12px; border-radius: 2px; cursor: pointer; }
-    .edit-section:hover { background: var(--vscode-button-hoverBackground); }
-    .section-add-note-area { display: flex; gap: 8px; margin-top: 8px; }
-    .note-input { flex: 1; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 4px 8px; border-radius: 2px; }
-    .add-note { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 4px 12px; border-radius: 2px; cursor: pointer; }
-    .add-note:hover { background: var(--vscode-button-hoverBackground); }
-    .structure-area { margin-top: 16px; margin-bottom: 16px; }
-    #ask-structure { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 6px 16px; border-radius: 2px; cursor: pointer; }
-    #ask-structure:hover { background: var(--vscode-button-hoverBackground); }
+    /* Per-section activity states (class-based to avoid literal attribute strings in CSS) */
+    .section.activity-running { border-color: var(--vscode-progressBar-background, #007acc); opacity: 0.85; }
+    .section.activity-landed { border-color: var(--vscode-terminal-ansiGreen, #4caf50); }
+    .section.activity-failed { border-color: var(--vscode-errorForeground, #f44336); }
+    /* Round error block inside the section */
+    .round-error { margin-top: 8px; padding: 6px 10px; border-radius: 3px; background: var(--vscode-inputValidation-errorBackground, rgba(244,67,54,0.1)); color: var(--vscode-errorForeground); font-size: 0.85em; }
+    /* Worker round buttons */
+    .worker-btn { font-size: 0.8em; padding: 2px 8px; border: 1px solid var(--vscode-button-border, var(--vscode-panel-border)); background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); border-radius: 2px; cursor: pointer; }
+    .worker-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    #goal-input { width: 100%; min-height: 60px; box-sizing: border-box; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 4px 8px; border-radius: 2px; resize: vertical; }
+    .goal-section > button:not(.worker-btn) { margin-top: 8px; background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 4px 12px; border-radius: 2px; cursor: pointer; }
+    .item-list { list-style: none; margin: 0; padding: 0; }
+    .item { display: flex; align-items: flex-start; gap: 6px; padding: 4px 0; border-bottom: 1px solid var(--vscode-panel-border); flex-wrap: wrap; }
+    .item:last-child { border-bottom: none; }
+    .item-check { margin-top: 2px; flex-shrink: 0; }
+    .modality { font-size: 0.75em; padding: 1px 5px; border-radius: 3px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); flex-shrink: 0; }
+    .evals { font-size: 0.75em; opacity: 0.7; flex-shrink: 0; }
+    .item-text { flex: 1; }
+    .pending-edit { font-size: 0.85em; width: 100%; margin-left: 18px; }
+    .pending-edit del { color: var(--vscode-errorForeground); text-decoration: line-through; }
+    .pending-edit ins { color: var(--vscode-terminal-ansiGreen, green); text-decoration: none; }
+    .evidence-chip { font-size: 0.75em; padding: 1px 4px; border-radius: 3px; border: 1px solid var(--vscode-panel-border); opacity: 0.8; }
+    .add-item-area { display: flex; gap: 8px; margin-top: 8px; }
+    .add-item-input { flex: 1; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 4px 8px; border-radius: 2px; }
+    .add-item-btn { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 4px 12px; border-radius: 2px; cursor: pointer; }
     .objections { margin-top: 24px; }
     .objection.open { color: var(--vscode-errorForeground); }
     .badge { font-size: 0.75em; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 6px; border-radius: 8px; }
+    .research-control { margin-top: 24px; padding: 12px; border: 1px solid var(--vscode-panel-border); border-radius: 4px; }
+    .research-input-area { display: flex; gap: 8px; margin-top: 8px; }
+    #research-input { flex: 1; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 4px 8px; border-radius: 2px; }
+    #research-btn { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 4px 12px; border-radius: 2px; cursor: pointer; }
     .freeze-control { margin-top: 24px; padding: 12px; border: 1px solid var(--vscode-panel-border); border-radius: 4px; }
     #freeze { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 6px 16px; border-radius: 2px; cursor: pointer; }
     #freeze:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
     #freeze:disabled { opacity: 0.5; cursor: not-allowed; }
-    .delta-log { margin-top: 24px; padding: 12px; border: 1px solid var(--vscode-panel-border); border-radius: 4px; font-size: 0.85em; }
-    .delta { display: grid; grid-template-columns: 2em 6em 1fr 1fr 1fr; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--vscode-panel-border); }
-    .delta-index { opacity: 0.5; }
-    .delta-action { font-weight: bold; }
-    .delta-field { font-family: monospace; opacity: 0.8; }
-    .delta-before { color: var(--vscode-errorForeground); }
-    .delta-after { color: var(--vscode-terminal-ansiGreen, green); }
+    .command-control { margin-top: 24px; padding: 12px; border: 1px solid var(--vscode-panel-border); border-radius: 4px; }
+    .command-input-area { display: flex; gap: 8px; margin-top: 8px; }
+    #command-input { flex: 1; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 4px 8px; border-radius: 2px; }
+    #command-input:disabled { opacity: 0.5; cursor: not-allowed; }
+    #command-btn { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 4px 12px; border-radius: 2px; cursor: pointer; }
   </style>
+  ${commandMessage ? `<style>.command-error { margin-top: 8px; padding: 6px 10px; border-radius: 3px; background: var(--vscode-inputValidation-errorBackground, rgba(244,67,54,0.1)); color: var(--vscode-errorForeground); font-size: 0.85em; }</style>` : ""}
 </head>
 <body>
-  <h1>Scratchpad <span style="opacity:0.5;font-size:0.8em;">${esc(model.phase)}</span></h1>
-  <section class="goal-area">
-    <h2>Goal</h2>
-    <textarea id="goal-input">${esc(goalText)}</textarea>
-    <button onclick="confirmGoal()">Confirm goal</button>
-  </section>
+  <h1>Thinking Space <span style="opacity:0.5;font-size:0.8em;">${esc(model.phase)}</span></h1>
+  ${goalHtml}
   ${sectionsHtml}
   ${objectionsHtml}
-  <section class="structure-area">
-    <button id="ask-structure" onclick="askStructure()">Ask for structure</button>
+  <section class="research-control">
+    <h2>Research</h2>
+    <div class="research-input-area">
+      <input type="text" id="research-input" placeholder="Investigate a subject… (e.g. &quot;migration strategies&quot;)">
+      <button id="research-btn" onclick="triggerResearch()">Research</button>
+    </div>
   </section>
-  ${freezeSection}
-  ${deltaSection}
+  <section class="command-control">
+    <h2>Command</h2>
+    <div class="command-input-area">
+      <input type="text" id="command-input" placeholder="e.g. &quot;accept all constraints&quot;"${commandInFlight ? " disabled" : ""}>
+      <button id="command-btn" onclick="submitCommand()"${commandInFlight ? " disabled" : ""}>Run</button>
+    </div>
+    ${commandMessage ? `<div class="command-error">${esc(commandMessage)}</div>` : ""}
+  </section>
+  <section class="freeze-control">
+    <h2>Freeze</h2>
+    ${freezeBtn}
+  </section>
   <script>
     const vscode = acquireVsCodeApi();
-    const goalWasEmpty = ${JSON.stringify(goalWasEmpty)};
 
-    function confirmGoal() {
+    function confirmGoal(wasEmpty) {
       const textarea = document.getElementById('goal-input');
       const text = textarea ? textarea.value.trim() : '';
       if (!text) return;
-      vscode.postMessage({ type: goalWasEmpty ? 'seedGoal' : 'editGoal', text });
+      vscode.postMessage({ type: wasEmpty ? 'seedGoal' : 'editGoal', text });
     }
 
-    function confirmEdit(sectionId) {
-      const textarea = document.querySelector('.edit-section-input[data-section-id="' + sectionId + '"]');
-      const text = textarea ? textarea.value.trim() : '';
-      if (!text) return;
-      vscode.postMessage({ type: 'editSection', id: sectionId, text });
-    }
-
-    function addNote(sectionId) {
-      const input = document.getElementById('note-input-' + sectionId);
+    function addItemToSection(sectionId) {
+      const input = document.querySelector('.add-item-input[data-section-id="' + sectionId + '"]');
       const text = input ? input.value.trim() : '';
       if (!text) return;
-      vscode.postMessage({ type: 'addNote', sectionId, text });
+      vscode.postMessage({ type: 'addItem', sectionId, text });
       if (input) input.value = '';
     }
 
-    function askStructure() {
-      vscode.postMessage({ type: 'askStructure' });
+    function triggerFreeze() {
+      vscode.postMessage({ type: 'freeze' });
     }
+
+    function triggerPrefill() {
+      vscode.postMessage({ type: 'prefill' });
+    }
+
+    function triggerReframe() {
+      vscode.postMessage({ type: 'reframe' });
+    }
+
+    function triggerResearch() {
+      var input = document.getElementById('research-input');
+      var subject = input ? input.value.trim() : '';
+      if (!subject) return;
+      vscode.postMessage({ type: 'research', subject: subject });
+      if (input) input.value = '';
+    }
+
+    function submitCommand() {
+      var input = document.getElementById('command-input');
+      var utterance = input ? input.value.trim() : '';
+      if (!utterance) return;
+      vscode.postMessage({ type: 'command', utterance: utterance });
+      if (input) input.value = '';
+    }
+
+    // Checkbox toggle handler
+    document.addEventListener('change', function(e) {
+      var target = e.target;
+      if (target && target.classList && target.classList.contains('item-check')) {
+        var li = target.closest('li.item');
+        if (li) {
+          var itemId = li.getAttribute('data-item-id');
+          if (itemId) {
+            vscode.postMessage({ type: 'toggleItem', itemId: itemId, checked: target.checked });
+          }
+        }
+      }
+    });
   </script>
 </body>
 </html>`;
 }
 
 /**
- * Editable document view for the Scratchpad.
+ * Editable document view for the Thinking Space.
  *
- * Shows every section with its per-section state marker (○ empty / ◌ proposed /
- * ◑ shaping / ● settled), the delta log (before and after each change), and a
- * Freeze control whose enabled state tracks SP-1's freezeEnabled(model).
- * All user interactions post a ScratchpadInboundMessage back through `onMessage`.
+ * Non-goal sections render as item checklists. The goal section contains the
+ * intent textarea (#goal-input, exactly one). No delta log.
  */
 export class ScratchpadDocumentView implements vscode.Disposable {
   private _panel: vscode.WebviewPanel | undefined;
@@ -256,34 +485,30 @@ export class ScratchpadDocumentView implements vscode.Disposable {
    *
    * @param extensionUri  Extension URI for resource roots.
    * @param model         The current working model.
-   * @param deltas        Accumulated deltas for the delta log.
-   * @param onMessage     Handler for inbound webview messages; called with the
-   *                      SAME `ScratchpadInboundMessage` the webview posts.
-   *                      May return a Promise (e.g. for askStructure).
+   * @param onMessage     Handler for inbound webview messages.
    */
   show(
     extensionUri: vscode.Uri,
     model: WorkingModel,
-    deltas: Delta[],
     onMessage: (msg: ScratchpadInboundMessage) => void | Promise<void>,
   ): void {
     if (this._panel) {
-      this._panel.reveal(vscode.ViewColumn.One);
-      this._panel.webview.html = buildScratchpadHtml(model, deltas);
+      this._panel.reveal(vs().ViewColumn.One);
+      this._panel.webview.html = buildScratchpadHtml(model);
       return;
     }
 
-    this._panel = vscode.window.createWebviewPanel(
+    this._panel = vs().window.createWebviewPanel(
       "thinkubeScratchpad",
       "Thinkube Scratchpad",
-      vscode.ViewColumn.One,
+      vs().ViewColumn.One,
       {
         enableScripts: true,
         localResourceRoots: [extensionUri],
       },
     );
 
-    this._panel.webview.html = buildScratchpadHtml(model, deltas);
+    this._panel.webview.html = buildScratchpadHtml(model);
 
     this._panel.webview.onDidReceiveMessage(
       (msg: ScratchpadInboundMessage) => {
@@ -305,11 +530,24 @@ export class ScratchpadDocumentView implements vscode.Disposable {
   }
 
   /**
-   * Push an updated model and delta log into the already-open panel.
+   * Push an updated model into the already-open panel, with optional
+   * round-activity overlay (running/landed/failed + per-section errors) and
+   * optional command-field state (in-flight flag + last error message).
    */
-  update(model: WorkingModel, deltas: Delta[] = []): void {
+  update(
+    model: WorkingModel,
+    roundActivity?: RoundActivity,
+    commandMessage?: string,
+    commandInFlight?: boolean,
+  ): void {
     if (this._panel) {
-      this._panel.webview.html = buildScratchpadHtml(model, deltas);
+      this._panel.webview.html = buildScratchpadHtml(
+        model,
+        undefined,
+        roundActivity,
+        commandMessage,
+        commandInFlight,
+      );
     }
   }
 

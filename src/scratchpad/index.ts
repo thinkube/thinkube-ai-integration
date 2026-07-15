@@ -1,11 +1,15 @@
+import * as fs from "node:fs";
+import * as nodePath from "node:path";
 import * as vscode from "vscode";
 import {
   openScratchpad,
   getScratchpadSession,
   _bootstrapExtensionUri,
 } from "./session";
+import { emptyModel } from "./model";
+import { serialize } from "./persistence";
 
-// ===== Public re-exports from SP-1 modules =====
+// ===== Public re-exports from model =====
 
 export { emptyModel, goalSection, reduce, freezeEnabled } from "./model";
 export type {
@@ -23,6 +27,14 @@ export type {
   WorkingModel,
   Action,
   Delta,
+  // SP-21/3 new types
+  Modality,
+  ItemState,
+  ItemOrigin,
+  Actor,
+  Evidence,
+  PendingEdit,
+  Item,
 } from "./model";
 
 export { serialize, deserialize } from "./persistence";
@@ -52,16 +64,32 @@ export {
   STATE_MARKERS,
 } from "./views/document";
 
-// ===== Session seams (SP-2) =====
+// ===== Session seams =====
 
 export { openScratchpad, getScratchpadSession } from "./session";
 export type {
   ScratchpadSessionDeps,
   ScratchpadSession,
   ScratchpadInboundMessage,
+  DryRunResult,
+  SigningTool,
+  DossierStore,
 } from "./session";
 
 // ===== Command registration =====
+
+/**
+ * Resolve the configured board root (thinkube.thinkingSpace.root).
+ * Returns undefined when not configured.
+ */
+function boardRoot(): string | undefined {
+  return (
+    vscode.workspace
+      .getConfiguration("thinkube.thinkingSpace")
+      .get<string>("root")
+      ?.trim() || undefined
+  );
+}
 
 /**
  * Register the Scratchpad commands with VS Code.
@@ -77,5 +105,75 @@ export function registerScratchpadCommands(
     vscode.commands.registerCommand("thinkube.scratchpad.open", async () => {
       await openScratchpad();
     }),
+  );
+
+  // ── Thinking-space tree commands (SP-21/3 SL-6) ──
+
+  /**
+   * Open an existing named thinking-space document.
+   * Called with (namespace: string, name: string) — the node's two fields.
+   * Routes through openScratchpad with namespace, space, and the configured board root.
+   * Opening a different (namespace, space) pair replaces the singleton session.
+   */
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "thinkube.thinkingSpace.openDoc",
+      async (namespace: string, name: string) => {
+        const sidecarRoot = boardRoot();
+        await openScratchpad({ namespace, space: name, sidecarRoot });
+      },
+    ),
+  );
+
+  /**
+   * Create a new thinking-space document in the given namespace, then open it.
+   * Prompts for a name, seeds the part-1 fresh-space shape
+   * (emptyModel with one empty-items section per kind), then opens it.
+   */
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "thinkube.thinkingSpace.newDoc",
+      async (namespace: string) => {
+        const sidecarRoot = boardRoot();
+
+        // Prompt for a document name.
+        const name = await vscode.window.showInputBox({
+          prompt: "Name for the new thinking space",
+          placeHolder: "e.g. my-feature",
+          validateInput: (v) => {
+            const t = v.trim();
+            if (!t) return "Name cannot be empty";
+            if (!/^[a-zA-Z0-9_-]+$/.test(t))
+              return "Use only letters, digits, hyphens, or underscores";
+            return undefined;
+          },
+        });
+        if (!name) return; // user cancelled
+
+        const docName = name.trim();
+
+        // Seed the fresh-space document on disk (if sidecarRoot is set).
+        if (sidecarRoot) {
+          const thinkingDir = nodePath.join(sidecarRoot, namespace, "thinking");
+          const docPath = nodePath.join(thinkingDir, `${docName}.json`);
+          try {
+            fs.mkdirSync(thinkingDir, { recursive: true });
+            // Only seed if the file doesn't already exist.
+            if (!fs.existsSync(docPath)) {
+              const freshModel = emptyModel("tep");
+              fs.writeFileSync(docPath, serialize(freshModel), "utf8");
+            }
+          } catch (err) {
+            vscode.window.showErrorMessage(
+              `Could not create thinking space: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            return;
+          }
+        }
+
+        // Open the (possibly just-seeded) document.
+        await openScratchpad({ namespace, space: docName, sidecarRoot });
+      },
+    ),
   );
 }
