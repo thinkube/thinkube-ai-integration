@@ -51,6 +51,9 @@ export class FreezeControl implements vscode.Disposable {
       {
         enableScripts: true,
         localResourceRoots: [extensionUri],
+        // Same retention as the document panel (2026-07-16): a hidden webview's
+        // DOM is destroyed; the freeze approval state must survive tab switches.
+        retainContextWhenHidden: true,
       },
     );
 

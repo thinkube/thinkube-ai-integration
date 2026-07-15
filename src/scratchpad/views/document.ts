@@ -505,6 +505,10 @@ export class ScratchpadDocumentView implements vscode.Disposable {
       {
         enableScripts: true,
         localResourceRoots: [extensionUri],
+        // Keep the DOM alive when the tab hides (2026-07-16): typed-but-unconfirmed
+        // text lives only in the DOM until confirm posts it — without retention,
+        // switching tabs destroyed the webview and the author's words with it.
+        retainContextWhenHidden: true,
       },
     );
 
