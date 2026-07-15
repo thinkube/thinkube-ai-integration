@@ -298,6 +298,8 @@ export interface VerifyOracleDeps {
 }
 
 export interface VerifyOracle {
+  /** Dispatch-time completeness audit — disclosure text to append to the brief, or undefined. */
+  preflight?: () => Promise<string | undefined>;
   /** Run one verification round; serialized (concurrent calls queue). */
   verify(): Promise<VerifyResult>;
   /** Invocations consumed so far. */
@@ -370,6 +372,22 @@ export function createVerifyOracle(deps: VerifyOracleDeps): VerifyOracle {
   const PERSIST_AFTER = 4;
 
   let supervised = false;
+  /** Dispatch-time information audit (2026-07-15): completeness of brief-vs-
+   *  probes is STATIC — if a decidable fact is missing it is missing at round
+   *  zero. Called once BEFORE the coder spends anything; returns disclosure
+   *  text to append to the brief, or undefined (complete / escalated). */
+  const preflight = async (): Promise<string | undefined> => {
+    if (!deps.supervise || supervised) return undefined;
+    supervised = true;
+    try {
+      return await deps.supervise(
+        "PRE-FLIGHT — no rounds have run. Audit ONLY information completeness of the brief against the checks.",
+        deps.verifications.map((v) => v.ac),
+      );
+    } catch {
+      return undefined;
+    }
+  };
   const round = async (): Promise<VerifyResult> => {
     if (stallCount >= STALL_AFTER && deps.supervise && !supervised) {
       // One supervisor consult per invocation-budget: answer the wall instead of
@@ -501,6 +519,7 @@ export function createVerifyOracle(deps: VerifyOracleDeps): VerifyOracle {
   };
 
   return {
+    preflight,
     verify: () => enqueue(round),
     invocations: () => used,
     confirmGreen: () =>

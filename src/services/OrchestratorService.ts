@@ -4757,6 +4757,33 @@ export class OrchestratorService {
     } catch {
       /* best-effort */
     }
+    // Dispatch-time information audit (2026-07-15): completeness is static —
+    // a missing decidable fact is missing at round zero, so the supervisor
+    // audits brief-vs-probes BEFORE the coder spends anything. A DISCLOSE
+    // verdict appends the (ledgered) facts to the brief; CAPABILITY/ESCALATE
+    // dispatch unchanged.
+    let prompt2 = prompt;
+    if (!isTest && oracle?.preflight) {
+      try {
+        const pf = await oracle.preflight();
+        if (pf && /^DISCLOSE:/.test(pf.trim())) {
+          prompt2 =
+            prompt +
+            "\n──── SUPERVISOR PRE-FLIGHT DISCLOSURES (facts your brief lacked — ledgered as contract gaps; align with these exactly) ────\n" +
+            pf.trim().slice(9).trim() +
+            "\n";
+          this.deps.output.appendLine(
+            `  [${unit.id}] pre-flight: supervisor disclosed missing facts (ledgered).`,
+          );
+        } else if (pf) {
+          this.deps.output.appendLine(
+            `  [${unit.id}] pre-flight: ${pf.slice(0, 80)}`,
+          );
+        }
+      } catch {
+        /* audit is best-effort — never blocks dispatch */
+      }
+    }
     // Rework routing (2026-07-12): on a rework round the slice card carries the judge's
     // round-stamped `## ⚖ Judge guidance` sections, addressed to the routed role (blockSlice
     // appended them — the durable, auditable channel). The re-dispatched worker of THAT role
@@ -4770,9 +4797,9 @@ export class OrchestratorService {
       (unit.role ?? "code") as "code" | "test",
     );
     const workerPrompt = guidance
-      ? `${prompt}\n\n──── JUDGE GUIDANCE (a previous attempt FAILED acceptance; an independent judge attributed the fault to your role) ────\n` +
+      ? `${prompt2}\n\n──── JUDGE GUIDANCE (a previous attempt FAILED acceptance; an independent judge attributed the fault to your role) ────\n` +
         `PRIORITIZE this section: where it conflicts with your own interpretation of the task note or contract, this guidance wins. Address every point it raises before finishing.\n\n${guidance}`
-      : prompt;
+      : prompt2;
     let success = false;
     // SP-11/3: the worker's final output text (last `result` message), mined below for a trailing
     // `## Discoveries` block so `dispatchSpec` can surface out-of-scope findings in the report.
