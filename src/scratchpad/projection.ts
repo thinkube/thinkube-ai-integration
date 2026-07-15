@@ -121,3 +121,42 @@ function _projectSpec(model: WorkingModel, goalTitle: string): string {
 
   return lines.join("\n");
 }
+
+/**
+ * Delta projection (SP-21/3 contract, part 4): the checked, still-active items —
+ * never shipped, never deferred, never anything unchecked — grouped by section
+ * kind, as the body of the NEXT frozen TEP. A superseding item's line carries
+ * "(supersedes <the shipped item's text>)" so the revision is recorded in the
+ * artifact itself. Returns the item ids so the freeze pipeline can stamp them
+ * shipped once the write lands.
+ */
+export function projectDelta(model: WorkingModel): {
+  title: string;
+  body: string;
+  itemIds: string[];
+} {
+  const goal = goalSection(model);
+  const title = (goal.text.split("\n")[0] ?? "").trim();
+  const itemIds: string[] = [];
+  const parts: string[] = [];
+  const textById = new Map<string, string>();
+  for (const s of model.sections)
+    for (const it of s.items ?? []) textById.set(it.id, it.text);
+  for (const s of model.sections) {
+    const picked = (s.items ?? []).filter(
+      (it) => it.checked && it.state === "active",
+    );
+    if (picked.length === 0) continue;
+    const header = KIND_TO_TEP_HEADER[s.kind];
+    if (header) parts.push(header);
+    for (const it of picked) {
+      itemIds.push(it.id);
+      const sup = it.supersedes
+        ? ` (supersedes ${textById.get(it.supersedes) ?? it.supersedes})`
+        : "";
+      parts.push(`- ${it.text}${sup}`);
+    }
+    parts.push("");
+  }
+  return { title, body: parts.join("\n").trim(), itemIds };
+}

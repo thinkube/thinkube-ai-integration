@@ -5,7 +5,7 @@ import {
   _bootstrapExtensionUri,
 } from "./session";
 
-// ===== Public re-exports from SP-1 modules =====
+// ===== Public re-exports from model =====
 
 export { emptyModel, goalSection, reduce, freezeEnabled } from "./model";
 export type {
@@ -23,6 +23,14 @@ export type {
   WorkingModel,
   Action,
   Delta,
+  // SP-21/3 new types
+  Modality,
+  ItemState,
+  ItemOrigin,
+  Actor,
+  Evidence,
+  PendingEdit,
+  Item,
 } from "./model";
 
 export { serialize, deserialize } from "./persistence";
@@ -52,13 +60,16 @@ export {
   STATE_MARKERS,
 } from "./views/document";
 
-// ===== Session seams (SP-2) =====
+// ===== Session seams =====
 
 export { openScratchpad, getScratchpadSession } from "./session";
 export type {
   ScratchpadSessionDeps,
   ScratchpadSession,
   ScratchpadInboundMessage,
+  DryRunResult,
+  SigningTool,
+  DossierStore,
 } from "./session";
 
 // ===== Command registration =====
