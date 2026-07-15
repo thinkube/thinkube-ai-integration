@@ -69,6 +69,7 @@ import {
   type VerificationTraceEntry,
   type ExitAction,
   grepWithinCwd,
+  extractDecisions,
 } from "./orchestratorCore";
 import { validateDag } from "../methodology/parallelSlices";
 
@@ -2768,4 +2769,22 @@ test("grepWithinCwd: escapes are denied however they are spelled", () => {
   assert.deepEqual(grepWithinCwd("Read", { path: "/etc/passwd" }, cwd), {
     allow: true,
   });
+});
+
+// ── extractDecisions (2026-07-15): the tester's ambiguity-resolution record ──
+
+test("extractDecisions: parses DECISION: lines, tolerates bullets, ignores prose", () => {
+  const out = extractDecisions(
+    [
+      "All done. Summary of choices:",
+      "DECISION: slugify strips all non-alphanumerics entirely — 'dossier research item text' → 'dossierresearchitemtext'",
+      "- DECISION: a gated action from a worker reply is dispatched and REJECTED (rejected delta), never silently dropped",
+      "UNDELIVERED: something else — question: n/a",
+      "No decision here.",
+    ].join("\n"),
+  );
+  assert.equal(out.length, 2);
+  assert.match(out[0], /dossierresearchitemtext/);
+  assert.match(out[1], /REJECTED/);
+  assert.deepEqual(extractDecisions("nothing"), []);
 });

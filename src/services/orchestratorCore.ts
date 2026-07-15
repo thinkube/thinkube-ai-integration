@@ -1000,6 +1000,25 @@ export const UNDELIVERED_FORMAT_STANZA =
  * line-prefix scan by design: the format stanza pins the shape, and a declared gap must
  * survive any surrounding prose. No matching lines ⇒ `[]`. Pure.
  */
+/** Tester DECISIONS record (2026-07-15): the ambiguity resolutions a test author
+ *  was forced to make where the contract ran out — the chosen rule + the exact
+ *  literal, one line each, machine-parsed by prefix. Threaded into the SAME-slice
+ *  coder's brief (tests-first guarantees the timing), so a naming/semantics
+ *  divergence costs one contract line instead of oracle rounds. Interpretation
+ *  choices ONLY — never the test matrix. */
+export const DECISION_PREFIX = "DECISION: ";
+export function extractDecisions(finalOutput: string): string[] {
+  const out: string[] = [];
+  for (const line of (finalOutput ?? "").split(/\r?\n/)) {
+    const stripped = line.replace(/^\s*(?:[-*+]|\d+[.)])?\s*/, "");
+    if (stripped.startsWith(DECISION_PREFIX)) {
+      const text = stripped.slice(DECISION_PREFIX.length).trim();
+      if (text) out.push(text);
+    }
+  }
+  return out;
+}
+
 export function extractUndelivered(finalOutput: string): string[] {
   const out: string[] = [];
   for (const line of (finalOutput ?? "").split(/\r?\n/)) {
@@ -1246,7 +1265,7 @@ export function buildWorkerPrompt(
       `──── END FOOTPRINT FILES ────\n`
     : "";
   const workspaceBlock = isTest
-    ? `\nYou are writing the tests FIRST: the implementation named in the SPEC CONTRACT does not exist in your working directory yet — that is expected and correct, NOT an error to fix or an implementation to hunt for. Your working directory is the codebase as it stands BEFORE this feature. Read anything here you need — the test harness, helpers, existing tests, import/type conventions — and write your test file(s) at your footprint (${fp}) using paths relative to the working directory. Import the contract's modules by the exact path/name it gives; they resolve once the implementer builds to the same contract. Write your tests purely from the contract + the criteria below — do not wait for or look for the implementation.\n`
+    ? `\nYou are writing the tests FIRST: the implementation named in the SPEC CONTRACT does not exist in your working directory yet — that is expected and correct, NOT an error to fix or an implementation to hunt for. Your working directory is the codebase as it stands BEFORE this feature. Read anything here you need — the test harness, helpers, existing tests, import/type conventions — and write your test file(s) at your footprint (${fp}) using paths relative to the working directory. Import the contract's modules by the exact path/name it gives; they resolve once the implementer builds to the same contract. Write your tests purely from the contract + the criteria below — do not wait for or look for the implementation.\nDECISIONS RECORD: wherever the contract left a choice you had to make (a normalization rule, an exact expected literal, an error-handling semantic), end your final summary with one line per choice, starting exactly with "DECISION: " — the rule you chose plus the exact literal where applicable. Record ONLY interpretation choices the contract forced; never describe your tests or assertions.\n`
     : "";
   // ORIENTATION (2026-07-15): a worker was observed GUESSING its own cwd from its unit
   // handle (wrong), then ls-walking the tree and brushing the fences to orient itself —

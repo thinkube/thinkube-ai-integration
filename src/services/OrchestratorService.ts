@@ -48,6 +48,7 @@ import {
   buildDeliveryReport,
   extractDiscoveries,
   extractUndelivered,
+  extractDecisions,
   preflightProvisionFailures,
   scanStubMarkers,
   isStubScannableFile,
@@ -3184,6 +3185,20 @@ export class OrchestratorService {
         // workers" section. Independent of outcome: a "successful" unit may still have
         // declared a gap, and that declaration must never be lost. Each declaration is
         // also a find-time defect (the worker caught it before the gate could).
+        // Tester DECISIONS (2026-07-15): fold the test author's declared ambiguity
+        // resolutions into its unitNotes entry — the same-slice coder's brief (built
+        // later, tests-first) then carries them verbatim: round-0 alignment on the
+        // contract residue instead of rounds of oracle-driven rediscovery.
+        if (d.finalOutput) {
+          const entry = (this.promptCtx.unitNotes ?? []).find(
+            (n) => n.unit === d.id,
+          );
+          if (entry?.role === "test") {
+            const decisions = extractDecisions(d.finalOutput);
+            if (decisions.length)
+              entry.note += `\nDECISIONS the test author recorded (contract ambiguities it had to resolve — align with these exactly): ${decisions.join("; ")}`;
+          }
+        }
         if (d.finalOutput)
           for (const text of extractUndelivered(d.finalOutput)) {
             result.undelivered.push({ unit: d.id, text });
