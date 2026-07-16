@@ -2584,11 +2584,52 @@ test("stub scan: scanStubMarkers finds the deferral markers case-insensitively w
   );
   assert.equal(hits[0].file, "src/x.ts");
   assert.match(hits[0].text, /TODO: finish the retry loop/);
+  // Tiering: unambiguous confessions are weak:false; stub/no-op/placeholder
+  // vocabulary without a confession word is weak:true (review-by-eye).
+  assert.deepEqual(
+    hits.map((h) => h.weak),
+    [false, true, false, true],
+  );
   // Code files only — prose/docs/json are not deferrals.
   assert.ok(isStubScannableFile("src/a.ts"));
   assert.ok(isStubScannableFile("scripts/run.sh"));
   assert.ok(!isStubScannableFile("README.md"));
   assert.ok(!isStubScannableFile("package.json"));
+});
+
+test("stub scan precision (2026-07-16): probe files are sanctioned; API placeholder is vocabulary; value-position PLACEHOLDER still flags", () => {
+  // Probe/test files carry sanctioned harness doubles — never scanned.
+  assert.ok(!isStubScannableFile("src/acceptance/SP-21_3_AC-7.host.ts"));
+  assert.ok(!isStubScannableFile("src/acceptance/SP-21_3_AC-2.test.ts"));
+  assert.ok(!isStubScannableFile("src/scratchpad/workers/actionGuide.test.ts"));
+  assert.ok(!isStubScannableFile("src/foo/bar.spec.ts"));
+  assert.ok(isStubScannableFile("src/scratchpad/session.ts"));
+
+  // Key-position placeholder = HTML attribute / VS Code InputBox option — no hit.
+  const apiHits = scanStubMarkers(
+    "src/views/document.ts",
+    [
+      '<input type="text" placeholder="e.g. accept all constraints">',
+      'placeHolder: "e.g. my-feature",',
+    ].join("\n"),
+  );
+  assert.deepEqual(apiHits, []);
+
+  // Value-position PLACEHOLDER is NOT api vocabulary — flagged (weak tier).
+  const valueHits = scanStubMarkers(
+    "src/x.ts",
+    'itemId: "PLACEHOLDER",',
+  );
+  assert.equal(valueHits.length, 1);
+  assert.equal(valueHits[0].weak, true);
+
+  // A design comment using "no-op" is weak, never a confession.
+  const designHits = scanStubMarkers(
+    "src/scratchpad/session.ts",
+    "// session runs IN-MEMORY: no file is written and flush() is a no-op.",
+  );
+  assert.equal(designHits.length, 1);
+  assert.equal(designHits[0].weak, true);
 });
 
 test("buildDeliveryReport: undelivered + stub-scan sections render after the intent check — verbatim, with the empty-state lines", () => {
@@ -2609,13 +2650,30 @@ test("buildDeliveryReport: undelivered + stub-scan sections render after the int
       { unit: "u1", text: "the retry loop — question: which backoff?" },
     ],
     stubScan: [
-      { file: "src/a.ts", line: 7, text: "// TODO: finish the retry loop" },
+      {
+        file: "src/a.ts",
+        line: 7,
+        text: "// TODO: finish the retry loop",
+        weak: false,
+      },
+      {
+        file: "src/b.ts",
+        line: 3,
+        text: "// flush() is a no-op in memory mode",
+        weak: true,
+      },
     ],
   });
   assert.match(md, /## Undelivered — declared by the workers/);
   assert.match(md, /`u1` — the retry loop — question: which backoff\?/);
   assert.match(md, /## Self-declared deferrals found in the delivered code/);
   assert.match(md, /`src\/a\.ts:7` — \/\/ TODO: finish the retry loop/);
+  // Weak hits render ONLY under the review-by-eye heading, after the confessions.
+  assert.match(md, /### Weak markers \(design\/test vocabulary/);
+  const weakHeadAt = md.indexOf("### Weak markers");
+  const confessionAt = md.indexOf("`src/a.ts:7`");
+  const weakHitAt = md.indexOf("`src/b.ts:3`");
+  assert.ok(confessionAt < weakHeadAt && weakHeadAt < weakHitAt);
   // Prominence: both sections sit AFTER the intent check and BEFORE the AC table.
   const intentAt = md.indexOf("## Intent check");
   const undelAt = md.indexOf("## Undelivered — declared by the workers");

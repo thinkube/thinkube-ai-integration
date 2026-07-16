@@ -4828,14 +4828,18 @@ export class OrchestratorService {
     let baselineStubNote = "";
     if (!isTest) {
       try {
+        // Confession-tier hits only: the brief turns each hit into a hard
+        // removal OBLIGATION, so a weak marker (design "no-op", test "stub",
+        // API "placeholder") here would order the worker to break legitimate
+        // code. isStubScannableFile also keeps probe/test files out.
         const hits = unit.footprint
-          .filter((f) => !/(^|\/)acceptance\//.test(f))
+          .filter((f) => isStubScannableFile(f))
           .flatMap((f) => {
             try {
               return scanStubMarkers(
                 f,
                 fs.readFileSync(path.join(cwd, f), "utf8"),
-              );
+              ).filter((h) => !h.weak);
             } catch {
               return [];
             }
@@ -5617,7 +5621,10 @@ export class OrchestratorService {
           /* absent/unreadable delivered file — nothing to scan */
         }
       }
-      for (const h of stubScan)
+      // Only confession-tier hits become defect rows — weak markers (stub/no-op/
+      // placeholder as design or API vocabulary) render in the report's
+      // review-by-eye section but must not pollute the ledger (2026-07-16).
+      for (const h of stubScan.filter((x) => !x.weak))
         this.logDefect({
           spec: specNumber,
           activity: "delivery-review",
