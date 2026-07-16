@@ -7,6 +7,7 @@ import { emptyModel, reduce } from "./model";
 import type { Action, Delta, SectionKind, WorkingModel } from "./model";
 import { deserialize, serialize } from "./persistence";
 import {
+  explainer,
   gapFiller,
   integrator,
   makeProductionQueryFnThunk,
@@ -497,6 +498,23 @@ class ScratchpadSessionImpl implements ScratchpadSession {
           itemId: message.itemId,
         });
         break;
+      case "explainItem": {
+        // Run the explainer round for one item — attaches a Why/Impact/
+        // Modality note so the human can take an informed settle/defer/drop
+        // decision. Targeted at the item's own section for activity display.
+        const secOfItem = this._model.sections.find((s) =>
+          s.items.some((it) => it.id === message.itemId),
+        );
+        if (!secOfItem) break;
+        await this._runWorkerRound("explain", [secOfItem.kind], async () => {
+          const worker = explainer(
+            { loadQuery: this._loadQueryFn, model: this._workerModelId },
+            message.itemId,
+          );
+          return worker.run(this._model, []);
+        });
+        break;
+      }
       // ── Selection flow (2026-07-16): step 1 selects, step 2 applies ──────
       case "toggleSelect":
         if (this._selection.has(message.itemId)) {
@@ -629,6 +647,28 @@ class ScratchpadSessionImpl implements ScratchpadSession {
                 lines.push(`\n${sec.kind} (settled):`);
                 for (const it of checked) lines.push(`- ${it.text}`);
               }
+            }
+            // Unsettled MANDATORY items are disclosed to the judge: modality
+            // feeds no hard mechanism (the human stays sovereign over the
+            // labels), but the readiness verdict must be able to see and
+            // flag a proposed-required item that nobody settled or resolved.
+            const unsettledMandatory = this._model.sections.flatMap((sec) =>
+              sec.kind === "goal"
+                ? []
+                : sec.items
+                    .filter(
+                      (it) =>
+                        it.modality === "mandatory" &&
+                        it.state === "active" &&
+                        !it.checked,
+                    )
+                    .map((it) => `- [${sec.kind}] ${it.text}`),
+            );
+            if (unsettledMandatory.length > 0) {
+              lines.push(
+                `\nUnsettled MANDATORY items (proposed as required, but the human has neither settled nor reclassified them — judge whether the intent is deliverable while these are unresolved):`,
+              );
+              lines.push(...unsettledMandatory);
             }
             const verdict = await this._runSlicer(lines.join("\n"));
             const record = toReadinessRecord(this._model, verdict);

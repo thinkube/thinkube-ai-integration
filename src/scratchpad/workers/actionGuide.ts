@@ -217,7 +217,9 @@ export function renderActionGuide(
     proposeItem:
       `{"type":"proposeItem","actor":"${actor}","sectionId":"${exampleSectionId}",` +
       `"item":{"text":"<the item text>","modality":"optional","evals":{"complexity":2,"risk":1}}}` +
-      ` — modality is "mandatory" or "optional"; evals values are 1|2|3 (omit a facet if unsure)`,
+      ` — modality doctrine: "mandatory" = the intent CANNOT be delivered without this item; ` +
+      `"optional" = valuable, but the intent survives without it. Classify honestly per item, never by default. ` +
+      `Evals values are 1|2|3 (omit a facet if unsure)`,
     proposeEdit: `{"type":"proposeEdit","actor":"${actor}","itemId":"${exampleItemId}","newText":"<replacement text>"}`,
     addItemNote: `{"type":"addItemNote","actor":"${actor}","itemId":"${exampleItemId}","text":"<the note>"}`,
     attachEvidence:

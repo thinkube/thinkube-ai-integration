@@ -120,6 +120,36 @@ test("freezeStatusText: a dry-run gap without a note still reads sensibly; enabl
   assert.match(freezeStatusText(model, true), /Ready to freeze/);
 });
 
+test("freezeStatusText: unsettled mandatory items warn in every state; settling clears it", () => {
+  let model = coveredModel();
+  // Add one MANDATORY item, unchecked.
+  const gapSec = model.sections.find((s) => s.kind === "gap")!;
+  model = reduce(model, {
+    type: "proposeItem",
+    actor: "gap-filler",
+    sectionId: gapSec.id,
+    item: { text: "a required thing", modality: "mandatory", evals: {} },
+  }).model;
+  model = reduce(model, {
+    type: "recordReadiness",
+    record: { covered: true, cleanCut: true, gapSection: null },
+  }).model;
+  const ready = freezeStatusText(model, true);
+  assert.match(ready, /Ready to freeze/);
+  assert.match(ready, /1 MANDATORY item is not settled/);
+
+  // Checking the mandatory item clears the warning.
+  const mandatoryId = model.sections
+    .find((s) => s.kind === "gap")!
+    .items.find((it) => it.modality === "mandatory")!.id;
+  model = reduce(model, {
+    type: "checkItem",
+    actor: "human",
+    itemId: mandatoryId,
+  }).model;
+  assert.doesNotMatch(freezeStatusText(model, true), /MANDATORY/);
+});
+
 test("parseSlicerVerdict: the reason is carried on failures and dropped on clean cuts", () => {
   const failed = parseSlicerVerdict(
     '{"cleanCut": false, "gapSection": "criteria", "reason": "No criterion says how success is observed.", "decomposition": []}',

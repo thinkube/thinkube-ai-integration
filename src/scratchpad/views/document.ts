@@ -49,6 +49,7 @@ export type ScratchpadInboundMessage =
   | { type: "command"; utterance: string }
   // ── Selection flow (2026-07-16): destructive verbs are two-step — select
   //    first (command or per-item toggle), then apply over the selection.
+  | { type: "explainItem"; itemId: string }
   | { type: "toggleSelect"; itemId: string }
   | { type: "clearSelection" }
   | {
@@ -154,12 +155,23 @@ function itemHtml(item: Item, selected = false): string {
   const itemControls =
     item.state === "active"
       ? `<span class="item-actions">` +
+        `<button class="item-explain" title="Analyze — attach a Why / Impact / Modality note to inform your decision">why?</button>` +
         `<button class="item-select" title="${
           selected
             ? "Remove from selection"
             : "Select — then apply an action from the selection bar"
         }">${selected ? "deselect" : "select"}</button>` +
         `</span>`
+      : "";
+
+  // Notes render under the item (field request 2026-07-16: notes existed in
+  // the model but the surface never showed them — an informed settle/defer/
+  // drop decision needs the why and the impact visible).
+  const notesHtml =
+    item.notes.length > 0
+      ? `<div class="item-notes">${item.notes
+          .map((n) => `<div class="item-note">${esc(n.text)}</div>`)
+          .join("")}</div>`
       : "";
   return (
     `<li ${liAttrs.join(" ")}>` +
@@ -170,6 +182,7 @@ function itemHtml(item: Item, selected = false): string {
     pendingEditSpan +
     evidenceChips +
     itemControls +
+    notesHtml +
     `</li>`
   );
 }
@@ -275,19 +288,36 @@ export function freezeStatusText(
   model: WorkingModel,
   canFreeze: boolean,
 ): string {
+  // Unsettled MANDATORY items are surfaced in every state (2026-07-16: the
+  // label previously fed no mechanism at all — a "mandatory" item could stay
+  // unchecked and freeze proceeded silently). A warning, not a lock: the
+  // label is worker-assigned advice; the human stays sovereign (reclassify,
+  // defer, or drop if the label is wrong).
+  const unsettledMandatory = model.sections.flatMap((s) =>
+    s.items.filter(
+      (it) =>
+        it.modality === "mandatory" && it.state === "active" && !it.checked,
+    ),
+  );
+  const mandatoryWarning =
+    unsettledMandatory.length > 0
+      ? ` ⚠ ${unsettledMandatory.length} MANDATORY item${
+          unsettledMandatory.length === 1 ? " is" : "s are"
+        } not settled — settle, defer, or reclassify before freezing.`
+      : "";
   if (canFreeze) {
-    return "Ready to freeze — Freeze signs the checked items into a proposed TEP.";
+    return `Ready to freeze — Freeze signs the checked items into a proposed TEP.${mandatoryWarning}`;
   }
   const uncovered = uncoveredSections(model);
   if (uncovered.length > 0) {
     const parts = uncovered.map((k) =>
       k === "goal" ? "goal (write the intent text)" : k,
     );
-    return `Freeze locked — every section needs at least one CHECKED item; still uncovered: ${parts.join(", ")}.`;
+    return `Freeze locked — every section needs at least one CHECKED item; still uncovered: ${parts.join(", ")}.${mandatoryWarning}`;
   }
   const hist = model.readinessHistory;
   if (hist.length === 0) {
-    return "Freeze locked — coverage is green; run “Check readiness” to get a clean-cut verdict on the intent.";
+    return `Freeze locked — coverage is green; run “Check readiness” to get a clean-cut verdict on the intent.${mandatoryWarning}`;
   }
   const latest = hist[hist.length - 1];
   if (!latest.covered) {
@@ -301,7 +331,7 @@ export function freezeStatusText(
       ? ` (${latest.gapSection} section)`
       : "";
     if (latest.note) {
-      return `Freeze locked — readiness check${where}: ${latest.note} Re-run “Check readiness” after addressing it.`;
+      return `Freeze locked — readiness check${where}: ${latest.note} Re-run “Check readiness” after addressing it.${mandatoryWarning}`;
     }
     return latest.gapSection
       ? `Freeze locked — the readiness check flagged the ${latest.gapSection} section as incomplete or ambiguous; settle it and re-run “Check readiness”.`
@@ -500,6 +530,8 @@ export function buildScratchpadHtml(
        (the checkbox = settled into the TEP): dashed outline, no fill that
        could read as a settled/accepted state. */
     li.item.selected { outline: 1px dashed var(--vscode-focusBorder); outline-offset: -1px; border-radius: 2px; }
+    .item-notes { flex-basis: 100%; margin: 4px 0 2px 24px; }
+    .item-note { font-size: 0.85em; opacity: 0.85; padding: 4px 8px; border-left: 2px solid var(--vscode-panel-border); margin-bottom: 4px; white-space: pre-wrap; }
     li.item[data-state="deferred"] { opacity: 0.55; }
     li.item[data-state="deferred"] .item-text::after { content: " (deferred)"; font-size: 0.85em; opacity: 0.8; }
     #selection-bar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 8px; padding: 8px 12px; margin-bottom: 12px; border: 1px solid var(--vscode-focusBorder); border-radius: 4px; background: var(--vscode-editor-background); }
@@ -588,16 +620,18 @@ export function buildScratchpadHtml(
       if (input) input.value = '';
     }
 
-    // Per-item selection toggle (event delegation, like the checkbox handler)
+    // Per-item controls: selection toggle + explain (event delegation)
     document.addEventListener('click', function(e) {
       var target = e.target;
       if (!target || !target.classList) return;
-      if (!target.classList.contains('item-select')) return;
+      var isSelect = target.classList.contains('item-select');
+      var isExplain = target.classList.contains('item-explain');
+      if (!isSelect && !isExplain) return;
       var li = target.closest('li.item');
       if (!li) return;
       var itemId = li.getAttribute('data-item-id');
       if (!itemId) return;
-      vscode.postMessage({ type: 'toggleSelect', itemId: itemId });
+      vscode.postMessage({ type: isExplain ? 'explainItem' : 'toggleSelect', itemId: itemId });
     });
 
     function applySelection(verb) {

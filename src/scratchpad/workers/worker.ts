@@ -87,7 +87,8 @@ export const GATES: Record<
   | "reframe"
   | "adversarial"
   | "research"
-  | "interpreter",
+  | "interpreter"
+  | "explainer",
   { allowedTools: ToolName[]; disallowedTools: ToolName[] }
 > = {
   /**
@@ -179,6 +180,25 @@ export const GATES: Record<
       "editGoal",
       "resolveEdit",
       "proposeEdit",
+    ],
+  },
+  /**
+   * Explainer: annotates ONE item with a Why/Impact note so the human can
+   * take an informed settle/defer/drop decision. Notes only — it can neither
+   * propose, check, nor edit anything.
+   */
+  explainer: {
+    allowedTools: ["addItemNote"],
+    disallowedTools: [
+      "proposeItem",
+      "proposeEdit",
+      "checkItem",
+      "uncheckItem",
+      "addItem",
+      "freeze",
+      "editGoal",
+      "resolveEdit",
+      "attachEvidence",
     ],
   },
   /**
@@ -581,4 +601,79 @@ export function integrator(deps: WorkerFactoryDeps): WorkerRun {
     disallowedTools: GATES.integrator.disallowedTools,
     actor: "integrator",
   });
+}
+
+/**
+ * Explainer worker — pre-gated with GATES.explainer.
+ * allowed: [addItemNote] only.
+ *
+ * Annotates ONE item with a compact Why/Impact note so the human can take an
+ * informed settle/defer/drop decision (field request 2026-07-16: a bare
+ * one-line item gives nothing to decide on). Blind round: the explanation is
+ * derived from the intent and the space's own content, nothing else.
+ */
+export function explainer(
+  deps: WorkerFactoryDeps,
+  itemId: string,
+): WorkerRun {
+  const base = createPhaseWorker({
+    loadQuery: deps.loadQuery,
+    model: deps.model,
+    allowedTools: GATES.explainer.allowedTools,
+    disallowedTools: GATES.explainer.disallowedTools,
+    actor: "integrator",
+  });
+
+  return {
+    ...base,
+    buildPrompt(workingModel: WorkingModel, _conversation: string[]): string {
+      const goalSec = workingModel.sections.find((s) => s.kind === "goal");
+      const intentText = goalSec?.text ?? "";
+
+      let sectionKind = "";
+      let itemText = "";
+      let itemModality = "optional";
+      const siblingLines: string[] = [];
+      for (const section of workingModel.sections) {
+        for (const item of section.items) {
+          if (item.id === itemId) {
+            sectionKind = section.kind;
+            itemText = item.text;
+            itemModality = item.modality;
+          }
+        }
+      }
+      for (const section of workingModel.sections) {
+        if (section.kind !== sectionKind) continue;
+        for (const item of section.items) {
+          if (item.id === itemId || item.state === "dropped") continue;
+          siblingLines.push(`- ${item.text}`);
+        }
+      }
+
+      return (
+        `You are the item-explainer worker. Produce EXACTLY ONE addItemNote action for the item below, ` +
+        `giving the human what they need to decide whether to settle (check), defer, or drop it.\n\n` +
+        `The note text must have exactly this shape:\n` +
+        `Why: <1-2 sentences — the role this item plays in the intent; what question or risk it settles>\n` +
+        `Impact: <1-2 sentences — what including it commits the work to, and what is lost or risked if it is dropped>\n` +
+        `Modality: <1-2 sentences — is its current classification ("${itemModality}") right for this intent ` +
+        `(mandatory = the intent cannot be delivered without it; optional = the intent survives without it), ` +
+        `and what concretely happens if this item is left unsettled>\n\n` +
+        `Stay at intent altitude and domain-agnostic: no implementation detail (languages, frameworks, tooling) ` +
+        `unless the intent itself names it. Ground every claim in the intent and the space's content — never invent context.\n\n` +
+        `Intent (goal):\n${intentText}\n\n` +
+        `The item (in the ${sectionKind} section, currently ${itemModality}):\n"${itemText}"\n\n` +
+        (siblingLines.length > 0
+          ? `Other items in the same section (for contrast — do NOT annotate these):\n${siblingLines.join("\n")}\n\n`
+          : "") +
+        renderActionGuide(
+          workingModel,
+          GATES.explainer.allowedTools,
+          "integrator",
+        ) +
+        `\n\nThe ONLY itemId you may target is "${itemId}".`
+      );
+    },
+  };
 }
