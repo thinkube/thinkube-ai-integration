@@ -35,6 +35,10 @@ import type {
 /** Worker actors — every scratchpad round actor except the human. */
 export type WorkerActor = "gap-filler" | "integrator" | "research";
 
+/** The actor a normalized round stamps: a worker actor, or "human" for the
+ *  command-field interpreter (the utterance IS the human's act). */
+export type RoundActor = WorkerActor | "human";
+
 export interface RejectedAction {
   raw: unknown;
   reason: string;
@@ -46,14 +50,13 @@ export interface NormalizeResult {
 }
 
 export interface NormalizeOptions {
-  defaultActor: WorkerActor;
+  defaultActor: RoundActor;
   allowedTools: ToolName[];
   /** ISO timestamp used to fill a missing evidence.checkedAt (research rounds). */
   nowIso?: string;
 }
 
-// Tools a worker round may express through this seam. Anything else (human/
-// interpreter vocabulary, freeze, …) is rejected here regardless of gate.
+// Tools a worker round may express through this seam.
 const WORKER_EMITTABLE: ReadonlySet<string> = new Set([
   "proposeItem",
   "proposeEdit",
@@ -63,11 +66,43 @@ const WORKER_EMITTABLE: ReadonlySet<string> = new Set([
   "addObjection",
 ]);
 
-const SECTION_TAKING: ReadonlySet<string> = new Set(["proposeItem"]);
+// The command-field interpreter's human vocabulary (GATES.interpreter).
+// Every one of these is stamped actor:"human" on normalization — the
+// utterance is the human's act, whatever the model claims.
+const HUMAN_EMITTABLE: ReadonlySet<string> = new Set([
+  "addItem",
+  "checkItem",
+  "uncheckItem",
+  "editItemText",
+  "setModality",
+  "setEval",
+  "deferItem",
+  "dropItem",
+  "supersedeItem",
+  "resolveEdit",
+  "addItemNote",
+]);
+
+// Anything outside both sets (freeze, …) is rejected regardless of gate.
+const EMITTABLE: ReadonlySet<string> = new Set([
+  ...WORKER_EMITTABLE,
+  ...HUMAN_EMITTABLE,
+]);
+
+const SECTION_TAKING: ReadonlySet<string> = new Set(["proposeItem", "addItem"]);
 const ITEM_TAKING: ReadonlySet<string> = new Set([
   "proposeEdit",
   "addItemNote",
   "attachEvidence",
+  "checkItem",
+  "uncheckItem",
+  "editItemText",
+  "setModality",
+  "setEval",
+  "deferItem",
+  "dropItem",
+  "supersedeItem",
+  "resolveEdit",
 ]);
 
 // ── Small coercion helpers ───────────────────────────────────────────────────
@@ -91,10 +126,11 @@ function asModality(v: unknown): Modality {
   return v === "mandatory" ? "mandatory" : "optional";
 }
 
-function asWorkerActor(v: unknown, fallback: WorkerActor): WorkerActor {
-  return v === "gap-filler" || v === "integrator" || v === "research"
-    ? v
-    : fallback;
+function asWorkerActor(v: unknown, fallback: RoundActor): WorkerActor {
+  if (v === "gap-filler" || v === "integrator" || v === "research") return v;
+  // Worker-only actions can never carry "human" (unreachable in practice: the
+  // interpreter's gate contains no worker-only tools).
+  return fallback === "human" ? "integrator" : fallback;
 }
 
 /** Resolve a section reference: exact id first, then kind name (case-insensitive). */
@@ -137,9 +173,9 @@ function truncate(text: string, max: number): string {
 export function renderActionGuide(
   model: WorkingModel,
   allowedTools: ToolName[],
-  actor: WorkerActor,
+  actor: RoundActor,
 ): string {
-  const allowed = allowedTools.filter((t) => WORKER_EMITTABLE.has(t));
+  const allowed = allowedTools.filter((t) => EMITTABLE.has(t));
   const needsSections = allowed.some((t) => SECTION_TAKING.has(t));
   const needsItems = allowed.some((t) => ITEM_TAKING.has(t));
 
@@ -189,6 +225,16 @@ export function renderActionGuide(
       `"evidence":{"source":"<where>","method":"<how verified>","checkedAt":"<ISO timestamp>","dossierRef":"research/<topic>.md"}}`,
     editGoal: `{"type":"editGoal","text":"<the rewritten goal statement>"}`,
     addObjection: `{"type":"addObjection","text":"<the objection>"}`,
+    addItem: `{"type":"addItem","actor":"human","sectionId":"${exampleSectionId}","text":"<the item text>","modality":"optional"}`,
+    checkItem: `{"type":"checkItem","actor":"human","itemId":"${exampleItemId}"}`,
+    uncheckItem: `{"type":"uncheckItem","actor":"human","itemId":"${exampleItemId}"}`,
+    editItemText: `{"type":"editItemText","actor":"human","itemId":"${exampleItemId}","text":"<replacement text>"}`,
+    setModality: `{"type":"setModality","actor":"human","itemId":"${exampleItemId}","modality":"mandatory"}`,
+    setEval: `{"type":"setEval","actor":"human","itemId":"${exampleItemId}","facet":"risk","value":2}`,
+    deferItem: `{"type":"deferItem","actor":"human","itemId":"${exampleItemId}"}`,
+    dropItem: `{"type":"dropItem","actor":"human","itemId":"${exampleItemId}"}`,
+    supersedeItem: `{"type":"supersedeItem","actor":"human","itemId":"${exampleItemId}","supersedes":"<itemId being superseded>"}`,
+    resolveEdit: `{"type":"resolveEdit","actor":"human","itemId":"${exampleItemId}","accept":true}`,
   };
 
   lines.push(
@@ -237,8 +283,8 @@ export function normalizeWorkerActions(
       rejected.push({ raw, reason: "action carries no type" });
       continue;
     }
-    if (!WORKER_EMITTABLE.has(type)) {
-      rejected.push({ raw, reason: `unknown worker action type '${type}'` });
+    if (!EMITTABLE.has(type)) {
+      rejected.push({ raw, reason: `unknown action type '${type}'` });
       continue;
     }
     if (!gate.has(type)) {
@@ -336,10 +382,13 @@ export function normalizeWorkerActions(
         // The Action type declares addItemNote actor as "human", yet the
         // gap-filler/integrator/research gates all grant addItemNote — a
         // type/gate drift (ledgered). The reducer ignores the actor for notes;
-        // we keep the true worker actor for honest provenance and cast.
+        // we keep the true round actor for honest provenance and cast.
         valid.push({
           type: "addItemNote",
-          actor: asWorkerActor(rec.actor, opts.defaultActor),
+          actor:
+            opts.defaultActor === "human"
+              ? "human"
+              : asWorkerActor(rec.actor, opts.defaultActor),
           itemId,
           text,
         } as unknown as Action);
@@ -403,6 +452,141 @@ export function normalizeWorkerActions(
           continue;
         }
         valid.push({ type: "addObjection", text });
+        continue;
+      }
+
+      // ── Human vocabulary (the command-field interpreter) ─────────────────
+      // Every action below is stamped actor:"human" unconditionally: the
+      // utterance is the human's act, whatever actor the model emitted.
+
+      case "addItem": {
+        const sectionId = resolveSectionId(
+          model,
+          rec.sectionId ?? rec.section ?? rec.sectionKind,
+        );
+        if (sectionId === null || sectionKindOf(model, sectionId) === "goal") {
+          rejected.push({
+            raw,
+            reason: "addItem targets an unknown (or goal) section",
+          });
+          continue;
+        }
+        const text = asNonEmptyString(rec.text ?? asRecord(rec.item)?.text);
+        if (text === null) {
+          rejected.push({ raw, reason: "addItem carries no text" });
+          continue;
+        }
+        const action: Action = {
+          type: "addItem",
+          actor: "human",
+          sectionId,
+          text,
+        };
+        if (rec.modality === "mandatory" || rec.modality === "optional") {
+          action.modality = rec.modality;
+        }
+        valid.push(action);
+        continue;
+      }
+
+      case "checkItem":
+      case "uncheckItem":
+      case "deferItem":
+      case "dropItem": {
+        const itemId = resolveItemId(model, rec.itemId ?? rec.id ?? rec.item);
+        if (itemId === null) {
+          rejected.push({ raw, reason: `${type} targets an unknown item` });
+          continue;
+        }
+        valid.push({ type, actor: "human", itemId } as Action);
+        continue;
+      }
+
+      case "editItemText": {
+        const itemId = resolveItemId(model, rec.itemId ?? rec.id ?? rec.item);
+        const text = asNonEmptyString(rec.text ?? rec.newText);
+        if (itemId === null || text === null) {
+          rejected.push({
+            raw,
+            reason: "editItemText needs a known itemId and non-empty text",
+          });
+          continue;
+        }
+        valid.push({ type: "editItemText", actor: "human", itemId, text });
+        continue;
+      }
+
+      case "setModality": {
+        const itemId = resolveItemId(model, rec.itemId ?? rec.id ?? rec.item);
+        if (
+          itemId === null ||
+          (rec.modality !== "mandatory" && rec.modality !== "optional")
+        ) {
+          rejected.push({
+            raw,
+            reason:
+              'setModality needs a known itemId and modality "mandatory"|"optional"',
+          });
+          continue;
+        }
+        valid.push({
+          type: "setModality",
+          actor: "human",
+          itemId,
+          modality: rec.modality,
+        });
+        continue;
+      }
+
+      case "setEval": {
+        const itemId = resolveItemId(model, rec.itemId ?? rec.id ?? rec.item);
+        const facet =
+          rec.facet === "complexity" || rec.facet === "risk"
+            ? rec.facet
+            : null;
+        const value = asEvalValue(rec.value);
+        if (itemId === null || facet === null || value === undefined) {
+          rejected.push({
+            raw,
+            reason:
+              "setEval needs a known itemId, facet complexity|risk, and value 1|2|3",
+          });
+          continue;
+        }
+        valid.push({ type: "setEval", actor: "human", itemId, facet, value });
+        continue;
+      }
+
+      case "supersedeItem": {
+        const itemId = resolveItemId(model, rec.itemId ?? rec.id ?? rec.item);
+        const supersedes = resolveItemId(model, rec.supersedes);
+        if (itemId === null || supersedes === null) {
+          rejected.push({
+            raw,
+            reason:
+              "supersedeItem needs known itemId and supersedes item ids",
+          });
+          continue;
+        }
+        valid.push({ type: "supersedeItem", actor: "human", itemId, supersedes });
+        continue;
+      }
+
+      case "resolveEdit": {
+        const itemId = resolveItemId(model, rec.itemId ?? rec.id ?? rec.item);
+        if (itemId === null || typeof rec.accept !== "boolean") {
+          rejected.push({
+            raw,
+            reason: "resolveEdit needs a known itemId and a boolean accept",
+          });
+          continue;
+        }
+        valid.push({
+          type: "resolveEdit",
+          actor: "human",
+          itemId,
+          accept: rec.accept,
+        });
         continue;
       }
     }

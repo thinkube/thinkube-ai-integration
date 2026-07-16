@@ -230,6 +230,82 @@ test("the reframe guide leaks no section/item IDs (editGoal takes none)", () => 
   assert.ok(guide.includes('"type":"editGoal"'));
 });
 
+// ── Interpreter (human) vocabulary ───────────────────────────────────────────
+
+test("interpreter path: dropItem with a real id normalizes, stamps actor:human, and applies", () => {
+  const { model, itemId } = modelWithItem();
+  const { valid, rejected } = normalizeWorkerActions(
+    [
+      // canonical
+      { type: "dropItem", actor: "human", itemId },
+      // drifted shape: "tool" key, "item" field, wrong actor — salvaged
+      { tool: "dropItem", actor: "integrator", item: itemId },
+      // invented id — rejected with a reason
+      { type: "dropItem", itemId: "item-ghost-1" },
+    ],
+    model,
+    { defaultActor: "human", allowedTools: GATES.interpreter.allowedTools },
+  );
+  assert.equal(valid.length, 2);
+  assert.equal(rejected.length, 1);
+  assert.match(rejected[0].reason, /unknown item/);
+  for (const a of valid) {
+    assert.equal(a.type, "dropItem");
+    assert.equal((a as { actor: string }).actor, "human");
+  }
+  const { delta } = reduce(model, valid[0]);
+  assert.equal(delta.kind, "applied");
+});
+
+test("interpreter path: freeze and worker-only tools are rejected by the gate", () => {
+  const { model, itemId } = modelWithItem();
+  const { valid, rejected } = normalizeWorkerActions(
+    [
+      { type: "freeze" },
+      { type: "proposeItem", sectionId: "sec-1", text: "worker move" },
+      { type: "setEval", itemId, facet: "risk", value: 2 },
+    ],
+    model,
+    { defaultActor: "human", allowedTools: GATES.interpreter.allowedTools },
+  );
+  assert.equal(valid.length, 1);
+  assert.equal(valid[0].type, "setEval");
+  assert.equal(rejected.length, 2);
+});
+
+test("interpreter path: setEval validates facet and value; addItem resolves section by kind name", () => {
+  const { model, itemId } = modelWithItem();
+  const { valid, rejected } = normalizeWorkerActions(
+    [
+      { type: "setEval", itemId, facet: "urgency", value: 2 },
+      { type: "setEval", itemId, facet: "risk", value: 7 },
+      { type: "addItem", section: "Elements", text: "a human item" },
+    ],
+    model,
+    { defaultActor: "human", allowedTools: GATES.interpreter.allowedTools },
+  );
+  assert.equal(rejected.length, 2);
+  assert.equal(valid.length, 1);
+  const a = valid[0];
+  assert.equal(a.type, "addItem");
+  if (a.type !== "addItem") return;
+  assert.equal(a.actor, "human");
+  assert.equal(a.sectionId, model.sections.find((s) => s.kind === "elements")!.id);
+});
+
+test("the interpreter guide shows the human shapes with live ids", () => {
+  const { model, itemId } = modelWithItem();
+  const guide = renderActionGuide(
+    model,
+    GATES.interpreter.allowedTools,
+    "human",
+  );
+  assert.ok(guide.includes('"type":"dropItem"'));
+  assert.ok(guide.includes('"actor":"human"'));
+  assert.ok(guide.includes(`"${itemId}"`));
+  assert.ok(!guide.includes("proposeItem"));
+});
+
 test("guide + normalizer agree: items list appears iff an item-taking tool is allowed", () => {
   const { model } = modelWithItem();
   const researchGuide = renderActionGuide(

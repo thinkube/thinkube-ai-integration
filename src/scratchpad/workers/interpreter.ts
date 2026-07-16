@@ -10,8 +10,9 @@
 // — never thrown.
 
 import type { Action, SectionKind, WorkingModel } from "../model";
-import { GATES, assertWithinGate } from "./worker";
+import { GATES } from "./worker";
 import type { QueryFn } from "./worker";
+import { normalizeWorkerActions, renderActionGuide } from "./actionGuide";
 
 export interface InterpretResult {
   actions: Action[];
@@ -116,11 +117,13 @@ async function queryRound(
   const prompt =
     `You are a command-field interpreter. Translate the human's plain-language command into ` +
     `structured actions on the thinking space. Every action you produce MUST carry actor:"human". ` +
-    `The human UI vocabulary is: addItem, checkItem, uncheckItem, editItemText, setModality, setEval, ` +
-    `deferItem, dropItem, supersedeItem, resolveEdit, addItemNote. ` +
+    `A command may name items semantically (e.g. "drop the implementation-flavored items") — ` +
+    `judge which items match and emit one action per matching item, using the exact itemId values ` +
+    `from the working model. ` +
     `Freeze is NOT available — do not produce a freeze action. ` +
     `If the command cannot be translated into the available vocabulary, return zero actions.\n\n` +
     `Working model (JSON):\n${JSON.stringify(model, null, 2)}\n\n` +
+    `${renderActionGuide(model, GATES.interpreter.allowedTools, "human")}\n\n` +
     `Human command: "${utterance}"\n\n` +
     `Respond with a JSON object: { "actions": [...], "message": "optional explanation" }`;
 
@@ -133,24 +136,21 @@ async function queryRound(
     }
   }
 
-  // Gate-check every returned action; catch violations without throwing
-  const validActions: Action[] = [];
-  let gateMessage: string | undefined;
+  // Validation seam (same as the worker rounds): coerce/verify every action
+  // against the live model and the interpreter gate; every survivor is stamped
+  // actor:"human". A malformed or out-of-gate emission becomes a readable
+  // message, never a silent no-op or a reducer throw.
+  const { valid: validActions, rejected } = normalizeWorkerActions(
+    rawActions as unknown[],
+    model,
+    { defaultActor: "human", allowedTools: GATES.interpreter.allowedTools },
+  );
 
-  for (const action of rawActions) {
-    try {
-      assertWithinGate(options, action.type as import("../model").ToolName);
-      // Ensure every action carries actor:"human"
-      const patched = ensureHumanActor(action);
-      validActions.push(patched);
-    } catch (err) {
-      // Gate violation — catch it, surface as message, discard all actions
-      const msg =
-        err instanceof Error ? err.message : `Gate violation: ${action.type}`;
-      gateMessage = `Command not applied: ${msg}`;
-      // Return empty — the spec says a gate refusal → { actions:[], message }
-      return { actions: [], message: gateMessage };
-    }
+  if (validActions.length === 0 && rejected.length > 0) {
+    return {
+      actions: [],
+      message: `Command not applied: ${rejected[0].reason}`,
+    };
   }
 
   // Zero actions after gating → unrecognized utterance
@@ -159,25 +159,19 @@ async function queryRound(
       actions: [],
       message:
         `I didn't understand "${utterance}". ` +
-        `Try commands like "accept all constraints", "add this constraint: …", or "defer item <id>".`,
+        `Try commands like "accept all constraints", "drop the <description> items", or "reframe".`,
+    };
+  }
+
+  if (rejected.length > 0) {
+    // Partial salvage: apply the valid ones, say what was skipped.
+    return {
+      actions: validActions,
+      message: `Applied ${validActions.length} action(s); skipped ${rejected.length}: ${rejected[0].reason}`,
     };
   }
 
   return { actions: validActions };
-}
-
-/**
- * Ensure the action carries actor:"human".
- * For action types that carry an `actor` field (all SP-21/3 item actions), we
- * force the value. For action types that do not carry actor (SP-1 actions like
- * editGoal), we leave them as-is — interpreter gate only allows item vocabulary.
- */
-function ensureHumanActor(action: Action): Action {
-  // Most item actions in GATES.interpreter carry actor
-  if ("actor" in action && (action as { actor: string }).actor !== "human") {
-    return { ...action, actor: "human" } as Action;
-  }
-  return action;
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
