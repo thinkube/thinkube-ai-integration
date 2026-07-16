@@ -15,6 +15,7 @@ import type {
 } from "../model";
 import { freezeEnabled } from "../model";
 import { uncoveredSections } from "../coverage";
+import { projectCut } from "../projection";
 
 /**
  * The complete inbound message protocol (webview → extension).
@@ -51,6 +52,11 @@ export type ScratchpadInboundMessage =
   //    first (command or per-item toggle), then apply over the selection.
   | { type: "explainItem"; itemId: string }
   | { type: "explainAll" }
+  // ── 2026-07-16 redesign ──
+  | { type: "addRoughRequest"; text: string }
+  | { type: "toggleCut"; itemId: string }
+  | { type: "clearCut" }
+  | { type: "previewTep" }
   | { type: "removeNote"; itemId: string; noteId: string }
   | { type: "toggleDepFocus"; itemId: string }
   | { type: "toggleSelect"; itemId: string }
@@ -105,6 +111,8 @@ function esc(text: string): string {
 interface ItemDepMeta {
   /** Edges touching this item (requires + required-by). */
   depCount: number;
+  /** How many items depend on THIS one (structural risk signal). */
+  dependentsCount: number;
   /** True when a required item is dropped/deferred — the rationale is stale. */
   stale: boolean;
   /** The dropped/deferred dependency texts (for the stale badge title). */
@@ -151,6 +159,7 @@ export function computeDepMeta(
       .map((dep) => `${dep.text} (${dep.state})`);
     const m: ItemDepMeta = {
       depCount: requires.length + (requiredBy.get(it.id)?.length ?? 0),
+      dependentsCount: requiredBy.get(it.id)?.length ?? 0,
       stale: staleDeps.length > 0,
       staleDeps,
     };
@@ -179,11 +188,19 @@ export function computeDepMeta(
 }
 
 /** Render one Item as an <li> with the contract's exact selectors. */
-function itemHtml(item: Item, selected = false, dep?: ItemDepMeta): string {
+function itemHtml(
+  item: Item,
+  selected = false,
+  dep?: ItemDepMeta,
+  isElement = false,
+  inCut = false,
+): string {
   const depClass =
     dep?.focusRole !== undefined ? ` dep-${dep.focusRole}` : "";
+  const isProtectedItem =
+    item.state === "shipped" || (item.flaggedBy?.length ?? 0) > 0;
   const liAttrs: string[] = [
-    `class="item${selected ? " selected" : ""}${depClass}"`,
+    `class="item${selected ? " selected" : ""}${depClass}${inCut ? " in-cut" : ""}${isProtectedItem ? " protected" : ""}"`,
     `data-item-id="${esc(item.id)}"`,
     `data-state="${esc(item.state)}"`,
     `data-origin="${esc(item.origin)}"`,
@@ -207,6 +224,7 @@ function itemHtml(item: Item, selected = false, dep?: ItemDepMeta): string {
   const checkedAttr = item.checked ? " checked" : "";
 
   // Evals span — only emit data-complexity / data-risk when defined
+  // (probe-contract selectors; the human-visible badges render separately).
   const evalsAttrs: string[] = [`class="evals"`];
   if (item.evals.complexity !== undefined) {
     evalsAttrs.push(`data-complexity="${item.evals.complexity}"`);
@@ -216,9 +234,60 @@ function itemHtml(item: Item, selected = false, dep?: ItemDepMeta): string {
   }
   const evalsSpan = `<span ${evalsAttrs.join(" ")}></span>`;
 
-  // Pending-edit span
+  // Visible eval badges (2026-07-16: the scores were an EMPTY span — on
+  // screen and physically invisible). Click cycles 1→2→3 (human setEval;
+  // the reducer drops the worker's factor on override). The factor renders
+  // in the tooltip so every score answers "based on what".
+  const evalBadge = (
+    facet: "complexity" | "risk",
+    label: string,
+    value: 1 | 2 | 3 | undefined,
+    factor: string | undefined,
+    hint: string | undefined,
+  ): string => {
+    const title =
+      (value === undefined
+        ? `${facet}: unset — click to set`
+        : `${facet} ${value}${factor ? ` [${factor}]` : " — no factor claimed"} — click to cycle`) +
+      (hint ? ` · ${hint}` : "");
+    return (
+      `<button class="eval-badge ${facet}${value !== undefined ? ` v${value}` : " unset"}${hint ? " hinted" : ""}"` +
+      ` data-facet="${facet}" title="${esc(title)}">${label}${value ?? "·"}</button>`
+    );
+  };
+  // Structural hints: derived signals challenge (or fill in for) claimed scores.
+  const riskHint =
+    dep !== undefined &&
+    dep.dependentsCount >= 2 &&
+    (item.evals.risk === undefined || item.evals.risk === 1)
+      ? `structurally risky: ${dep.dependentsCount} items depend on this`
+      : undefined;
+  const complexityHint =
+    item.evidence.length === 0 &&
+    (item.evals.complexity === 3 || item.evals.risk === 3)
+      ? "uncharted: scored 3 with no evidence — research first"
+      : undefined;
+  const evalBadges =
+    item.state === "active"
+      ? `<span class="eval-badges">` +
+        evalBadge(
+          "complexity",
+          "C",
+          item.evals.complexity,
+          item.evalFactors?.complexity,
+          complexityHint,
+        ) +
+        evalBadge("risk", "R", item.evals.risk, item.evalFactors?.risk, riskHint) +
+        `</span>`
+      : "";
+
+  // Pending-edit span — WITH resolution controls (2026-07-16: resolveEdit was
+  // in the vocabulary but no control existed; a proposed edit was undecidable
+  // from the surface — sixth capability-without-a-surface find).
   const pendingEditSpan = item.pendingEdit
-    ? `<span class="pending-edit"><del>${esc(item.pendingEdit.oldText)}</del><ins>${esc(item.pendingEdit.newText)}</ins></span>`
+    ? `<span class="pending-edit"><del>${esc(item.pendingEdit.oldText)}</del><ins>${esc(item.pendingEdit.newText)}</ins>` +
+      `<button class="edit-accept" title="Accept the proposed rewrite">accept</button>` +
+      `<button class="edit-reject" title="Reject the proposed rewrite">reject</button></span>`
     : "";
 
   // Evidence chips (zero or more)
@@ -244,18 +313,37 @@ function itemHtml(item: Item, selected = false, dep?: ItemDepMeta): string {
     dep !== undefined && dep.depCount > 0
       ? `<button class="item-deps" title="Highlight this item's dependencies and dependents">⌗${dep.depCount}</button>`
       : "";
+  const cutButton =
+    isElement && item.state === "active"
+      ? `<button class="item-cut" title="${
+          inCut
+            ? "Remove from the cut (the next TEP's scope)"
+            : "Add to the cut — the elements that will ship as the next TEP"
+        }">${inCut ? "− cut" : "+ cut"}</button>`
+      : "";
+  // Protected items (shipped / TEP-flagged) get no staging control: drop and
+  // edits are reducer-rejected anyway; supersede is the evolution path.
+  const selectButton = isProtectedItem
+    ? ""
+    : `<button class="item-select" title="${
+        selected
+          ? "Remove from selection"
+          : "Select — then apply an action from the selection bar"
+      }">${selected ? "deselect" : "select"}</button>`;
   const itemControls =
     item.state === "active"
       ? `<span class="item-actions">` +
+        cutButton +
         depsButton +
         `<button class="item-research" title="Research this item — investigate it with live tools, attach evidence, and propose findings (covers a gap)">research</button>` +
         `<button class="item-explain" title="Analyze — attach a Why / Impact / Modality note to inform your decision">why?</button>` +
-        `<button class="item-select" title="${
-          selected
-            ? "Remove from selection"
-            : "Select — then apply an action from the selection bar"
-        }">${selected ? "deselect" : "select"}</button>` +
+        selectButton +
         `</span>`
+      : "";
+  // TEP-flag badge: this item is signed context — protected, supersede-only.
+  const flagBadge =
+    (item.flaggedBy?.length ?? 0) > 0
+      ? `<span class="flag-badge" title="Signed context — TEPs were cut under this item: ${esc(item.flaggedBy!.join(", "))}. Protected: immutable, supersede-only, still serves future cuts.">⚑ ${esc(item.flaggedBy!.join(", "))}</span>`
       : "";
 
   // Stale-rationale badge: a required item was dropped/deferred — the why,
@@ -297,8 +385,10 @@ function itemHtml(item: Item, selected = false, dep?: ItemDepMeta): string {
     `<input type="checkbox" class="item-check"${checkedAttr}>` +
     `<span class="modality" data-modality="${esc(item.modality)}">${esc(item.modality)}</span>` +
     evalsSpan +
+    evalBadges +
     `<span class="item-text">${esc(item.text)}</span>` +
     staleBadge +
+    flagBadge +
     pendingEditSpan +
     evidenceChips +
     itemControls +
@@ -319,6 +409,7 @@ function goalSectionHtml(
   activity?: SectionActivity,
   errorMsg?: string,
   roundInFlight?: boolean,
+  roughRequests?: readonly { id: string; text: string }[],
 ): string {
   const marker = STATE_MARKERS[section.state];
   const goalWasEmpty = section.text === "";
@@ -343,6 +434,18 @@ function goalSectionHtml(
   </div>
   <textarea id="goal-input">${esc(section.text)}</textarea>
   <button onclick="confirmGoal(${JSON.stringify(goalWasEmpty)})">Confirm goal</button>
+  <div class="rough-requests">
+    ${(roughRequests ?? [])
+      .map(
+        (r) =>
+          `<div class="rough-request" data-request-id="${esc(r.id)}">↳ ${esc(r.text)}</div>`,
+      )
+      .join("")}
+    <div class="rough-request-input-area">
+      <input type="text" id="rough-request-input" placeholder="Add a rough request — a new raw ask that expands this space…">
+      <button id="rough-request-btn"${roundInFlight ? " disabled" : ""} onclick="addRoughRequest()">Add request</button>
+    </div>
+  </div>
   ${errorHtml}
 </section>`;
 }
@@ -354,6 +457,7 @@ function checklistSectionHtml(
   errorMsg?: string,
   selection?: ReadonlySet<string>,
   depMeta?: Map<string, ItemDepMeta>,
+  cut?: ReadonlySet<string>,
 ): string {
   const marker = STATE_MARKERS[section.state];
   // Dropped items are not rendered; all other states show
@@ -362,7 +466,13 @@ function checklistSectionHtml(
     visibleItems.length > 0
       ? `<ul class="item-list">${visibleItems
           .map((it) =>
-            itemHtml(it, selection?.has(it.id) ?? false, depMeta?.get(it.id)),
+            itemHtml(
+              it,
+              selection?.has(it.id) ?? false,
+              depMeta?.get(it.id),
+              section.kind === "elements",
+              cut?.has(it.id) ?? false,
+            ),
           )
           .join("")}</ul>`
       : `<ul class="item-list"></ul>`;
@@ -429,12 +539,22 @@ export function freezeStatusText(
         it.modality === "mandatory" && it.state === "active" && !it.checked,
     ),
   );
+  const highRiskUnsettled = model.sections.flatMap((s) =>
+    s.items.filter(
+      (it) => it.evals.risk === 3 && it.state === "active" && !it.checked,
+    ),
+  );
   const mandatoryWarning =
-    unsettledMandatory.length > 0
+    (unsettledMandatory.length > 0
       ? ` ⚠ ${unsettledMandatory.length} MANDATORY item${
           unsettledMandatory.length === 1 ? " is" : "s are"
         } not settled — settle, defer, or reclassify before freezing.`
-      : "";
+      : "") +
+    (highRiskUnsettled.length > 0
+      ? ` ⚠ ${highRiskUnsettled.length} HIGH-RISK item${
+          highRiskUnsettled.length === 1 ? " (risk 3) is" : "s (risk 3) are"
+        } not settled — research or settle them first.`
+      : "");
   if (canFreeze) {
     return `Ready to freeze — Freeze signs the checked items into a proposed TEP.${mandatoryWarning}`;
   }
@@ -478,11 +598,27 @@ export function buildScratchpadHtml(
   commandInFlight?: boolean,
   selectedItemIds?: readonly string[],
   focusItemId?: string,
+  cutItemIds?: readonly string[],
 ): string {
   const selection: ReadonlySet<string> = new Set(selectedItemIds ?? []);
+  const cut: ReadonlySet<string> = new Set(cutItemIds ?? []);
   const depMeta = computeDepMeta(model, focusItemId);
   const goalSec = model.sections.find((s) => s.kind === "goal");
-  const nonGoalSections = model.sections.filter((s) => s.kind !== "goal");
+  // Display order (2026-07-16): elements is the goal's DERIVED decomposition —
+  // an output of the shaping, not an input — so the shaping inputs (what must
+  // hold, what's unknown, what success means) come first. Render-order only:
+  // persisted section arrays are untouched.
+  const displayRank: Record<string, number> = {
+    constraints: 0,
+    gap: 1,
+    criteria: 2,
+    elements: 3,
+    verification: 4,
+  };
+  const nonGoalSections = model.sections
+    .filter((s) => s.kind !== "goal")
+    .slice()
+    .sort((a, b) => (displayRank[a.kind] ?? 9) - (displayRank[b.kind] ?? 9));
 
   // Determine per-section activity and errors from roundActivity
   function sectionActivity(kind: SectionKind): SectionActivity | undefined {
@@ -505,6 +641,7 @@ export function buildScratchpadHtml(
         sectionActivity("goal"),
         sectionError("goal"),
         roundInFlight,
+        model.roughRequests,
       )
     : "";
   const sectionsHtml = nonGoalSections
@@ -515,6 +652,7 @@ export function buildScratchpadHtml(
         sectionError(s.kind),
         selection,
         depMeta,
+        cut,
       ),
     )
     .join("\n");
@@ -529,6 +667,41 @@ export function buildScratchpadHtml(
         .length,
     0,
   );
+  // Cut bar — the third selection channel: elements that ship as the next TEP.
+  const cutElements = [...cut].filter((id) =>
+    model.sections.some(
+      (s) =>
+        s.kind === "elements" &&
+        s.items.some((it) => it.id === id && it.state !== "dropped"),
+    ),
+  );
+  let cutBar = "";
+  if (cutElements.length > 0) {
+    const proj = projectCut(model, { elementIds: cutElements });
+    const unsettledNote =
+      proj.uncheckedElements.length > 0
+        ? ` · ⚠ ${proj.uncheckedElements.length} not settled`
+        : "";
+    cutBar = `<div id="cut-bar" title="The cut: these elements ship as the next TEP; their edge-connected context gets flagged and stays live">
+      <span class="cut-count">Cut: ${cutElements.length} element${cutElements.length === 1 ? "" : "s"} (+${proj.flagIds.length} context pulled)${unsettledNote}</span>
+      <button onclick="triggerReframe()">Curate intent</button>
+      <button onclick="previewTep()">Preview draft</button>
+      <button onclick="clearCut()">Clear cut</button>
+      <span class="cut-note">Freeze ships this cut.</span>
+    </div>`;
+  }
+
+  // Curated intent panel (bottom): the derived synthesis freeze signs —
+  // maintained by Reframe, never the human's raw words.
+  const curatedPanel = `<section class="curated-intent">
+    <h2>Curated intent <span class="curated-hint">(derived — maintained by Reframe; this is what Freeze signs)</span></h2>
+    ${
+      model.curatedIntent?.trim()
+        ? `<div id="curated-intent-text">${esc(model.curatedIntent)}</div>`
+        : `<div id="curated-intent-text" class="empty">(none yet — run Reframe to synthesize it from the rough requests and settled items)</div>`
+    }
+  </section>`;
+
   const selectionBar =
     liveSelectedCount > 0
       ? `<div id="selection-bar" title="Staged for an action — distinct from checking: nothing here enters the TEP until you check it">
@@ -674,6 +847,31 @@ export function buildScratchpadHtml(
     .dep-chip { background: transparent; color: var(--vscode-foreground); border: 1px solid var(--vscode-charts-green, #89d185); border-radius: 8px; padding: 1px 8px; cursor: pointer; font-size: 0.95em; margin: 2px; }
     .dep-chip.broken { border-color: var(--vscode-errorForeground); color: var(--vscode-errorForeground); }
     .item-deps { white-space: nowrap; }
+    .rough-requests { margin-top: 8px; }
+    .rough-request { font-size: 0.9em; opacity: 0.9; padding: 3px 8px; border-left: 2px solid var(--vscode-charts-blue, #3794ff); margin-bottom: 3px; white-space: pre-wrap; }
+    .rough-request-input-area { display: flex; gap: 6px; margin-top: 6px; }
+    #rough-request-input { flex: 1; padding: 4px 8px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); border-radius: 2px; }
+    #cut-bar { position: sticky; top: 0; z-index: 11; display: flex; align-items: center; gap: 8px; padding: 8px 12px; margin-bottom: 12px; border: 1px solid var(--vscode-charts-yellow, #cca700); border-radius: 4px; background: var(--vscode-editor-background); }
+    #cut-bar .cut-count { font-weight: bold; }
+    #cut-bar .cut-note { opacity: 0.7; font-size: 0.85em; margin-left: auto; }
+    #cut-bar button { background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); border: 1px solid var(--vscode-panel-border); padding: 2px 10px; border-radius: 2px; cursor: pointer; }
+    li.item.in-cut { border-left: 3px double var(--vscode-charts-yellow, #cca700); padding-left: 6px; }
+    li.item.protected { background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-charts-yellow, #cca700) 8%); }
+    .flag-badge { font-size: 0.8em; color: var(--vscode-charts-yellow, #cca700); border: 1px solid var(--vscode-charts-yellow, #cca700); border-radius: 3px; padding: 0 5px; }
+    .curated-intent { border: 1px solid var(--vscode-panel-border); border-radius: 4px; margin-bottom: 12px; padding: 12px; }
+    .curated-intent .curated-hint { font-weight: normal; font-size: 0.75em; opacity: 0.7; }
+    #curated-intent-text { white-space: pre-wrap; }
+    #curated-intent-text.empty { opacity: 0.5; font-style: italic; }
+    .eval-badges { display: inline-flex; gap: 3px; }
+    .eval-badge { border: 1px solid var(--vscode-panel-border); background: transparent; color: var(--vscode-foreground); border-radius: 3px; padding: 0 5px; font-size: 0.8em; cursor: pointer; }
+    .eval-badge.unset { opacity: 0.45; }
+    .eval-badge.risk.v2 { border-color: var(--vscode-charts-orange, #d18616); color: var(--vscode-charts-orange, #d18616); }
+    .eval-badge.risk.v3 { border-color: var(--vscode-errorForeground); color: var(--vscode-errorForeground); }
+    .eval-badge.complexity.v3 { border-color: var(--vscode-charts-orange, #d18616); color: var(--vscode-charts-orange, #d18616); }
+    .eval-badge.hinted { border-style: dashed; }
+    .edit-accept, .edit-reject { margin-left: 6px; border: 1px solid var(--vscode-panel-border); background: transparent; color: var(--vscode-foreground); border-radius: 2px; padding: 0 6px; cursor: pointer; font-size: 0.85em; }
+    .edit-accept:hover { color: var(--vscode-charts-green, #89d185); border-color: var(--vscode-charts-green, #89d185); }
+    .edit-reject:hover { color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
     .item-notes { flex-basis: 100%; margin: 4px 0 2px 24px; }
     .item-note { font-size: 0.85em; opacity: 0.85; padding: 4px 8px; border-left: 2px solid var(--vscode-panel-border); margin-bottom: 4px; white-space: pre-wrap; position: relative; }
     .note-remove { background: transparent; border: none; color: var(--vscode-descriptionForeground); cursor: pointer; font-size: 0.9em; margin-left: 6px; opacity: 0; }
@@ -691,9 +889,11 @@ export function buildScratchpadHtml(
 <body>
   <h1>Thinking Space <span style="opacity:0.5;font-size:0.8em;">${esc(model.phase)}</span></h1>
   ${goalHtml}
+  ${cutBar}
   ${selectionBar}
   ${sectionsHtml}
   ${objectionsHtml}
+  ${curatedPanel}
   <section class="research-control">
     <h2>Research</h2>
     <div class="research-input-area">
@@ -713,6 +913,7 @@ export function buildScratchpadHtml(
     <h2>Freeze</h2>
     <div class="freeze-controls-row">
       <button id="check-readiness" onclick="triggerReadiness()">Check readiness</button>
+      <button id="preview-tep" onclick="previewTep()" title="Render exactly what Freeze would sign — a side-effect-free DRAFT">Preview draft</button>
       ${freezeBtn}
     </div>
     <div class="freeze-status">${esc(freezeStatus)}</div>
@@ -753,6 +954,22 @@ export function buildScratchpadHtml(
 
     function triggerExplainAll() {
       vscode.postMessage({ type: 'explainAll' });
+    }
+
+    function addRoughRequest() {
+      var input = document.getElementById('rough-request-input');
+      var text = input ? input.value.trim() : '';
+      if (!text) return;
+      vscode.postMessage({ type: 'addRoughRequest', text: text });
+      if (input) input.value = '';
+    }
+
+    function previewTep() {
+      vscode.postMessage({ type: 'previewTep' });
+    }
+
+    function clearCut() {
+      vscode.postMessage({ type: 'clearCut' });
     }
 
     function triggerResearch() {
@@ -797,12 +1014,28 @@ export function buildScratchpadHtml(
       var isExplain = target.classList.contains('item-explain');
       var isDeps = target.classList.contains('item-deps');
       var isResearch = target.classList.contains('item-research');
-      if (!isSelect && !isExplain && !isDeps && !isResearch) return;
+      var isCut = target.classList.contains('item-cut');
+      var isEval = target.classList.contains('eval-badge');
+      var isAccept = target.classList.contains('edit-accept');
+      var isReject = target.classList.contains('edit-reject');
+      if (!isSelect && !isExplain && !isDeps && !isResearch && !isCut && !isEval && !isAccept && !isReject) return;
       var li = target.closest('li.item');
       if (!li) return;
       var itemId = li.getAttribute('data-item-id');
       if (!itemId) return;
-      var type = isExplain ? 'explainItem' : isDeps ? 'toggleDepFocus' : isResearch ? 'research' : 'toggleSelect';
+      if (isEval) {
+        var facet = target.getAttribute('data-facet');
+        var label = target.textContent || '';
+        var cur = parseInt(label.slice(1), 10);
+        var next = isNaN(cur) ? 1 : cur >= 3 ? 1 : cur + 1;
+        vscode.postMessage({ type: 'setEval', itemId: itemId, facet: facet, value: next });
+        return;
+      }
+      if (isAccept || isReject) {
+        vscode.postMessage({ type: 'resolveEdit', itemId: itemId, accept: isAccept });
+        return;
+      }
+      var type = isExplain ? 'explainItem' : isDeps ? 'toggleDepFocus' : isResearch ? 'research' : isCut ? 'toggleCut' : 'toggleSelect';
       vscode.postMessage({ type: type, itemId: itemId });
     });
 
@@ -907,6 +1140,7 @@ export class ScratchpadDocumentView implements vscode.Disposable {
     commandInFlight?: boolean,
     selectedItemIds?: readonly string[],
     focusItemId?: string,
+    cutItemIds?: readonly string[],
   ): void {
     if (this._panel) {
       this._panel.webview.html = buildScratchpadHtml(
@@ -917,6 +1151,7 @@ export class ScratchpadDocumentView implements vscode.Disposable {
         commandInFlight,
         selectedItemIds,
         focusItemId,
+        cutItemIds,
       );
     }
   }

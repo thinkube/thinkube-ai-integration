@@ -126,8 +126,9 @@ export const GATES: Record<
    * Everything else is disallowed.
    */
   reframe: {
-    allowedTools: ["editGoal"],
+    allowedTools: ["curateIntent"],
     disallowedTools: [
+      "editGoal",
       "proposeItem",
       "addItemNote",
       "proposeEdit",
@@ -545,6 +546,13 @@ export function gapFiller(deps: WorkerFactoryDeps): WorkerRun {
     buildPrompt(workingModel: WorkingModel, _conversation: string[]): string {
       const goalSection = workingModel.sections.find((s) => s.kind === "goal");
       const intentText = goalSection?.text ?? "";
+      const requests = workingModel.roughRequests ?? [];
+      const requestsBlock =
+        requests.length > 0
+          ? `\n\nRough requests (the human's raw asks, in their words — integrate ALL of them, the NEWEST especially):\n${requests
+              .map((r) => `- ${r.text}`)
+              .join("\n")}`
+          : "";
 
       const itemLines: string[] = [];
       for (const section of workingModel.sections) {
@@ -572,6 +580,7 @@ export function gapFiller(deps: WorkerFactoryDeps): WorkerRun {
       return (
         `You are the gap-filler worker. Propose new items (proposeItem) for each thinking-space section to help elaborate the intent.\n\n` +
         `Intent (goal):\n${intentText}` +
+        requestsBlock +
         itemsBlock +
         `\n\nGenerate proposeItem actions for sections that need more detail. Do not check items — only propose them. ` +
         `Stay at intent altitude: propose what must hold, be decided, or be verified — not implementation choices ` +

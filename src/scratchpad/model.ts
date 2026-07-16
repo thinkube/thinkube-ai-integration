@@ -10,6 +10,40 @@ export type Coverage = "unknown" | "assumed" | "verified";
 // ── SP-21/3 item model ──
 
 export type Modality = "mandatory" | "optional";
+
+// ── Eval factor vocabularies (2026-07-16) ──
+// A score is only explainable if it names WHICH factor produced it. Closed
+// vocabularies keep scores challengeable and aggregatable (methodology review
+// can cluster on factors; free text cannot).
+export type ComplexityFactor =
+  | "interactions" // entangled with several other items/sections
+  | "novelty" // uncharted territory — nothing known covers it
+  | "ambiguity" // several plausible readings; needs shaping
+  | "decomposition" // resists being cut into clean parts
+  | "external-coupling"; // depends on behavior outside our control
+export type RiskFactor =
+  | "irreversible" // a wrong call cannot be cheaply undone
+  | "blast-radius" // many items depend on this one
+  | "unverified-assumption" // load-bearing claim with no evidence
+  | "external-dependency" // relies on undocumented/uncontrolled behavior
+  | "integrity" // consequence class: security, data-loss, signed artifacts
+  | "hack-debt"; // a known shortcut whose debt is being accepted
+
+export const COMPLEXITY_FACTORS: readonly ComplexityFactor[] = [
+  "interactions",
+  "novelty",
+  "ambiguity",
+  "decomposition",
+  "external-coupling",
+];
+export const RISK_FACTORS: readonly RiskFactor[] = [
+  "irreversible",
+  "blast-radius",
+  "unverified-assumption",
+  "external-dependency",
+  "integrity",
+  "hack-debt",
+];
 export type ItemState = "active" | "shipped" | "deferred" | "dropped";
 export type ItemOrigin = "human" | "gap-filler" | "integrator" | "research";
 export type Actor = ItemOrigin | "interpreter";
@@ -33,6 +67,17 @@ export interface Item {
   checked: boolean;
   modality: Modality;
   evals: { complexity?: 1 | 2 | 3; risk?: 1 | 2 | 3 };
+  /** WHICH factor produced each score — makes the eval explainable and
+   *  challengeable. Dropped for a facet when the human overrides its score
+   *  (the old justification no longer applies). */
+  evalFactors?: { complexity?: ComplexityFactor; risk?: RiskFactor };
+  /**
+   * TEPs this item served as CONTEXT for (cut flags, 2026-07-16). A flagged
+   * item is protected — immutable, undroppable, uneditable; supersede is the
+   * only evolution path — but stays ACTIVE and keeps serving future cuts.
+   * (Elements consumed by a cut ship instead: state:"shipped" + shippedIn.)
+   */
+  flaggedBy?: string[];
   origin: ItemOrigin;
   state: ItemState;
   shippedIn?: string; // TEP id when state === "shipped"
@@ -76,7 +121,10 @@ export type ToolName =
   | "resolveEdit"
   | "addItemNote"
   | "attachEvidence"
-  | "stampShipped";
+  | "stampShipped"
+  // 2026-07-16 redesign: the reframe worker maintains the CURATED intent —
+  // it never again edits the human's goal/rough words.
+  | "curateIntent";
 
 export interface Note {
   id: string;
@@ -123,6 +171,25 @@ export interface WorkingModel {
   sections: Section[];
   objections: Objection[];
   readinessHistory: ReadinessRecord[];
+  /**
+   * Append-only journal of the human's raw asks (2026-07-16 redesign): the
+   * space accepts new rough requests for its whole life; each expands the
+   * space. Entries are NEVER edited or removed — human words are the record.
+   * Absent on pre-redesign spaces (treated as []).
+   */
+  roughRequests?: RoughRequest[];
+  /**
+   * The curated intent: the synthesized statement of what the space (or the
+   * active cut) currently intends — maintained by the reframe worker, never
+   * touching the human's rough words. This is what freeze signs as the TEP's
+   * intent (falling back to the goal text when absent).
+   */
+  curatedIntent?: string;
+}
+
+export interface RoughRequest {
+  id: string;
+  text: string;
 }
 
 export type Action =
@@ -159,6 +226,8 @@ export type Action =
          *  normalize seam resolves text references — including items proposed
          *  earlier in the same batch — to ids before dispatch. */
         requires?: string[];
+        /** WHICH factor produced each eval score (closed vocabularies). */
+        factors?: { complexity?: ComplexityFactor; risk?: RiskFactor };
       };
     }
   | {
@@ -194,7 +263,17 @@ export type Action =
   // to clean duplicate/contradictory explainer notes).
   | { type: "removeNote"; actor: "human"; itemId: string; noteId: string }
   | { type: "attachEvidence"; actor: Actor; itemId: string; evidence: Evidence }
-  | { type: "stampShipped"; itemIds: string[]; tepId: string };
+  | {
+      type: "stampShipped";
+      itemIds: string[];
+      tepId: string;
+      /** Context items the cut drew on: flagged with the TEP (protected,
+       *  still active for future cuts) instead of shipped. */
+      flagIds?: string[];
+    }
+  // ── 2026-07-16 redesign actions ──
+  | { type: "addRoughRequest"; text: string } // human-only, append-only
+  | { type: "curateIntent"; text: string }; // reframe worker (or human edit)
 
 /**
  * Delta describing a model mutation.
@@ -302,6 +381,18 @@ export function goalSection(model: WorkingModel): Section {
  *
  * Never mutates the input model.
  */
+
+/**
+ * True when the item is TEP-protected (2026-07-16): shipped by a cut, or
+ * flagged as context a signed TEP was cut under. Protected items are
+ * immutable — no edit, no reclassification, no drop; supersede is the only
+ * evolution path. Checking/unchecking stays allowed on flagged (active)
+ * items: settling for a FUTURE cut does not rewrite the record.
+ */
+export function isProtected(item: Item): boolean {
+  return item.state === "shipped" || (item.flaggedBy?.length ?? 0) > 0;
+}
+
 export function reduce(
   model: WorkingModel,
   action: Action,
@@ -560,6 +651,13 @@ export function reduce(
       if (action.item.requires !== undefined && action.item.requires.length) {
         newItem.requires = [...action.item.requires];
       }
+      if (
+        action.item.factors !== undefined &&
+        (action.item.factors.complexity !== undefined ||
+          action.item.factors.risk !== undefined)
+      ) {
+        newItem.evalFactors = { ...action.item.factors };
+      }
       const newSection: Section = {
         ...section,
         items: [...section.items, newItem],
@@ -694,6 +792,21 @@ export function reduce(
     case "editItemText": {
       const loc = findItem(model, action.itemId);
       if (!loc) throw new Error(`Item '${action.itemId}' not found`);
+      {
+        const { sectionIdx: gsi, itemIdx: gii } = loc;
+        const target = model.sections[gsi].items[gii];
+        if (isProtected(target)) {
+          return {
+            model,
+            delta: {
+              kind: "rejected",
+              action,
+              reason:
+                "item is TEP-protected (shipped or flagged as signed context) — immutable; supersede it instead",
+            },
+          };
+        }
+      }
       const { sectionIdx, itemIdx } = loc;
       const before = model.sections[sectionIdx].items[itemIdx].text;
       const newModel = updateItemInModel(model, sectionIdx, itemIdx, (it) => ({
@@ -715,6 +828,21 @@ export function reduce(
     case "setModality": {
       const loc = findItem(model, action.itemId);
       if (!loc) throw new Error(`Item '${action.itemId}' not found`);
+      {
+        const { sectionIdx: gsi, itemIdx: gii } = loc;
+        const target = model.sections[gsi].items[gii];
+        if (isProtected(target)) {
+          return {
+            model,
+            delta: {
+              kind: "rejected",
+              action,
+              reason:
+                "item is TEP-protected (shipped or flagged as signed context) — immutable; supersede it instead",
+            },
+          };
+        }
+      }
       const { sectionIdx, itemIdx } = loc;
       const before = model.sections[sectionIdx].items[itemIdx].modality;
       const newModel = updateItemInModel(model, sectionIdx, itemIdx, (it) => ({
@@ -736,14 +864,40 @@ export function reduce(
     case "setEval": {
       const loc = findItem(model, action.itemId);
       if (!loc) throw new Error(`Item '${action.itemId}' not found`);
+      {
+        const { sectionIdx: gsi, itemIdx: gii } = loc;
+        const target = model.sections[gsi].items[gii];
+        if (isProtected(target)) {
+          return {
+            model,
+            delta: {
+              kind: "rejected",
+              action,
+              reason:
+                "item is TEP-protected (shipped or flagged as signed context) — immutable; supersede it instead",
+            },
+          };
+        }
+      }
       const { sectionIdx, itemIdx } = loc;
       const item = model.sections[sectionIdx].items[itemIdx];
       const before = item.evals[action.facet];
       const newEvals = { ...item.evals, [action.facet]: action.value };
-      const newModel = updateItemInModel(model, sectionIdx, itemIdx, (it) => ({
-        ...it,
-        evals: newEvals,
-      }));
+      const newModel = updateItemInModel(model, sectionIdx, itemIdx, (it) => {
+        const next = { ...it, evals: newEvals };
+        // Human override drops the facet's factor — the worker's old
+        // justification no longer applies to the human's score.
+        if (it.evalFactors !== undefined) {
+          const factors = { ...it.evalFactors };
+          delete factors[action.facet];
+          if (factors.complexity === undefined && factors.risk === undefined) {
+            delete next.evalFactors;
+          } else {
+            next.evalFactors = factors;
+          }
+        }
+        return next;
+      });
       return {
         model: newModel,
         delta: {
@@ -780,6 +934,21 @@ export function reduce(
     case "dropItem": {
       const loc = findItem(model, action.itemId);
       if (!loc) throw new Error(`Item '${action.itemId}' not found`);
+      {
+        const { sectionIdx: gsi, itemIdx: gii } = loc;
+        const target = model.sections[gsi].items[gii];
+        if (isProtected(target)) {
+          return {
+            model,
+            delta: {
+              kind: "rejected",
+              action,
+              reason:
+                "item is TEP-protected (shipped or flagged as signed context) — immutable; supersede it instead",
+            },
+          };
+        }
+      }
       const { sectionIdx, itemIdx } = loc;
       const before = model.sections[sectionIdx].items[itemIdx].state;
       const newModel = updateItemInModel(model, sectionIdx, itemIdx, (it) => ({
@@ -844,6 +1013,21 @@ export function reduce(
     case "proposeEdit": {
       const loc = findItem(model, action.itemId);
       if (!loc) throw new Error(`Item '${action.itemId}' not found`);
+      {
+        const { sectionIdx: gsi, itemIdx: gii } = loc;
+        const target = model.sections[gsi].items[gii];
+        if (isProtected(target)) {
+          return {
+            model,
+            delta: {
+              kind: "rejected",
+              action,
+              reason:
+                "item is TEP-protected (shipped or flagged as signed context) — immutable; supersede it instead",
+            },
+          };
+        }
+      }
       const { sectionIdx, itemIdx } = loc;
       const item = model.sections[sectionIdx].items[itemIdx];
       const before = item.pendingEdit;
@@ -871,6 +1055,21 @@ export function reduce(
     case "resolveEdit": {
       const loc = findItem(model, action.itemId);
       if (!loc) throw new Error(`Item '${action.itemId}' not found`);
+      {
+        const { sectionIdx: gsi, itemIdx: gii } = loc;
+        const target = model.sections[gsi].items[gii];
+        if (isProtected(target)) {
+          return {
+            model,
+            delta: {
+              kind: "rejected",
+              action,
+              reason:
+                "item is TEP-protected (shipped or flagged as signed context) — immutable; supersede it instead",
+            },
+          };
+        }
+      }
       const { sectionIdx, itemIdx } = loc;
       const item = model.sections[sectionIdx].items[itemIdx];
       if (!item.pendingEdit) {
@@ -1001,6 +1200,22 @@ export function reduce(
           (it) => ({ ...it, state: "shipped", shippedIn: action.tepId }),
         );
       }
+      // Context items the cut drew on: FLAGGED with the TEP — protected from
+      // now on (immutable, supersede-only), but still active for future cuts.
+      for (const itemId of action.flagIds ?? []) {
+        const loc = findItem(currentModel, itemId);
+        if (!loc) continue;
+        const { sectionIdx, itemIdx } = loc;
+        currentModel = updateItemInModel(
+          currentModel,
+          sectionIdx,
+          itemIdx,
+          (it) => ({
+            ...it,
+            flaggedBy: [...new Set([...(it.flaggedBy ?? []), action.tepId])],
+          }),
+        );
+      }
       return {
         model: currentModel,
         delta: {
@@ -1008,7 +1223,68 @@ export function reduce(
           action,
           field: "stampShipped",
           before: undefined,
-          after: { tepId: action.tepId, itemIds: action.itemIds },
+          after: {
+            tepId: action.tepId,
+            itemIds: action.itemIds,
+            flagIds: action.flagIds ?? [],
+          },
+        },
+      };
+    }
+
+    case "addRoughRequest": {
+      // Append-only: the human's raw words enter the journal and are never
+      // edited or removed. Empty requests are refused.
+      if (!action.text.trim()) {
+        return {
+          model,
+          delta: {
+            kind: "rejected",
+            action,
+            reason: "empty rough request refused",
+          },
+        };
+      }
+      const requests = model.roughRequests ?? [];
+      const entry: RoughRequest = {
+        id: `req-${requests.length}`,
+        text: action.text.trim(),
+      };
+      return {
+        model: { ...model, roughRequests: [...requests, entry] },
+        delta: {
+          kind: "applied",
+          action,
+          field: `roughRequests.${requests.length}`,
+          before: undefined,
+          after: entry,
+        },
+      };
+    }
+
+    case "curateIntent": {
+      const before = model.curatedIntent ?? "";
+      // Same erasure guard as editGoal: an empty rewrite can never erase a
+      // non-empty curated intent, for any actor.
+      if (!action.text.trim() && before.trim()) {
+        return {
+          model,
+          delta: {
+            kind: "rejected",
+            action,
+            reason:
+              "empty rewrite refused — it would erase a non-empty curated intent",
+          },
+        };
+      }
+      return {
+        model: { ...model, curatedIntent: action.text.trim() },
+        delta: {
+          kind: "applied",
+          action,
+          field: "curatedIntent",
+          before,
+          after: action.text.trim(),
         },
       };
     }

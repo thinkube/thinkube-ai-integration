@@ -130,13 +130,36 @@ function _projectSpec(model: WorkingModel, goalTitle: string): string {
  * artifact itself. Returns the item ids so the freeze pipeline can stamp them
  * shipped once the write lands.
  */
+/** Eval annotation for a projected item line — present only when scores are
+ *  set, so pre-eval spaces and probe fixtures project byte-identically. */
+function evalSuffix(it: {
+  evals: { complexity?: 1 | 2 | 3; risk?: 1 | 2 | 3 };
+  evalFactors?: { complexity?: string; risk?: string };
+}): string {
+  const parts: string[] = [];
+  if (it.evals.complexity !== undefined) {
+    parts.push(
+      `complexity ${it.evals.complexity}${it.evalFactors?.complexity ? ` [${it.evalFactors.complexity}]` : ""}`,
+    );
+  }
+  if (it.evals.risk !== undefined) {
+    parts.push(
+      `risk ${it.evals.risk}${it.evalFactors?.risk ? ` [${it.evalFactors.risk}]` : ""}`,
+    );
+  }
+  return parts.length > 0 ? ` (${parts.join(", ")})` : "";
+}
+
 export function projectDelta(model: WorkingModel): {
   title: string;
   body: string;
   itemIds: string[];
 } {
   const goal = goalSection(model);
-  const title = (goal.text.split("\n")[0] ?? "").trim();
+  // The curated intent (2026-07-16 redesign) is what freeze signs as the
+  // TEP's intent; the raw goal text is the fallback for pre-redesign spaces.
+  const intentSource = model.curatedIntent?.trim() || goal.text;
+  const title = (intentSource.split("\n")[0] ?? "").trim();
   const itemIds: string[] = [];
   const parts: string[] = [];
   const textById = new Map<string, string>();
@@ -154,9 +177,112 @@ export function projectDelta(model: WorkingModel): {
       const sup = it.supersedes
         ? ` (supersedes ${textById.get(it.supersedes) ?? it.supersedes})`
         : "";
-      parts.push(`- ${it.text}${sup}`);
+      parts.push(`- ${it.text}${sup}${evalSuffix(it)}`);
     }
     parts.push("");
   }
   return { title, body: parts.join("\n").trim(), itemIds };
+}
+
+/**
+ * Project a CUT (2026-07-16 redesign): the selected elements plus the context
+ * items their dependency edges pull in (transitive closure over `requires` in
+ * BOTH directions, but only ever pulling NON-element items as context — other
+ * elements never join a cut implicitly).
+ *
+ * Returns:
+ *   shipIds — selected elements (checked+active): consumed by the TEP.
+ *   flagIds — pulled context (checked+active): flagged, stays live.
+ *   uncheckedElements — selected but unsettled: freeze must refuse on these.
+ */
+export function projectCut(
+  model: WorkingModel,
+  cut: { elementIds: readonly string[]; intent?: string },
+): {
+  title: string;
+  body: string;
+  shipIds: string[];
+  flagIds: string[];
+  uncheckedElements: string[];
+} {
+  const byId = new Map<
+    string,
+    { kind: SectionKind; item: WorkingModel["sections"][0]["items"][0] }
+  >();
+  for (const s of model.sections)
+    for (const it of s.items) byId.set(it.id, { kind: s.kind, item: it });
+
+  // Undirected adjacency over requires edges.
+  const adj = new Map<string, Set<string>>();
+  const link = (a: string, b: string): void => {
+    (adj.get(a) ?? adj.set(a, new Set()).get(a)!).add(b);
+    (adj.get(b) ?? adj.set(b, new Set()).get(b)!).add(a);
+  };
+  for (const { item } of byId.values())
+    for (const req of item.requires ?? []) link(item.id, req);
+
+  const selected = new Set(
+    cut.elementIds.filter((id) => byId.get(id)?.kind === "elements"),
+  );
+  // Traverse: context (non-element) items reachable from the selection
+  // without passing through unselected elements.
+  const context = new Set<string>();
+  const queue = [...selected];
+  const visited = new Set(queue);
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    for (const next of adj.get(id) ?? []) {
+      if (visited.has(next)) continue;
+      visited.add(next);
+      const entry = byId.get(next);
+      if (!entry) continue;
+      if (entry.kind === "elements") continue; // never pull other elements
+      context.add(next);
+      queue.push(next);
+    }
+  }
+
+  const isLive = (id: string): boolean => {
+    const e = byId.get(id);
+    return e !== undefined && e.item.checked && e.item.state === "active";
+  };
+  const shipIds = [...selected].filter(isLive);
+  const flagIds = [...context].filter(isLive);
+  const uncheckedElements = [...selected].filter(
+    (id) => byId.get(id)?.item.state === "active" && !byId.get(id)!.item.checked,
+  );
+
+  const intentSource =
+    cut.intent?.trim() ||
+    model.curatedIntent?.trim() ||
+    goalSection(model).text;
+  const title = (intentSource.split("\n")[0] ?? "").trim();
+
+  const included = new Set([...shipIds, ...flagIds]);
+  const parts: string[] = [];
+  if (intentSource.trim()) {
+    parts.push("## Goal", intentSource.trim(), "");
+  }
+  const textById = new Map<string, string>();
+  for (const { item } of byId.values()) textById.set(item.id, item.text);
+  for (const s of model.sections) {
+    const picked = s.items.filter((it) => included.has(it.id));
+    if (picked.length === 0) continue;
+    const header = KIND_TO_TEP_HEADER[s.kind];
+    if (header && header !== "## Goal") parts.push(header);
+    for (const it of picked) {
+      const sup = it.supersedes
+        ? ` (supersedes ${textById.get(it.supersedes) ?? it.supersedes})`
+        : "";
+      parts.push(`- ${it.text}${sup}${evalSuffix(it)}`);
+    }
+    parts.push("");
+  }
+  return {
+    title,
+    body: parts.join("\n").trim(),
+    shipIds,
+    flagIds,
+    uncheckedElements,
+  };
 }

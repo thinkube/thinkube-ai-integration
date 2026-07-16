@@ -1,0 +1,213 @@
+/**
+ * Tests for the 2026-07-16 redesign: rough-request journal, curated intent,
+ * cuts (elements ship, context flags), and TEP-protection (flagged/shipped =
+ * immutable, supersede-only). Run via the repo recipe (node --test).
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+
+import { emptyModel, reduce, isProtected } from "./model";
+import type { Action, WorkingModel } from "./model";
+import { projectCut } from "./projection";
+
+/** Build a space: 2 elements, 1 constraint linked to element A, 1 criterion
+ *  linked to the constraint (transitive), 1 unrelated constraint. */
+function cutScenario(): {
+  model: WorkingModel;
+  elA: string;
+  elB: string;
+  conLinked: string;
+  criTransitive: string;
+  conUnrelated: string;
+} {
+  let m = emptyModel("tep");
+  m = reduce(m, { type: "seedGoal", text: "the space's goal" }).model;
+  const sec = (kind: string): string =>
+    m.sections.find((s) => s.kind === kind)!.id;
+  const propose = (
+    sectionId: string,
+    text: string,
+    requires?: string[],
+  ): string => {
+    const a: Action = {
+      type: "proposeItem",
+      actor: "gap-filler",
+      sectionId,
+      item: { text, modality: "optional", evals: {}, requires },
+    };
+    m = reduce(m, a).model;
+    const items = m.sections.find((s) => s.id === sectionId)!.items;
+    return items[items.length - 1].id;
+  };
+  const elA = propose(sec("elements"), "element A");
+  const elB = propose(sec("elements"), "element B");
+  const conLinked = propose(sec("constraints"), "constraint on A", [elA]);
+  const criTransitive = propose(sec("criteria"), "criterion via constraint", [
+    conLinked,
+  ]);
+  const conUnrelated = propose(sec("constraints"), "unrelated constraint");
+  // Settle everything.
+  for (const id of [elA, elB, conLinked, criTransitive, conUnrelated]) {
+    m = reduce(m, { type: "checkItem", actor: "human", itemId: id }).model;
+  }
+  return { model: m, elA, elB, conLinked, criTransitive, conUnrelated };
+}
+
+test("projectCut: selected elements ship; edge-connected context is pulled transitively; other elements and unrelated context stay out", () => {
+  const { model, elA, elB, conLinked, criTransitive, conUnrelated } =
+    cutScenario();
+  const proj = projectCut(model, { elementIds: [elA] });
+  assert.deepEqual(proj.shipIds, [elA]);
+  assert.deepEqual(new Set(proj.flagIds), new Set([conLinked, criTransitive]));
+  assert.ok(!proj.flagIds.includes(conUnrelated));
+  assert.ok(!proj.shipIds.includes(elB));
+  assert.ok(proj.body.includes("element A"));
+  assert.ok(!proj.body.includes("element B"));
+  assert.ok(proj.body.includes("constraint on A"));
+});
+
+test("projectCut: unsettled selected elements are reported (freeze must refuse)", () => {
+  const { model, elA } = cutScenario();
+  const unchecked = reduce(model, {
+    type: "uncheckItem",
+    actor: "human",
+    itemId: elA,
+  }).model;
+  const proj = projectCut(unchecked, { elementIds: [elA] });
+  assert.deepEqual(proj.uncheckedElements, [elA]);
+  assert.deepEqual(proj.shipIds, []);
+});
+
+test("stampShipped with flagIds: elements ship, context flags and STAYS active", () => {
+  const { model, elA, conLinked } = cutScenario();
+  const { model: after } = reduce(model, {
+    type: "stampShipped",
+    itemIds: [elA],
+    flagIds: [conLinked],
+    tepId: "TEP-99",
+  });
+  const byId = new Map(
+    after.sections.flatMap((s) => s.items.map((it) => [it.id, it] as const)),
+  );
+  assert.equal(byId.get(elA)!.state, "shipped");
+  assert.equal(byId.get(elA)!.shippedIn, "TEP-99");
+  assert.equal(byId.get(conLinked)!.state, "active");
+  assert.deepEqual(byId.get(conLinked)!.flaggedBy, ["TEP-99"]);
+  // Second cut flags again — the list accumulates, no duplicates.
+  const { model: again } = reduce(after, {
+    type: "stampShipped",
+    itemIds: [],
+    flagIds: [conLinked],
+    tepId: "TEP-100",
+  });
+  const con = again.sections
+    .flatMap((s) => s.items)
+    .find((it) => it.id === conLinked)!;
+  assert.deepEqual(con.flaggedBy, ["TEP-99", "TEP-100"]);
+});
+
+test("TEP-protection: flagged items reject edits, reclassification, and drop — supersede stays open; checking stays open", () => {
+  const { model, conLinked } = cutScenario();
+  const { model: flagged } = reduce(model, {
+    type: "stampShipped",
+    itemIds: [],
+    flagIds: [conLinked],
+    tepId: "TEP-99",
+  });
+  const item = flagged.sections
+    .flatMap((s) => s.items)
+    .find((it) => it.id === conLinked)!;
+  assert.ok(isProtected(item));
+
+  const rejects: Action[] = [
+    { type: "editItemText", actor: "human", itemId: conLinked, text: "rewrite" },
+    { type: "setModality", actor: "human", itemId: conLinked, modality: "mandatory" },
+    { type: "setEval", actor: "human", itemId: conLinked, facet: "risk", value: 3 },
+    { type: "dropItem", actor: "human", itemId: conLinked },
+    {
+      type: "proposeEdit",
+      actor: "integrator",
+      itemId: conLinked,
+      newText: "worker rewrite",
+    },
+  ];
+  for (const a of rejects) {
+    const { delta } = reduce(flagged, a);
+    assert.equal(delta.kind, "rejected", `${a.type} must be rejected`);
+    assert.match(
+      (delta as { reason: string }).reason,
+      /TEP-protected/,
+      `${a.type} rejection names the protection`,
+    );
+  }
+
+  // Un/checking stays allowed (settling for a FUTURE cut).
+  const { delta: uncheck } = reduce(flagged, {
+    type: "uncheckItem",
+    actor: "human",
+    itemId: conLinked,
+  });
+  assert.equal(uncheck.kind, "applied");
+  // Supersede stays allowed: a new item may supersede the protected one.
+  const constraints = flagged.sections.find((s) => s.kind === "constraints")!;
+  const { model: withNew } = reduce(flagged, {
+    type: "proposeItem",
+    actor: "gap-filler",
+    sectionId: constraints.id,
+    item: { text: "refined constraint", modality: "optional", evals: {} },
+  });
+  const newId = withNew.sections
+    .find((s) => s.kind === "constraints")!
+    .items.find((it) => it.text === "refined constraint")!.id;
+  const { delta: sup } = reduce(withNew, {
+    type: "supersedeItem",
+    actor: "human",
+    itemId: newId,
+    supersedes: conLinked,
+  });
+  assert.equal(sup.kind, "applied");
+});
+
+test("rough requests: append-only journal; empty refused; entries never mutate the goal", () => {
+  let m = emptyModel("tep");
+  m = reduce(m, { type: "seedGoal", text: "original goal" }).model;
+  const { model: m1, delta: d1 } = reduce(m, {
+    type: "addRoughRequest",
+    text: "also handle X",
+  });
+  assert.equal(d1.kind, "applied");
+  const { model: m2 } = reduce(m1, {
+    type: "addRoughRequest",
+    text: "and Y as well",
+  });
+  assert.deepEqual(
+    m2.roughRequests!.map((r) => r.text),
+    ["also handle X", "and Y as well"],
+  );
+  assert.equal(
+    m2.sections.find((s) => s.kind === "goal")!.text,
+    "original goal",
+  );
+  const { delta: empty } = reduce(m2, { type: "addRoughRequest", text: "  " });
+  assert.equal(empty.kind, "rejected");
+});
+
+test("curated intent: set by curateIntent; empty-over-nonempty refused; freeze title prefers it", () => {
+  const { model } = cutScenario();
+  const { model: curated, delta } = reduce(model, {
+    type: "curateIntent",
+    text: "Deliver element A under its constraint",
+  });
+  assert.equal(delta.kind, "applied");
+  assert.equal(curated.curatedIntent, "Deliver element A under its constraint");
+
+  const { delta: erased } = reduce(curated, { type: "curateIntent", text: "" });
+  assert.equal(erased.kind, "rejected");
+
+  const proj = projectCut(curated, {
+    elementIds: [
+      curated.sections.find((s) => s.kind === "elements")!.items[0].id,
+    ],
+  });
+  assert.equal(proj.title, "Deliver element A under its constraint");
+});

@@ -26,11 +26,14 @@
 
 import type {
   Action,
+  ComplexityFactor,
   Evidence,
   Modality,
+  RiskFactor,
   ToolName,
   WorkingModel,
 } from "../model";
+import { COMPLEXITY_FACTORS, RISK_FACTORS } from "../model";
 
 /** Worker actors — every scratchpad round actor except the human. */
 export type WorkerActor = "gap-filler" | "integrator" | "research";
@@ -63,6 +66,7 @@ const WORKER_EMITTABLE: ReadonlySet<string> = new Set([
   "addItemNote",
   "attachEvidence",
   "editGoal",
+  "curateIntent",
   "addObjection",
 ]);
 
@@ -217,11 +221,16 @@ export function renderActionGuide(
     proposeItem:
       `{"type":"proposeItem","actor":"${actor}","sectionId":"${exampleSectionId}",` +
       `"item":{"text":"<the item text>","modality":"optional","evals":{"complexity":2,"risk":1},` +
+      `"factors":{"complexity":"interactions","risk":"irreversible"},` +
       `"note":"Why: <role in the intent>. Impact: <what it commits to / what dropping loses>. Modality: <why this classification>.",` +
       `"requires":["<itemId of an existing item, or the EXACT text of an item you proposed earlier in this same response>"]}}` +
       ` — modality doctrine: "mandatory" = the intent CANNOT be delivered without this item; ` +
       `"optional" = valuable, but the intent survives without it. Classify honestly per item, never by default. ` +
-      `Evals values are 1|2|3 (omit a facet if unsure). ALWAYS include the note — the human decides on it. ` +
+      `Eval doctrine — every score MUST name its factor in "factors" (a score without a factor is unexplainable and will be challenged). ` +
+      `Scores: 1 = well-understood/cheap to be wrong about; 2 = several moving parts / rework cost; 3 = needs research or decomposition before settling / a wrong call endangers the intent. ` +
+      `Complexity factors: interactions (entangled with other items), novelty (uncharted — nothing known covers it), ambiguity (several plausible readings), decomposition (resists clean cutting), external-coupling (behavior outside our control). ` +
+      `Risk factors: irreversible (cannot be cheaply undone), blast-radius (many items depend on it), unverified-assumption (load-bearing claim, no evidence), external-dependency (undocumented/uncontrolled behavior), integrity (security/data-loss/signed-artifact class), hack-debt (a known shortcut being accepted). ` +
+      `Omit a facet entirely if genuinely unsure. ALWAYS include the note — the human decides on it. ` +
       `Dependency doctrine: whenever an item's Why references another item, DECLARE the edge in "requires" — ` +
       `a dependency that lives only in prose silently goes stale when the other item is dropped. Omit "requires" when there is none`,
     proposeEdit: `{"type":"proposeEdit","actor":"${actor}","itemId":"${exampleItemId}","newText":"<replacement text>"}`,
@@ -230,6 +239,7 @@ export function renderActionGuide(
       `{"type":"attachEvidence","actor":"${actor}","itemId":"${exampleItemId}",` +
       `"evidence":{"source":"<where>","method":"<how verified>","checkedAt":"<ISO timestamp>","dossierRef":"research/<topic>.md"}}`,
     editGoal: `{"type":"editGoal","text":"<the rewritten goal statement>"}`,
+    curateIntent: `{"type":"curateIntent","text":"<the curated intent — the synthesized statement of what this space (or cut) intends>"}`,
     addObjection: `{"type":"addObjection","text":"<the objection>"}`,
     addItem: `{"type":"addItem","actor":"human","sectionId":"${exampleSectionId}","text":"<the item text>","modality":"optional"}`,
     checkItem: `{"type":"checkItem","actor":"human","itemId":"${exampleItemId}"}`,
@@ -368,6 +378,7 @@ export function normalizeWorkerActions(
           evals: { complexity?: 1 | 2 | 3; risk?: 1 | 2 | 3 };
           note?: string;
           requires?: string[];
+          factors?: { complexity?: ComplexityFactor; risk?: RiskFactor };
         } = {
           text,
           modality: asModality(itemRec?.modality ?? rec.modality),
@@ -375,6 +386,29 @@ export function normalizeWorkerActions(
         };
         const note = asNonEmptyString(itemRec?.note ?? rec.note);
         if (note !== null) item.note = note;
+
+        // Factors: validated against the closed vocabularies; an invalid
+        // factor is dropped (score kept — it just stays unexplained).
+        const factorsRec = asRecord(itemRec?.factors ?? rec.factors);
+        if (factorsRec !== null) {
+          const factors: {
+            complexity?: ComplexityFactor;
+            risk?: RiskFactor;
+          } = {};
+          if (
+            COMPLEXITY_FACTORS.includes(
+              factorsRec.complexity as ComplexityFactor,
+            )
+          ) {
+            factors.complexity = factorsRec.complexity as ComplexityFactor;
+          }
+          if (RISK_FACTORS.includes(factorsRec.risk as RiskFactor)) {
+            factors.risk = factorsRec.risk as RiskFactor;
+          }
+          if (factors.complexity !== undefined || factors.risk !== undefined) {
+            item.factors = factors;
+          }
+        }
 
         // Predict this item's id BEFORE resolving its edges, so a later item
         // in the same batch can reference this one (and self-edges resolve
@@ -512,6 +546,16 @@ export function normalizeWorkerActions(
         // Empty text is passed through — the reducer's erasure guard owns that
         // invariant (empty rewrite over a non-empty intent is rejected there).
         valid.push({ type: "editGoal", text: rec.text });
+        continue;
+      }
+
+      case "curateIntent": {
+        if (typeof rec.text !== "string") {
+          rejected.push({ raw, reason: "curateIntent carries no text" });
+          continue;
+        }
+        // Erasure guard lives in the reducer (empty over non-empty rejected).
+        valid.push({ type: "curateIntent", text: rec.text });
         continue;
       }
 

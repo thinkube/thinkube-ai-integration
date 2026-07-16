@@ -4,7 +4,7 @@ import type { ThinkubeStore } from "../store/ThinkubeStore";
 import type { Frontmatter } from "../store/frontmatter";
 import type { WorkingModel } from "./model";
 import { freezeEnabled } from "./model";
-import { projectDelta } from "./projection";
+import { projectDelta, projectCut } from "./projection";
 
 /**
  * A human-approval token. Any non-null token means "the human approved."
@@ -119,7 +119,8 @@ export interface FreezeDeps {
 export async function freeze(
   model: WorkingModel,
   deps: FreezeDeps,
-): Promise<{ tep: string; itemIds: string[] }> {
+  cut?: { elementIds: readonly string[]; intent?: string },
+): Promise<{ tep: string; itemIds: string[]; flagIds: string[] }> {
   if (deps.approval === null) {
     throw new Error("Freeze requires a human approval token: approval is null");
   }
@@ -128,6 +129,32 @@ export async function freeze(
     throw new Error(
       "Freeze is not enabled: the model has not passed the readiness check (coverage and clean-cut required)",
     );
+  }
+
+  // Cut-scoped freeze (2026-07-16 redesign): only the selected elements ship;
+  // the context their edges pull in gets FLAGGED with the TEP and stays live.
+  if (cut !== undefined) {
+    const projection = projectCut(model, cut);
+    if (projection.uncheckedElements.length > 0) {
+      throw new Error(
+        `Cut contains ${projection.uncheckedElements.length} unsettled element(s) — check them (or remove them from the cut) before freezing`,
+      );
+    }
+    if (projection.shipIds.length === 0) {
+      throw new Error("Cut is empty — select at least one settled element");
+    }
+    const stampedCut = deps.signing.stamp(projection.body);
+    const cutResult = await deps.signing.writeTep({
+      thinking_space: deps.thinkingSpace,
+      title: projection.title,
+      status: "proposed",
+      body: stampedCut,
+    });
+    return {
+      tep: cutResult.tep,
+      itemIds: projection.shipIds,
+      flagIds: projection.flagIds,
+    };
   }
 
   const { title, body, itemIds } = projectDelta(model);
@@ -140,5 +167,5 @@ export async function freeze(
     body: stamped,
   });
 
-  return { tep: result.tep, itemIds };
+  return { tep: result.tep, itemIds, flagIds: [] };
 }

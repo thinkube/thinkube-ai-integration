@@ -22,6 +22,7 @@ import { buildScratchpadHtml, ScratchpadDocumentView } from "./views/document";
 import type { RoundActivity, ScratchpadInboundMessage } from "./views/document";
 import { interpret } from "./workers/interpreter";
 import { freeze as doFreeze } from "./freeze";
+import { projectDelta, projectCut } from "./projection";
 import type { ApprovalToken, SigningTool } from "./freeze";
 export type { SigningTool } from "./freeze";
 import { toReadinessRecord, makeProductionRunSlicer } from "./dryRunSlice";
@@ -178,6 +179,9 @@ class ScratchpadSessionImpl implements ScratchpadSession {
   private _selection: Set<string> = new Set();
   /** Ephemeral dependency-focus item id (transient inspection highlight). */
   private _focusItemId: string | undefined;
+  /** The CUT (third selection channel, 2026-07-16 redesign): element ids
+   *  selected to ship as the next TEP. Ephemeral until frozen. */
+  private _cut: Set<string> = new Set();
   /** The last command error/explanation message (cleared on the next command attempt). */
   private _commandMessage: string | undefined;
 
@@ -245,6 +249,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
         this._commandInFlight,
         [...this._selection],
         this._focusItemId,
+        [...this._cut],
       );
     }
     // Debounce-persist to disk
@@ -284,6 +289,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
       this._commandInFlight,
       [...this._selection],
       this._focusItemId,
+      [...this._cut],
     );
   }
 
@@ -319,10 +325,19 @@ class ScratchpadSessionImpl implements ScratchpadSession {
    */
   async runReframe(): Promise<void> {
     await this._runWorkerRound("reframe", ["goal"], async () => {
-      const worker = reframe({
-        loadQuery: this._loadQueryFn,
-        model: this._workerModelId,
-      });
+      // With a cut active, the curated intent is synthesized for the CUT —
+      // it describes the upcoming TEP, not the whole space.
+      const scope =
+        this._cut.size > 0
+          ? { itemIds: this._cutClosureIds() }
+          : undefined;
+      const worker = reframe(
+        {
+          loadQuery: this._loadQueryFn,
+          model: this._workerModelId,
+        },
+        scope,
+      );
       return worker.run(this._model, []);
     });
   }
@@ -596,6 +611,84 @@ class ScratchpadSessionImpl implements ScratchpadSession {
           noteId: message.noteId,
         });
         break;
+      case "addRoughRequest": {
+        // Append-only journal of raw human asks (2026-07-16 redesign). A
+        // landed request immediately triggers an expansion round so the
+        // space absorbs it into elements/constraints/gaps/criteria.
+        const delta = this.dispatch({
+          type: "addRoughRequest",
+          text: message.text,
+        });
+        if (delta.kind === "applied") {
+          await this.askForStructure();
+        }
+        break;
+      }
+      case "toggleCut": {
+        // The CUT — third selection channel: elements selected to ship as
+        // the next TEP. Distinct from checked (settled) and staged (verb
+        // pending). Only ELEMENT items can enter a cut.
+        const inElements = this._model.sections.some(
+          (s) =>
+            s.kind === "elements" &&
+            s.items.some(
+              (it) => it.id === message.itemId && it.state === "active",
+            ),
+        );
+        if (!inElements) break;
+        if (this._cut.has(message.itemId)) {
+          this._cut.delete(message.itemId);
+        } else {
+          this._cut.add(message.itemId);
+        }
+        this._updatePanel();
+        break;
+      }
+      case "clearCut":
+        this._cut.clear();
+        this._updatePanel();
+        break;
+      case "previewTep": {
+        // DRAFT preview (2026-07-16 redesign): render EXACTLY what freeze
+        // would sign — same projection, zero side effects (no TEP id, no
+        // flags, no stamps). Opens as an untitled markdown document.
+        const cutActive = this._cut.size > 0;
+        const proj = cutActive
+          ? projectCut(this._model, { elementIds: [...this._cut] })
+          : projectDelta(this._model);
+        const warnings: string[] = [];
+        if (cutActive) {
+          const cutProj = proj as ReturnType<typeof projectCut>;
+          if (cutProj.uncheckedElements.length > 0) {
+            warnings.push(
+              `${cutProj.uncheckedElements.length} selected element(s) are NOT settled — freeze will refuse until they are checked.`,
+            );
+          }
+          warnings.push(
+            `Cut scope: ${cutProj.shipIds.length} element(s) ship; ${cutProj.flagIds.length} context item(s) get flagged and stay live.`,
+          );
+        }
+        const draft =
+          `<!-- DRAFT — not signed; nothing shipped or flagged. This preview runs the SAME projection freeze signs. -->\n\n` +
+          `# DRAFT TEP — ${proj.title || "(untitled)"}\n\n` +
+          (warnings.length > 0
+            ? warnings.map((w) => `> ⚠ ${w}`).join("\n") + "\n\n"
+            : "") +
+          proj.body +
+          `\n`;
+        try {
+          const doc = await vscode.workspace.openTextDocument({
+            content: draft,
+            language: "markdown",
+          });
+          await vscode.window.showTextDocument(doc, { preview: true });
+        } catch (err) {
+          vscode.window.showErrorMessage(
+            `Preview failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        break;
+      }
       case "toggleDepFocus":
         // Transient dependency-focus highlight (illumination channel —
         // distinct from checked/settled and from staged-for-action).
@@ -733,6 +826,12 @@ class ScratchpadSessionImpl implements ScratchpadSession {
             // section-level gap (2026-07-16).
             const goalSec = this._model.sections.find((s) => s.kind === "goal");
             const lines: string[] = [goalSec?.text ?? ""];
+            for (const r of this._model.roughRequests ?? []) {
+              lines.push(`\nRough request: ${r.text}`);
+            }
+            if (this._model.curatedIntent?.trim()) {
+              lines.push(`\nCurated intent:\n${this._model.curatedIntent.trim()}`);
+            }
             for (const sec of this._model.sections) {
               if (sec.kind === "goal") continue;
               const checked = sec.items.filter(
@@ -788,15 +887,31 @@ class ScratchpadSessionImpl implements ScratchpadSession {
             value: `human-approval-${Date.now()}`,
           };
           try {
-            const { tep, itemIds } = await doFreeze(this._model, {
-              approval,
-              signing: this._signing,
-              thinkingSpace: this._space,
+            const cut =
+              this._cut.size > 0
+                ? { elementIds: [...this._cut] }
+                : undefined;
+            const { tep, itemIds, flagIds } = await doFreeze(
+              this._model,
+              {
+                approval,
+                signing: this._signing,
+                thinkingSpace: this._space,
+              },
+              cut,
+            );
+            this.dispatch({
+              type: "stampShipped",
+              itemIds,
+              tepId: tep,
+              ...(flagIds.length > 0 ? { flagIds } : {}),
             });
-            this.dispatch({ type: "stampShipped", itemIds, tepId: tep });
+            this._cut.clear();
             await this.flush();
             vscode.window.showInformationMessage(
-              `${tep} created (status: proposed) — it is now in this thinking space's TEPs panel.`,
+              cut
+                ? `${tep} created from the cut: ${itemIds.length} element(s) shipped, ${flagIds.length} context item(s) flagged (still live for future cuts).`
+                : `${tep} created (status: proposed) — it is now in this thinking space's TEPs panel.`,
             );
             // Best-effort tree refresh so the new TEP is visible immediately.
             void vscode.commands
@@ -961,6 +1076,18 @@ class ScratchpadSessionImpl implements ScratchpadSession {
     }
   }
 
+  /** Ids inside the current cut: the selected elements plus the context their
+   *  edges pull in (via projectCut's traversal). Empty set when no cut. */
+  private _cutClosureIds(): Set<string> {
+    if (this._cut.size === 0) return new Set();
+    const proj = projectCut(this._model, { elementIds: [...this._cut] });
+    return new Set([
+      ...this._cut,
+      ...proj.shipIds,
+      ...proj.flagIds,
+    ]);
+  }
+
   /** Push the current model + round activity + command state into the open panel. */
   private _updatePanel(): void {
     if (this._view) {
@@ -971,6 +1098,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
         this._commandInFlight,
         [...this._selection],
         this._focusItemId,
+        [...this._cut],
       );
     }
   }
