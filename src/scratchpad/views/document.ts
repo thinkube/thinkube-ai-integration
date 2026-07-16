@@ -51,6 +51,7 @@ export type ScratchpadInboundMessage =
   //    first (command or per-item toggle), then apply over the selection.
   | { type: "explainItem"; itemId: string }
   | { type: "explainAll" }
+  | { type: "toggleDepFocus"; itemId: string }
   | { type: "toggleSelect"; itemId: string }
   | { type: "clearSelection" }
   | {
@@ -96,16 +97,101 @@ function esc(text: string): string {
     .replace(/'/g, "&#39;");
 }
 
+/**
+ * Per-item dependency render metadata, derived (never stored) from the
+ * requires edges in buildScratchpadHtml.
+ */
+interface ItemDepMeta {
+  /** Edges touching this item (requires + required-by). */
+  depCount: number;
+  /** True when a required item is dropped/deferred — the rationale is stale. */
+  stale: boolean;
+  /** The dropped/deferred dependency texts (for the stale badge title). */
+  staleDeps: string[];
+  /** Role under the current dependency focus, if any. */
+  focusRole?: "focus" | "req" | "dependent" | "dim";
+  /** Rendered only on the focused item: its dependencies as chips. */
+  chips?: { id: string; text: string; state: string }[];
+}
+
+/** Compute dependency render metadata for every item. Pure; exported for tests. */
+export function computeDepMeta(
+  model: WorkingModel,
+  focusItemId?: string,
+): Map<string, ItemDepMeta> {
+  const byId = new Map<string, Item>();
+  const requiredBy = new Map<string, string[]>();
+  for (const sec of model.sections) {
+    for (const it of sec.items) byId.set(it.id, it);
+  }
+  for (const it of byId.values()) {
+    for (const req of it.requires ?? []) {
+      const list = requiredBy.get(req) ?? [];
+      list.push(it.id);
+      requiredBy.set(req, list);
+    }
+  }
+  const focus = focusItemId !== undefined ? byId.get(focusItemId) : undefined;
+  const focusReq = new Set(focus?.requires ?? []);
+  const focusDependents = new Set(
+    focus !== undefined ? (requiredBy.get(focus.id) ?? []) : [],
+  );
+
+  const meta = new Map<string, ItemDepMeta>();
+  for (const it of byId.values()) {
+    const requires = it.requires ?? [];
+    const staleDeps = requires
+      .map((id) => byId.get(id))
+      .filter(
+        (dep): dep is Item =>
+          dep !== undefined &&
+          (dep.state === "dropped" || dep.state === "deferred"),
+      )
+      .map((dep) => `${dep.text} (${dep.state})`);
+    const m: ItemDepMeta = {
+      depCount: requires.length + (requiredBy.get(it.id)?.length ?? 0),
+      stale: staleDeps.length > 0,
+      staleDeps,
+    };
+    if (focus !== undefined) {
+      if (it.id === focus.id) {
+        m.focusRole = "focus";
+        m.chips = requires
+          .map((id) => byId.get(id))
+          .filter((dep): dep is Item => dep !== undefined)
+          .map((dep) => ({
+            id: dep.id,
+            text: dep.text,
+            state: dep.state,
+          }));
+      } else if (focusReq.has(it.id)) {
+        m.focusRole = "req";
+      } else if (focusDependents.has(it.id)) {
+        m.focusRole = "dependent";
+      } else {
+        m.focusRole = "dim";
+      }
+    }
+    meta.set(it.id, m);
+  }
+  return meta;
+}
+
 /** Render one Item as an <li> with the contract's exact selectors. */
-function itemHtml(item: Item, selected = false): string {
+function itemHtml(item: Item, selected = false, dep?: ItemDepMeta): string {
+  const depClass =
+    dep?.focusRole !== undefined ? ` dep-${dep.focusRole}` : "";
   const liAttrs: string[] = [
-    `class="item${selected ? " selected" : ""}"`,
+    `class="item${selected ? " selected" : ""}${depClass}"`,
     `data-item-id="${esc(item.id)}"`,
     `data-state="${esc(item.state)}"`,
     `data-origin="${esc(item.origin)}"`,
   ];
   if (selected) {
     liAttrs.push(`data-selected="true"`);
+  }
+  if (item.requires !== undefined && item.requires.length > 0) {
+    liAttrs.push(`data-requires="${esc(item.requires.join(" "))}"`);
   }
   if (item.shippedIn !== undefined) {
     liAttrs.push(`data-shipped-in="${esc(item.shippedIn)}"`);
@@ -153,9 +239,14 @@ function itemHtml(item: Item, selected = false): string {
   // two-step everywhere — this button only toggles SELECTION; the verb
   // (drop/defer/check/uncheck) is applied from the selection bar as a
   // separate, explicit act. No single gesture can destroy an item.
+  const depsButton =
+    dep !== undefined && dep.depCount > 0
+      ? `<button class="item-deps" title="Highlight this item's dependencies and dependents">⌗${dep.depCount}</button>`
+      : "";
   const itemControls =
     item.state === "active"
       ? `<span class="item-actions">` +
+        depsButton +
         `<button class="item-explain" title="Analyze — attach a Why / Impact / Modality note to inform your decision">why?</button>` +
         `<button class="item-select" title="${
           selected
@@ -163,6 +254,27 @@ function itemHtml(item: Item, selected = false): string {
             : "Select — then apply an action from the selection bar"
         }">${selected ? "deselect" : "select"}</button>` +
         `</span>`
+      : "";
+
+  // Stale-rationale badge: a required item was dropped/deferred — the why,
+  // impact, and modality of THIS item may no longer hold.
+  const staleBadge =
+    dep !== undefined && dep.stale
+      ? `<span class="stale-badge" title="Rationale may be stale — dependencies changed: ${esc(dep.staleDeps.join("; "))}">⚠ rationale stale</span>`
+      : "";
+
+  // Dependency chips render on the FOCUSED item only: what it requires, each
+  // chip scrolls to its target; dropped/deferred targets read as broken.
+  const depChips =
+    dep?.chips !== undefined && dep.chips.length > 0
+      ? `<div class="dep-chips">requires: ${dep.chips
+          .map(
+            (c) =>
+              `<button class="dep-chip${c.state !== "active" ? " broken" : ""}" data-target-id="${esc(c.id)}">${
+                c.state !== "active" ? `(${esc(c.state)}) ` : ""
+              }${esc(truncateChip(c.text))}</button>`,
+          )
+          .join(" ")}</div>`
       : "";
 
   // Notes render under the item (field request 2026-07-16: notes existed in
@@ -180,12 +292,19 @@ function itemHtml(item: Item, selected = false): string {
     `<span class="modality" data-modality="${esc(item.modality)}">${esc(item.modality)}</span>` +
     evalsSpan +
     `<span class="item-text">${esc(item.text)}</span>` +
+    staleBadge +
     pendingEditSpan +
     evidenceChips +
     itemControls +
+    depChips +
     notesHtml +
     `</li>`
   );
+}
+
+/** Clip a dependency chip's text. */
+function truncateChip(text: string): string {
+  return text.length <= 60 ? text : `${text.slice(0, 59)}…`;
 }
 
 /** Render the goal (intent) section — contains EXACTLY ONE #goal-input. */
@@ -228,6 +347,7 @@ function checklistSectionHtml(
   activity?: SectionActivity,
   errorMsg?: string,
   selection?: ReadonlySet<string>,
+  depMeta?: Map<string, ItemDepMeta>,
 ): string {
   const marker = STATE_MARKERS[section.state];
   // Dropped items are not rendered; all other states show
@@ -235,7 +355,9 @@ function checklistSectionHtml(
   const itemsHtml =
     visibleItems.length > 0
       ? `<ul class="item-list">${visibleItems
-          .map((it) => itemHtml(it, selection?.has(it.id) ?? false))
+          .map((it) =>
+            itemHtml(it, selection?.has(it.id) ?? false, depMeta?.get(it.id)),
+          )
           .join("")}</ul>`
       : `<ul class="item-list"></ul>`;
 
@@ -349,8 +471,10 @@ export function buildScratchpadHtml(
   commandMessage?: string,
   commandInFlight?: boolean,
   selectedItemIds?: readonly string[],
+  focusItemId?: string,
 ): string {
   const selection: ReadonlySet<string> = new Set(selectedItemIds ?? []);
+  const depMeta = computeDepMeta(model, focusItemId);
   const goalSec = model.sections.find((s) => s.kind === "goal");
   const nonGoalSections = model.sections.filter((s) => s.kind !== "goal");
 
@@ -384,6 +508,7 @@ export function buildScratchpadHtml(
         sectionActivity(s.kind),
         sectionError(s.kind),
         selection,
+        depMeta,
       ),
     )
     .join("\n");
@@ -532,6 +657,17 @@ export function buildScratchpadHtml(
        (the checkbox = settled into the TEP): dashed outline, no fill that
        could read as a settled/accepted state. */
     li.item.selected { outline: 1px dashed var(--vscode-focusBorder); outline-offset: -1px; border-radius: 2px; }
+    /* Dependency focus (transient inspection): illumination channel — distinct
+       from the checkbox (settled) and the dashed outline (staged for action). */
+    li.item.dep-focus { border-left: 3px solid var(--vscode-focusBorder); padding-left: 6px; }
+    li.item.dep-req { border-left: 3px solid var(--vscode-charts-green, #89d185); padding-left: 6px; }
+    li.item.dep-dependent { border-left: 3px solid var(--vscode-charts-orange, #d18616); padding-left: 6px; }
+    li.item.dep-dim { opacity: 0.35; }
+    .stale-badge { font-size: 0.8em; color: var(--vscode-errorForeground); border: 1px solid var(--vscode-errorForeground); border-radius: 3px; padding: 0 5px; }
+    .dep-chips { flex-basis: 100%; margin: 4px 0 2px 24px; font-size: 0.85em; opacity: 0.9; }
+    .dep-chip { background: transparent; color: var(--vscode-foreground); border: 1px solid var(--vscode-charts-green, #89d185); border-radius: 8px; padding: 1px 8px; cursor: pointer; font-size: 0.95em; margin: 2px; }
+    .dep-chip.broken { border-color: var(--vscode-errorForeground); color: var(--vscode-errorForeground); }
+    .item-deps { white-space: nowrap; }
     .item-notes { flex-basis: 100%; margin: 4px 0 2px 24px; }
     .item-note { font-size: 0.85em; opacity: 0.85; padding: 4px 8px; border-left: 2px solid var(--vscode-panel-border); margin-bottom: 4px; white-space: pre-wrap; }
     li.item[data-state="deferred"] { opacity: 0.55; }
@@ -626,18 +762,27 @@ export function buildScratchpadHtml(
       if (input) input.value = '';
     }
 
-    // Per-item controls: selection toggle + explain (event delegation)
+    // Per-item controls: selection toggle + explain + dependency focus
     document.addEventListener('click', function(e) {
       var target = e.target;
       if (!target || !target.classList) return;
+      // Dependency chip → scroll to its target row (pure client-side).
+      if (target.classList.contains('dep-chip')) {
+        var tid = target.getAttribute('data-target-id');
+        var row = tid ? document.querySelector('li.item[data-item-id="' + tid + '"]') : null;
+        if (row) row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
       var isSelect = target.classList.contains('item-select');
       var isExplain = target.classList.contains('item-explain');
-      if (!isSelect && !isExplain) return;
+      var isDeps = target.classList.contains('item-deps');
+      if (!isSelect && !isExplain && !isDeps) return;
       var li = target.closest('li.item');
       if (!li) return;
       var itemId = li.getAttribute('data-item-id');
       if (!itemId) return;
-      vscode.postMessage({ type: isExplain ? 'explainItem' : 'toggleSelect', itemId: itemId });
+      var type = isExplain ? 'explainItem' : isDeps ? 'toggleDepFocus' : 'toggleSelect';
+      vscode.postMessage({ type: type, itemId: itemId });
     });
 
     function applySelection(verb) {
@@ -740,6 +885,7 @@ export class ScratchpadDocumentView implements vscode.Disposable {
     commandMessage?: string,
     commandInFlight?: boolean,
     selectedItemIds?: readonly string[],
+    focusItemId?: string,
   ): void {
     if (this._panel) {
       this._panel.webview.html = buildScratchpadHtml(
@@ -749,6 +895,7 @@ export class ScratchpadDocumentView implements vscode.Disposable {
         commandMessage,
         commandInFlight,
         selectedItemIds,
+        focusItemId,
       );
     }
   }

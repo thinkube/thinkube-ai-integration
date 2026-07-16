@@ -176,6 +176,8 @@ class ScratchpadSessionImpl implements ScratchpadSession {
   /** Ephemeral UI selection (item ids) — the first step of the two-step
    *  destructive flow. Never persisted; pruned of dead ids on apply. */
   private _selection: Set<string> = new Set();
+  /** Ephemeral dependency-focus item id (transient inspection highlight). */
+  private _focusItemId: string | undefined;
   /** The last command error/explanation message (cleared on the next command attempt). */
   private _commandMessage: string | undefined;
 
@@ -242,6 +244,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
         this._commandMessage,
         this._commandInFlight,
         [...this._selection],
+        this._focusItemId,
       );
     }
     // Debounce-persist to disk
@@ -280,6 +283,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
       this._commandMessage,
       this._commandInFlight,
       [...this._selection],
+      this._focusItemId,
     );
   }
 
@@ -542,6 +546,13 @@ class ScratchpadSessionImpl implements ScratchpadSession {
         });
         break;
       }
+      case "toggleDepFocus":
+        // Transient dependency-focus highlight (illumination channel —
+        // distinct from checked/settled and from staged-for-action).
+        this._focusItemId =
+          this._focusItemId === message.itemId ? undefined : message.itemId;
+        this._updatePanel();
+        break;
       // ── Selection flow (2026-07-16): step 1 selects, step 2 applies ──────
       case "toggleSelect":
         if (this._selection.has(message.itemId)) {
@@ -583,6 +594,13 @@ class ScratchpadSessionImpl implements ScratchpadSession {
           if (!liveIds.has(itemId)) continue;
           this.dispatch({ type: actionType, actor: "human", itemId });
           applied++;
+        }
+        if (
+          this._focusItemId !== undefined &&
+          this._selection.has(this._focusItemId) &&
+          (message.verb === "drop" || message.verb === "defer")
+        ) {
+          this._focusItemId = undefined;
         }
         this._selection.clear();
         this._commandMessage =
@@ -902,6 +920,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
         this._commandMessage,
         this._commandInFlight,
         [...this._selection],
+        this._focusItemId,
       );
     }
   }

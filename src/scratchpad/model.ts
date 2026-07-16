@@ -38,6 +38,15 @@ export interface Item {
   shippedIn?: string; // TEP id when state === "shipped"
   supersedes?: string;
   supersededBy?: string;
+  /**
+   * Dependency edges: ids of items THIS item requires (2026-07-16). Modality
+   * and rationale are set-relative — an item can be mandatory only because a
+   * dependency survives — so the relation is a first-class field, never
+   * prose. Items are never deleted (drop/defer flip state), so edges always
+   * resolve; a dropped/deferred dependency marks the dependent's rationale
+   * stale (derived at render, not stored).
+   */
+  requires?: string[];
   evidence: Evidence[];
   notes: Note[];
   pendingEdit?: PendingEdit;
@@ -146,6 +155,10 @@ export type Action =
          *  first note at creation (2026-07-16: proposals should arrive with
          *  their rationale — deciding on a bare one-liner is guesswork). */
         note?: string;
+        /** Optional dependency edges (item ids this item requires). The
+         *  normalize seam resolves text references — including items proposed
+         *  earlier in the same batch — to ids before dispatch. */
+        requires?: string[];
       };
     }
   | {
@@ -541,6 +554,9 @@ export function reduce(
         evidence: [],
         notes: initialNotes,
       };
+      if (action.item.requires !== undefined && action.item.requires.length) {
+        newItem.requires = [...action.item.requires];
+      }
       const newSection: Section = {
         ...section,
         items: [...section.items, newItem],

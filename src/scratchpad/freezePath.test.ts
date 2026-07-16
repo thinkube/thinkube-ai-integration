@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { emptyModel, reduce } from "./model";
 import type { Action, WorkingModel } from "./model";
 import { parseSlicerVerdict } from "./dryRunSlice";
-import { freezeStatusText } from "./views/document";
+import { computeDepMeta, freezeStatusText } from "./views/document";
 
 // ── parseSlicerVerdict ────────────────────────────────────────────────────────
 
@@ -148,6 +148,56 @@ test("freezeStatusText: unsettled mandatory items warn in every state; settling 
     itemId: mandatoryId,
   }).model;
   assert.doesNotMatch(freezeStatusText(model, true), /MANDATORY/);
+});
+
+test("computeDepMeta: focus roles, stale rationale on dropped dependency, and chips", () => {
+  let model = emptyModel("tep");
+  const constraints = model.sections.find((s) => s.kind === "constraints")!;
+  const elements = model.sections.find((s) => s.kind === "elements")!;
+  // A ← B (B requires A); C unrelated.
+  model = reduce(model, {
+    type: "proposeItem",
+    actor: "gap-filler",
+    sectionId: constraints.id,
+    item: { text: "item A", modality: "optional", evals: {} },
+  }).model;
+  const idA = model.sections.find((s) => s.kind === "constraints")!.items[0].id;
+  model = reduce(model, {
+    type: "proposeItem",
+    actor: "gap-filler",
+    sectionId: elements.id,
+    item: { text: "item B", modality: "mandatory", evals: {}, requires: [idA] },
+  }).model;
+  const idB = model.sections.find((s) => s.kind === "elements")!.items[0].id;
+  model = reduce(model, {
+    type: "proposeItem",
+    actor: "gap-filler",
+    sectionId: elements.id,
+    item: { text: "item C", modality: "optional", evals: {} },
+  }).model;
+  const idC = model.sections.find((s) => s.kind === "elements")!.items[1].id;
+
+  // Focus on B: A lights as requirement, C dims, B carries chips.
+  const meta = computeDepMeta(model, idB);
+  assert.equal(meta.get(idB)!.focusRole, "focus");
+  assert.equal(meta.get(idA)!.focusRole, "req");
+  assert.equal(meta.get(idC)!.focusRole, "dim");
+  assert.deepEqual(
+    meta.get(idB)!.chips!.map((c) => c.id),
+    [idA],
+  );
+  // Focus on A: B lights as dependent.
+  assert.equal(computeDepMeta(model, idA).get(idB)!.focusRole, "dependent");
+  // Edge counts flow both directions.
+  assert.equal(meta.get(idA)!.depCount, 1);
+  assert.equal(meta.get(idB)!.depCount, 1);
+
+  // Dropping A marks B's rationale stale — mechanically, no worker involved.
+  model = reduce(model, { type: "dropItem", actor: "human", itemId: idA }).model;
+  const after = computeDepMeta(model);
+  assert.equal(after.get(idB)!.stale, true);
+  assert.match(after.get(idB)!.staleDeps[0], /item A \(dropped\)/);
+  assert.equal(after.get(idC)!.stale, false);
 });
 
 test("parseSlicerVerdict: the reason is carried on failures and dropped on clean cuts", () => {

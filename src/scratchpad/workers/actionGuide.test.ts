@@ -230,6 +230,54 @@ test("the reframe guide leaks no section/item IDs (editGoal takes none)", () => 
   assert.ok(guide.includes('"type":"editGoal"'));
 });
 
+// ── Dependency edges (requires) ──────────────────────────────────────────────
+
+test("requires edges resolve: existing id, existing text, and intra-batch text → predicted id", () => {
+  const { model, itemId } = modelWithItem(); // "an existing item" in constraints
+  const { valid, rejected } = normalizeWorkerActions(
+    [
+      {
+        type: "proposeItem",
+        section: "elements",
+        text: "first new item",
+        requires: [itemId, "ghost reference"],
+      },
+      {
+        type: "proposeItem",
+        section: "elements",
+        text: "second new item",
+        // References by TEXT: one existing item, one from earlier in this batch.
+        requires: ["an existing item", "first new item"],
+      },
+    ],
+    model,
+    { defaultActor: "gap-filler", allowedTools: GATES.gapFiller.allowedTools },
+  );
+  assert.equal(valid.length, 2);
+  // The unresolvable edge is dropped with a reason; the item survives.
+  assert.equal(rejected.length, 1);
+  assert.match(rejected[0].reason, /unresolvable requires reference/);
+
+  const first = valid[0];
+  const second = valid[1];
+  if (first.type !== "proposeItem" || second.type !== "proposeItem") {
+    assert.fail("expected proposeItem actions");
+  }
+  assert.deepEqual(first.item.requires, [itemId]);
+  const elementsId = model.sections.find((s) => s.kind === "elements")!.id;
+  // "first new item" resolves to its PREDICTED id (item-<sectionId>-0).
+  assert.deepEqual(second.item.requires, [itemId, `item-${elementsId}-0`]);
+
+  // And the prediction holds through the reducer: applying both in order
+  // yields real ids matching the predicted edges.
+  let m = model;
+  m = reduce(m, first).model;
+  m = reduce(m, second).model;
+  const elements = m.sections.find((s) => s.kind === "elements")!;
+  assert.equal(elements.items[0].id, `item-${elementsId}-0`);
+  assert.deepEqual(elements.items[1].requires, [itemId, `item-${elementsId}-0`]);
+});
+
 // ── Interpreter (human) vocabulary ───────────────────────────────────────────
 
 test("interpreter path: dropItem with a real id normalizes, stamps actor:human, and applies", () => {

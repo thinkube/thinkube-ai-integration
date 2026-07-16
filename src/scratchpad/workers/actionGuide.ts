@@ -217,10 +217,13 @@ export function renderActionGuide(
     proposeItem:
       `{"type":"proposeItem","actor":"${actor}","sectionId":"${exampleSectionId}",` +
       `"item":{"text":"<the item text>","modality":"optional","evals":{"complexity":2,"risk":1},` +
-      `"note":"Why: <role in the intent>. Impact: <what it commits to / what dropping loses>. Modality: <why this classification>."}}` +
+      `"note":"Why: <role in the intent>. Impact: <what it commits to / what dropping loses>. Modality: <why this classification>.",` +
+      `"requires":["<itemId of an existing item, or the EXACT text of an item you proposed earlier in this same response>"]}}` +
       ` — modality doctrine: "mandatory" = the intent CANNOT be delivered without this item; ` +
       `"optional" = valuable, but the intent survives without it. Classify honestly per item, never by default. ` +
-      `Evals values are 1|2|3 (omit a facet if unsure). ALWAYS include the note — the human decides on it`,
+      `Evals values are 1|2|3 (omit a facet if unsure). ALWAYS include the note — the human decides on it. ` +
+      `Dependency doctrine: whenever an item's Why references another item, DECLARE the edge in "requires" — ` +
+      `a dependency that lives only in prose silently goes stale when the other item is dropped. Omit "requires" when there is none`,
     proposeEdit: `{"type":"proposeEdit","actor":"${actor}","itemId":"${exampleItemId}","newText":"<replacement text>"}`,
     addItemNote: `{"type":"addItemNote","actor":"${actor}","itemId":"${exampleItemId}","text":"<the note>"}`,
     attachEvidence:
@@ -274,6 +277,33 @@ export function normalizeWorkerActions(
   const valid: Action[] = [];
   const rejected: RejectedAction[] = [];
   const gate = new Set<string>(opts.allowedTools);
+
+  // Batch-aware id prediction for intra-batch dependency edges: the reducer's
+  // id scheme is deterministic (item-<sectionId>-<count>), so an item proposed
+  // EARLIER in this same batch has a knowable id (the same prediction
+  // research.run uses for its evidence chips).
+  const sectionCounts = new Map<string, number>();
+  for (const sec of model.sections) sectionCounts.set(sec.id, sec.items.length);
+  const batchTextToId = new Map<string, string>();
+  const batchIds = new Set<string>();
+
+  /** Resolve one `requires` reference: existing id → in-batch predicted id →
+   *  existing item exact text → earlier-in-batch proposed text. Null if none. */
+  const resolveRequiresRef = (ref: string): string | null => {
+    for (const sec of model.sections) {
+      for (const it of sec.items) {
+        if (it.id === ref) return ref;
+      }
+    }
+    if (batchIds.has(ref)) return ref;
+    const key = ref.trim().toLowerCase();
+    for (const sec of model.sections) {
+      for (const it of sec.items) {
+        if (it.text.trim().toLowerCase() === key) return it.id;
+      }
+    }
+    return batchTextToId.get(key) ?? null;
+  };
 
   for (const raw of rawActions) {
     const rec = asRecord(raw);
@@ -337,6 +367,7 @@ export function normalizeWorkerActions(
           modality: Modality;
           evals: { complexity?: 1 | 2 | 3; risk?: 1 | 2 | 3 };
           note?: string;
+          requires?: string[];
         } = {
           text,
           modality: asModality(itemRec?.modality ?? rec.modality),
@@ -344,6 +375,34 @@ export function normalizeWorkerActions(
         };
         const note = asNonEmptyString(itemRec?.note ?? rec.note);
         if (note !== null) item.note = note;
+
+        // Predict this item's id BEFORE resolving its edges, so a later item
+        // in the same batch can reference this one (and self-edges resolve
+        // to the predicted id and are dropped below).
+        const predictedId = `item-${sectionId}-${sectionCounts.get(sectionId) ?? 0}`;
+        sectionCounts.set(sectionId, (sectionCounts.get(sectionId) ?? 0) + 1);
+        batchTextToId.set(text.trim().toLowerCase(), predictedId);
+        batchIds.add(predictedId);
+
+        const rawRequires = itemRec?.requires ?? rec.requires;
+        if (Array.isArray(rawRequires)) {
+          const resolved: string[] = [];
+          for (const ref of rawRequires) {
+            const r = asNonEmptyString(ref);
+            if (r === null) continue;
+            const id = resolveRequiresRef(r);
+            if (id === null) {
+              rejected.push({
+                raw: ref,
+                reason: `unresolvable requires reference ${JSON.stringify(r)} — edge dropped, item kept`,
+              });
+            } else if (id !== predictedId) {
+              resolved.push(id);
+            }
+          }
+          if (resolved.length > 0) item.requires = [...new Set(resolved)];
+        }
+
         valid.push({
           type: "proposeItem",
           actor: asWorkerActor(rec.actor, opts.defaultActor),
