@@ -15,6 +15,13 @@ export type { ToolName } from "../model";
 export interface WorkerMessage {
   type: "actions";
   actions: Action[];
+  /**
+   * Item ids the round STAGES for a human-applied action (the command-field
+   * "selection for action"). Distinct from checking: checked items are settled
+   * into the TEP; selected items are an ephemeral staging area. Only the
+   * interpreter round uses this channel.
+   */
+  select?: string[];
 }
 
 /**
@@ -470,9 +477,23 @@ export function makeProductionQueryFnThunk(modelId: string): () => QueryFn {
       try {
         const jsonMatch = fullText.match(/\{[\s\S]*"actions"[\s\S]*\}/);
         if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[0]) as { actions: Action[] };
+          const parsed = JSON.parse(jsonMatch[0]) as {
+            actions: Action[];
+            select?: unknown;
+          };
           if (Array.isArray(parsed.actions)) {
-            yield { type: "actions", actions: parsed.actions };
+            const msg: WorkerMessage = {
+              type: "actions",
+              actions: parsed.actions,
+            };
+            // Selection-for-action passthrough (interpreter rounds only —
+            // other rounds simply never emit it).
+            if (Array.isArray(parsed.select)) {
+              msg.select = parsed.select.filter(
+                (id): id is string => typeof id === "string",
+              );
+            }
+            yield msg;
           }
         }
       } catch {

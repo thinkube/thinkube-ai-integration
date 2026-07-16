@@ -46,7 +46,15 @@ export type ScratchpadInboundMessage =
   | { type: "research"; itemId?: string; subject?: string }
   | { type: "checkReadiness" }
   | { type: "freeze" }
-  | { type: "command"; utterance: string };
+  | { type: "command"; utterance: string }
+  // ── Selection flow (2026-07-16): destructive verbs are two-step — select
+  //    first (command or per-item toggle), then apply over the selection.
+  | { type: "toggleSelect"; itemId: string }
+  | { type: "clearSelection" }
+  | {
+      type: "applySelection";
+      verb: "check" | "uncheck" | "defer" | "drop";
+    };
 
 /** Visual marker for each section state. */
 export const STATE_MARKERS: Record<SectionState, string> = {
@@ -87,13 +95,16 @@ function esc(text: string): string {
 }
 
 /** Render one Item as an <li> with the contract's exact selectors. */
-function itemHtml(item: Item): string {
+function itemHtml(item: Item, selected = false): string {
   const liAttrs: string[] = [
-    `class="item"`,
+    `class="item${selected ? " selected" : ""}"`,
     `data-item-id="${esc(item.id)}"`,
     `data-state="${esc(item.state)}"`,
     `data-origin="${esc(item.origin)}"`,
   ];
+  if (selected) {
+    liAttrs.push(`data-selected="true"`);
+  }
   if (item.shippedIn !== undefined) {
     liAttrs.push(`data-shipped-in="${esc(item.shippedIn)}"`);
   }
@@ -136,18 +147,20 @@ function itemHtml(item: Item): string {
     })
     .join("");
 
-  // Per-item human controls (field request 2026-07-16: dropItem/deferItem were
-  // in the model and the session vocabulary, but the surface never rendered a
-  // control — and item ids are not human-visible, so the command field could
-  // not reach them either). Active items only; shipped/deferred rows are inert.
+  // Per-item human control (refined 2026-07-16): destructive verbs are
+  // two-step everywhere — this button only toggles SELECTION; the verb
+  // (drop/defer/check/uncheck) is applied from the selection bar as a
+  // separate, explicit act. No single gesture can destroy an item.
   const itemControls =
     item.state === "active"
       ? `<span class="item-actions">` +
-        `<button class="item-defer" title="Defer — park this item for a later TEP">defer</button>` +
-        `<button class="item-drop" title="Drop — remove this item from the space">✕</button>` +
+        `<button class="item-select" title="${
+          selected
+            ? "Remove from selection"
+            : "Select — then apply an action from the selection bar"
+        }">${selected ? "deselect" : "select"}</button>` +
         `</span>`
       : "";
-
   return (
     `<li ${liAttrs.join(" ")}>` +
     `<input type="checkbox" class="item-check"${checkedAttr}>` +
@@ -199,13 +212,16 @@ function checklistSectionHtml(
   section: Section,
   activity?: SectionActivity,
   errorMsg?: string,
+  selection?: ReadonlySet<string>,
 ): string {
   const marker = STATE_MARKERS[section.state];
   // Dropped items are not rendered; all other states show
   const visibleItems = section.items.filter((it) => it.state !== "dropped");
   const itemsHtml =
     visibleItems.length > 0
-      ? `<ul class="item-list">${visibleItems.map(itemHtml).join("")}</ul>`
+      ? `<ul class="item-list">${visibleItems
+          .map((it) => itemHtml(it, selection?.has(it.id) ?? false))
+          .join("")}</ul>`
       : `<ul class="item-list"></ul>`;
 
   const activityAttr =
@@ -291,7 +307,9 @@ export function buildScratchpadHtml(
   roundActivity?: RoundActivity,
   commandMessage?: string,
   commandInFlight?: boolean,
+  selectedItemIds?: readonly string[],
 ): string {
+  const selection: ReadonlySet<string> = new Set(selectedItemIds ?? []);
   const goalSec = model.sections.find((s) => s.kind === "goal");
   const nonGoalSections = model.sections.filter((s) => s.kind !== "goal");
 
@@ -320,9 +338,36 @@ export function buildScratchpadHtml(
     : "";
   const sectionsHtml = nonGoalSections
     .map((s) =>
-      checklistSectionHtml(s, sectionActivity(s.kind), sectionError(s.kind)),
+      checklistSectionHtml(
+        s,
+        sectionActivity(s.kind),
+        sectionError(s.kind),
+        selection,
+      ),
     )
     .join("\n");
+
+  // Selection bar — the second step of the two-step destructive flow: it
+  // appears only while a selection exists, and applying a verb (or clearing)
+  // is its own explicit act, separate from selecting.
+  const liveSelectedCount = model.sections.reduce(
+    (n, s) =>
+      n +
+      s.items.filter((it) => selection.has(it.id) && it.state === "active")
+        .length,
+    0,
+  );
+  const selectionBar =
+    liveSelectedCount > 0
+      ? `<div id="selection-bar" title="Staged for an action — distinct from checking: nothing here enters the TEP until you check it">
+      <span class="selection-count">${liveSelectedCount} item${liveSelectedCount === 1 ? "" : "s"} staged for action</span>
+      <button onclick="applySelection('check')">Check</button>
+      <button onclick="applySelection('uncheck')">Uncheck</button>
+      <button onclick="applySelection('defer')">Defer</button>
+      <button class="danger" onclick="applySelection('drop')">Drop</button>
+      <button onclick="clearSelection()">Clear</button>
+    </div>`
+      : "";
 
   const objectionsHtml =
     model.objections.length > 0
@@ -439,17 +484,26 @@ export function buildScratchpadHtml(
     .freeze-controls-row button:disabled { opacity: 0.5; cursor: not-allowed; }
     .freeze-status { margin-top: 8px; font-size: 0.85em; opacity: 0.85; }
     .item-actions { margin-left: auto; display: inline-flex; gap: 4px; opacity: 0; }
-    li.item:hover .item-actions { opacity: 1; }
+    li.item:hover .item-actions, li.item.selected .item-actions { opacity: 1; }
     .item-actions button { background: transparent; color: var(--vscode-descriptionForeground); border: 1px solid var(--vscode-panel-border); padding: 0 6px; border-radius: 2px; cursor: pointer; font-size: 0.8em; }
-    .item-actions button:hover { color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
+    .item-actions button:hover { color: var(--vscode-focusBorder); border-color: var(--vscode-focusBorder); }
+    /* Selection-for-ACTION (staging) — deliberately distinct from checking
+       (the checkbox = settled into the TEP): dashed outline, no fill that
+       could read as a settled/accepted state. */
+    li.item.selected { outline: 1px dashed var(--vscode-focusBorder); outline-offset: -1px; border-radius: 2px; }
     li.item[data-state="deferred"] { opacity: 0.55; }
     li.item[data-state="deferred"] .item-text::after { content: " (deferred)"; font-size: 0.85em; opacity: 0.8; }
+    #selection-bar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 8px; padding: 8px 12px; margin-bottom: 12px; border: 1px solid var(--vscode-focusBorder); border-radius: 4px; background: var(--vscode-editor-background); }
+    #selection-bar .selection-count { font-weight: bold; margin-right: 4px; }
+    #selection-bar button { background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); border: 1px solid var(--vscode-panel-border); padding: 2px 10px; border-radius: 2px; cursor: pointer; }
+    #selection-bar button.danger { color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
   </style>
   ${commandMessage ? `<style>.command-error { margin-top: 8px; padding: 6px 10px; border-radius: 3px; background: var(--vscode-inputValidation-errorBackground, rgba(244,67,54,0.1)); color: var(--vscode-errorForeground); font-size: 0.85em; }</style>` : ""}
 </head>
 <body>
   <h1>Thinking Space <span style="opacity:0.5;font-size:0.8em;">${esc(model.phase)}</span></h1>
   ${goalHtml}
+  ${selectionBar}
   ${sectionsHtml}
   ${objectionsHtml}
   <section class="research-control">
@@ -525,19 +579,25 @@ export function buildScratchpadHtml(
       if (input) input.value = '';
     }
 
-    // Per-item defer/drop handler (event delegation, like the checkbox handler)
+    // Per-item selection toggle (event delegation, like the checkbox handler)
     document.addEventListener('click', function(e) {
       var target = e.target;
       if (!target || !target.classList) return;
-      var isDrop = target.classList.contains('item-drop');
-      var isDefer = target.classList.contains('item-defer');
-      if (!isDrop && !isDefer) return;
+      if (!target.classList.contains('item-select')) return;
       var li = target.closest('li.item');
       if (!li) return;
       var itemId = li.getAttribute('data-item-id');
       if (!itemId) return;
-      vscode.postMessage({ type: isDrop ? 'dropItem' : 'deferItem', itemId: itemId });
+      vscode.postMessage({ type: 'toggleSelect', itemId: itemId });
     });
+
+    function applySelection(verb) {
+      vscode.postMessage({ type: 'applySelection', verb: verb });
+    }
+
+    function clearSelection() {
+      vscode.postMessage({ type: 'clearSelection' });
+    }
 
     // Checkbox toggle handler
     document.addEventListener('change', function(e) {
@@ -630,6 +690,7 @@ export class ScratchpadDocumentView implements vscode.Disposable {
     roundActivity?: RoundActivity,
     commandMessage?: string,
     commandInFlight?: boolean,
+    selectedItemIds?: readonly string[],
   ): void {
     if (this._panel) {
       this._panel.webview.html = buildScratchpadHtml(
@@ -638,6 +699,7 @@ export class ScratchpadDocumentView implements vscode.Disposable {
         roundActivity,
         commandMessage,
         commandInFlight,
+        selectedItemIds,
       );
     }
   }

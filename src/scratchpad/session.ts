@@ -172,6 +172,9 @@ class ScratchpadSessionImpl implements ScratchpadSession {
   private _roundActivity: RoundActivity | undefined;
   /** Whether a command interpretation round is currently in flight. */
   private _commandInFlight = false;
+  /** Ephemeral UI selection (item ids) — the first step of the two-step
+   *  destructive flow. Never persisted; pruned of dead ids on apply. */
+  private _selection: Set<string> = new Set();
   /** The last command error/explanation message (cleared on the next command attempt). */
   private _commandMessage: string | undefined;
 
@@ -237,6 +240,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
         this._roundActivity,
         this._commandMessage,
         this._commandInFlight,
+        [...this._selection],
       );
     }
     // Debounce-persist to disk
@@ -274,6 +278,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
       this._roundActivity,
       this._commandMessage,
       this._commandInFlight,
+      [...this._selection],
     );
   }
 
@@ -492,6 +497,56 @@ class ScratchpadSessionImpl implements ScratchpadSession {
           itemId: message.itemId,
         });
         break;
+      // ── Selection flow (2026-07-16): step 1 selects, step 2 applies ──────
+      case "toggleSelect":
+        if (this._selection.has(message.itemId)) {
+          this._selection.delete(message.itemId);
+        } else {
+          this._selection.add(message.itemId);
+        }
+        this._updatePanel();
+        break;
+      case "clearSelection":
+        this._selection.clear();
+        this._commandMessage = undefined;
+        this._updatePanel();
+        break;
+      case "applySelection": {
+        // Apply the chosen verb to every SELECTED item that still exists and
+        // is active; the selection is the human's explicit staging area, the
+        // click on the verb is the settling act.
+        const verbToAction: Record<
+          "check" | "uncheck" | "defer" | "drop",
+          "checkItem" | "uncheckItem" | "deferItem" | "dropItem"
+        > = {
+          check: "checkItem",
+          uncheck: "uncheckItem",
+          defer: "deferItem",
+          drop: "dropItem",
+        };
+        const actionType = verbToAction[message.verb];
+        if (!actionType) break;
+        const liveIds = new Set(
+          this._model.sections.flatMap((s) =>
+            s.items
+              .filter((it) => it.state === "active")
+              .map((it) => it.id),
+          ),
+        );
+        let applied = 0;
+        for (const itemId of [...this._selection]) {
+          if (!liveIds.has(itemId)) continue;
+          this.dispatch({ type: actionType, actor: "human", itemId });
+          applied++;
+        }
+        this._selection.clear();
+        this._commandMessage =
+          applied > 0
+            ? `Applied ${message.verb} to ${applied} item${applied === 1 ? "" : "s"}.`
+            : "Selection had no live items — nothing applied.";
+        this._updatePanel();
+        break;
+      }
       case "supersedeItem":
         this.dispatch({
           type: "supersedeItem",
@@ -633,6 +688,10 @@ class ScratchpadSessionImpl implements ScratchpadSession {
           await this.postFromWebview({ type: "checkReadiness" });
           break;
         }
+        if (lowered === "clear selection" || lowered === "deselect all") {
+          await this.postFromWebview({ type: "clearSelection" });
+          break;
+        }
         // Clear prior message, mark in-flight, update panel to disable the field.
         this._commandMessage = undefined;
         this._commandInFlight = true;
@@ -645,8 +704,19 @@ class ScratchpadSessionImpl implements ScratchpadSession {
           for (const action of result.actions) {
             this.dispatch(action);
           }
-          // Render the message (if any) under the command field
-          this._commandMessage = result.message;
+          // Selection-for-action: the command STAGED items — distinct from
+          // checking (settling). The verb is applied from the selection bar
+          // as a separate human act.
+          if (result.selectedItemIds && result.selectedItemIds.length > 0) {
+            this._selection = new Set(result.selectedItemIds);
+            const n = result.selectedItemIds.length;
+            this._commandMessage =
+              result.message ??
+              `${n} item${n === 1 ? "" : "s"} staged for action — apply a verb from the selection bar (or "clear selection"). Staging is not checking: nothing enters the TEP from this.`;
+          } else {
+            // Render the message (if any) under the command field
+            this._commandMessage = result.message;
+          }
         } catch (err) {
           this._commandMessage =
             err instanceof Error ? err.message : String(err);
@@ -750,6 +820,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
         this._roundActivity,
         this._commandMessage,
         this._commandInFlight,
+        [...this._selection],
       );
     }
   }
