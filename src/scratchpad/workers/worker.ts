@@ -575,7 +575,9 @@ export function gapFiller(deps: WorkerFactoryDeps): WorkerRun {
         itemsBlock +
         `\n\nGenerate proposeItem actions for sections that need more detail. Do not check items — only propose them. ` +
         `Stay at intent altitude: propose what must hold, be decided, or be verified — not implementation choices ` +
-        `(languages, frameworks, endpoints, tooling) — and assume nothing about the project's domain beyond the intent text itself.\n\n` +
+        `(languages, frameworks, endpoints, tooling) — and assume nothing about the project's domain beyond the intent text itself. ` +
+        `EVERY proposed item must carry its "note" (Why / Impact / Modality, one sentence each) — the human takes the ` +
+        `settle/defer/drop decision on that note, so a bare one-liner is an incomplete proposal.\n\n` +
         renderActionGuide(
           workingModel,
           GATES.gapFiller.allowedTools,
@@ -607,14 +609,15 @@ export function integrator(deps: WorkerFactoryDeps): WorkerRun {
  * Explainer worker — pre-gated with GATES.explainer.
  * allowed: [addItemNote] only.
  *
- * Annotates ONE item with a compact Why/Impact note so the human can take an
- * informed settle/defer/drop decision (field request 2026-07-16: a bare
- * one-line item gives nothing to decide on). Blind round: the explanation is
- * derived from the intent and the space's own content, nothing else.
+ * Annotates the target items with a compact Why/Impact/Modality note so the
+ * human can take an informed settle/defer/drop decision (field request
+ * 2026-07-16: a bare one-line item gives nothing to decide on). ONE round
+ * covers all targets — never a round per item. Blind round: the explanation
+ * is derived from the intent and the space's own content, nothing else.
  */
 export function explainer(
   deps: WorkerFactoryDeps,
-  itemId: string,
+  itemIds: string[],
 ): WorkerRun {
   const base = createPhaseWorker({
     loadQuery: deps.loadQuery,
@@ -623,6 +626,7 @@ export function explainer(
     disallowedTools: GATES.explainer.disallowedTools,
     actor: "integrator",
   });
+  const targets = new Set(itemIds);
 
   return {
     ...base,
@@ -630,49 +634,56 @@ export function explainer(
       const goalSec = workingModel.sections.find((s) => s.kind === "goal");
       const intentText = goalSec?.text ?? "";
 
-      let sectionKind = "";
-      let itemText = "";
-      let itemModality = "optional";
-      const siblingLines: string[] = [];
+      const targetLines: string[] = [];
+      const contextLines: string[] = [];
       for (const section of workingModel.sections) {
         for (const item of section.items) {
-          if (item.id === itemId) {
-            sectionKind = section.kind;
-            itemText = item.text;
-            itemModality = item.modality;
+          if (item.state === "dropped") continue;
+          const line = `- [${section.kind}] (${item.modality}) "${item.text}" — itemId "${item.id}"`;
+          if (targets.has(item.id)) {
+            targetLines.push(line);
+          } else {
+            contextLines.push(`- [${section.kind}] ${item.text}`);
           }
-        }
-      }
-      for (const section of workingModel.sections) {
-        if (section.kind !== sectionKind) continue;
-        for (const item of section.items) {
-          if (item.id === itemId || item.state === "dropped") continue;
-          siblingLines.push(`- ${item.text}`);
         }
       }
 
       return (
-        `You are the item-explainer worker. Produce EXACTLY ONE addItemNote action for the item below, ` +
-        `giving the human what they need to decide whether to settle (check), defer, or drop it.\n\n` +
-        `The note text must have exactly this shape:\n` +
+        `You are the item-explainer worker. Produce EXACTLY ONE addItemNote action PER TARGET ITEM below, ` +
+        `giving the human what they need to decide whether to settle (check), defer, or drop each one.\n\n` +
+        `Each note's text must have exactly this shape:\n` +
         `Why: <1-2 sentences — the role this item plays in the intent; what question or risk it settles>\n` +
         `Impact: <1-2 sentences — what including it commits the work to, and what is lost or risked if it is dropped>\n` +
-        `Modality: <1-2 sentences — is its current classification ("${itemModality}") right for this intent ` +
+        `Modality: <1-2 sentences — is the item's current classification right for this intent ` +
         `(mandatory = the intent cannot be delivered without it; optional = the intent survives without it), ` +
-        `and what concretely happens if this item is left unsettled>\n\n` +
+        `and what concretely happens if the item is left unsettled>\n\n` +
         `Stay at intent altitude and domain-agnostic: no implementation detail (languages, frameworks, tooling) ` +
         `unless the intent itself names it. Ground every claim in the intent and the space's content — never invent context.\n\n` +
         `Intent (goal):\n${intentText}\n\n` +
-        `The item (in the ${sectionKind} section, currently ${itemModality}):\n"${itemText}"\n\n` +
-        (siblingLines.length > 0
-          ? `Other items in the same section (for contrast — do NOT annotate these):\n${siblingLines.join("\n")}\n\n`
+        `TARGET items (one addItemNote each — use the exact itemId):\n${targetLines.join("\n")}\n\n` +
+        (contextLines.length > 0
+          ? `Other items in the space (context only — do NOT annotate these):\n${contextLines.join("\n")}\n\n`
           : "") +
         renderActionGuide(
           workingModel,
           GATES.explainer.allowedTools,
           "integrator",
         ) +
-        `\n\nThe ONLY itemId you may target is "${itemId}".`
+        `\n\nYou may ONLY target these itemIds: ${[...targets].map((id) => `"${id}"`).join(", ")}.`
+      );
+    },
+
+    async run(
+      workingModel: WorkingModel,
+      conversation: string[],
+    ): Promise<Action[]> {
+      const actions = await base.run.call(this, workingModel, conversation);
+      // Belt over the prompt pin: silently drop notes aimed outside the
+      // target set (the gate already limits the TYPE to addItemNote).
+      return actions.filter(
+        (a) =>
+          a.type !== "addItemNote" ||
+          targets.has((a as { itemId: string }).itemId),
       );
     },
   };

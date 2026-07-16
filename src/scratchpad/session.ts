@@ -499,9 +499,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
         });
         break;
       case "explainItem": {
-        // Run the explainer round for one item — attaches a Why/Impact/
-        // Modality note so the human can take an informed settle/defer/drop
-        // decision. Targeted at the item's own section for activity display.
+        // Targeted re-explain for one item (the bulk path is explainAll).
         const secOfItem = this._model.sections.find((s) =>
           s.items.some((it) => it.id === message.itemId),
         );
@@ -509,7 +507,36 @@ class ScratchpadSessionImpl implements ScratchpadSession {
         await this._runWorkerRound("explain", [secOfItem.kind], async () => {
           const worker = explainer(
             { loadQuery: this._loadQueryFn, model: this._workerModelId },
-            message.itemId,
+            [message.itemId],
+          );
+          return worker.run(this._model, []);
+        });
+        break;
+      }
+      case "explainAll": {
+        // ONE round annotates every active item that has no note yet —
+        // never a round per item (field refinement 2026-07-16).
+        const targets: string[] = [];
+        const kinds = new Set<SectionKind>();
+        for (const sec of this._model.sections) {
+          if (sec.kind === "goal") continue;
+          for (const it of sec.items) {
+            if (it.state === "active" && it.notes.length === 0) {
+              targets.push(it.id);
+              kinds.add(sec.kind);
+            }
+          }
+        }
+        if (targets.length === 0) {
+          this._commandMessage =
+            "Every active item already carries an explanation.";
+          this._updatePanel();
+          break;
+        }
+        await this._runWorkerRound("explain", [...kinds], async () => {
+          const worker = explainer(
+            { loadQuery: this._loadQueryFn, model: this._workerModelId },
+            targets,
           );
           return worker.run(this._model, []);
         });

@@ -142,6 +142,10 @@ export type Action =
         text: string;
         modality: Modality;
         evals: { complexity?: 1 | 2 | 3; risk?: 1 | 2 | 3 };
+        /** Optional Why/Impact/Modality explanation, attached as the item's
+         *  first note at creation (2026-07-16: proposals should arrive with
+         *  their rationale — deciding on a bare one-liner is guesswork). */
+        note?: string;
       };
     }
   | {
@@ -521,8 +525,13 @@ export function reduce(
         throw new Error(`Section '${action.sectionId}' not found`);
       const section = model.sections[idx];
       const itemIdx = section.items.length;
+      const newItemId = `item-${action.sectionId}-${itemIdx}`;
+      const initialNotes: Note[] =
+        action.item.note !== undefined && action.item.note.trim()
+          ? [{ id: `note-${newItemId}-0`, text: action.item.note.trim() }]
+          : [];
       const newItem: Item = {
-        id: `item-${action.sectionId}-${itemIdx}`,
+        id: newItemId,
         text: action.item.text,
         checked: false,
         modality: action.item.modality,
@@ -530,7 +539,7 @@ export function reduce(
         origin: action.actor as ItemOrigin,
         state: "active",
         evidence: [],
-        notes: [],
+        notes: initialNotes,
       };
       const newSection: Section = {
         ...section,

@@ -30,15 +30,15 @@ test("explainer prompt carries the item, its modality, the note shape, and the e
   const { model, itemId } = modelWithItem();
   const worker = explainer(
     { loadQuery: () => async function* (): AsyncIterable<WorkerMessage> {}, model: "sonnet" },
-    itemId,
+    [itemId],
   );
   const prompt = worker.buildPrompt(model, []);
   assert.ok(prompt.includes("the item to explain"));
-  assert.ok(prompt.includes("currently mandatory"));
+  assert.ok(prompt.includes("(mandatory)"));
   assert.ok(prompt.includes("Why:"));
   assert.ok(prompt.includes("Impact:"));
   assert.ok(prompt.includes("Modality:"));
-  assert.ok(prompt.includes(`The ONLY itemId you may target is "${itemId}"`));
+  assert.ok(prompt.includes(`You may ONLY target these itemIds: "${itemId}"`));
   // The gate is notes-only.
   assert.deepEqual(GATES.explainer.allowedTools, ["addItemNote"]);
 });
@@ -58,7 +58,7 @@ test("explainer run normalizes the note and it applies to the model", async () =
         ] as unknown as Action[],
       };
     };
-  const worker = explainer({ loadQuery: fake, model: "sonnet" }, itemId);
+  const worker = explainer({ loadQuery: fake, model: "sonnet" }, [itemId]);
   const actions = await worker.run(model, []);
   assert.equal(actions.length, 1);
   assert.equal(actions[0].type, "addItemNote");
@@ -85,6 +85,55 @@ test("explainer run rejects an out-of-gate emission loudly (proposeItem is not a
         ] as unknown as Action[],
       };
     };
-  const worker = explainer({ loadQuery: fake, model: "sonnet" }, itemId);
+  const worker = explainer({ loadQuery: fake, model: "sonnet" }, [itemId]);
   await assert.rejects(() => worker.run(model, []), /all malformed/);
 });
+
+test("explainer run drops notes aimed outside the target set", async () => {
+  let { model, itemId } = modelWithItem();
+  // Second item exists but is NOT a target.
+  const constraints = model.sections.find((s) => s.kind === "constraints")!;
+  model = reduce(model, {
+    type: "proposeItem",
+    actor: "gap-filler",
+    sectionId: constraints.id,
+    item: { text: "not a target", modality: "optional", evals: {} },
+  }).model;
+  const otherId = model.sections.find((s) => s.kind === "constraints")!
+    .items[1].id;
+  const fake: () => QueryFn = () =>
+    async function* (): AsyncIterable<WorkerMessage> {
+      yield {
+        type: "actions",
+        actions: [
+          { type: "addItemNote", itemId, text: "Why: on-target." },
+          { type: "addItemNote", itemId: otherId, text: "Why: off-target." },
+        ] as unknown as Action[],
+      };
+    };
+  const worker = explainer({ loadQuery: fake, model: "sonnet" }, [itemId]);
+  const actions = await worker.run(model, []);
+  assert.equal(actions.length, 1);
+  assert.equal((actions[0] as { itemId: string }).itemId, itemId);
+});
+
+test("proposeItem with a note attaches it at creation (prefill delivers explanations)", () => {
+  const model = emptyModel("tep");
+  const constraints = model.sections.find((s) => s.kind === "constraints")!;
+  const { model: next, delta } = reduce(model, {
+    type: "proposeItem",
+    actor: "gap-filler",
+    sectionId: constraints.id,
+    item: {
+      text: "born explained",
+      modality: "optional",
+      evals: {},
+      note: "Why: it matters. Impact: scope drifts without it. Modality: optional is right.",
+    },
+  });
+  assert.equal(delta.kind, "applied");
+  const item = next.sections.find((s) => s.kind === "constraints")!.items[0];
+  assert.equal(item.notes.length, 1);
+  assert.match(item.notes[0].text, /^Why: it matters/);
+});
+

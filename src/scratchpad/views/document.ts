@@ -50,6 +50,7 @@ export type ScratchpadInboundMessage =
   // ── Selection flow (2026-07-16): destructive verbs are two-step — select
   //    first (command or per-item toggle), then apply over the selection.
   | { type: "explainItem"; itemId: string }
+  | { type: "explainAll" }
   | { type: "toggleSelect"; itemId: string }
   | { type: "clearSelection" }
   | {
@@ -213,6 +214,7 @@ function goalSectionHtml(
     <span class="state-label">${esc(section.state)}</span>
     <button id="prefill-btn" class="worker-btn"${prefillDisabled} onclick="triggerPrefill()">Prefill</button>
     <button id="reframe-btn" class="worker-btn"${prefillDisabled} onclick="triggerReframe()">Reframe</button>
+    <button id="explain-btn" class="worker-btn"${prefillDisabled} onclick="triggerExplainAll()" title="One round annotates every unexplained item with Why / Impact / Modality">Explain</button>
   </div>
   <textarea id="goal-input">${esc(section.text)}</textarea>
   <button onclick="confirmGoal(${JSON.stringify(goalWasEmpty)})">Confirm goal</button>
@@ -602,6 +604,10 @@ export function buildScratchpadHtml(
 
     function triggerReframe() {
       vscode.postMessage({ type: 'reframe' });
+    }
+
+    function triggerExplainAll() {
+      vscode.postMessage({ type: 'explainAll' });
     }
 
     function triggerResearch() {

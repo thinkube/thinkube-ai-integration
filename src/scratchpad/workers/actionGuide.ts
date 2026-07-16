@@ -216,10 +216,11 @@ export function renderActionGuide(
   const shapes: Partial<Record<ToolName, string>> = {
     proposeItem:
       `{"type":"proposeItem","actor":"${actor}","sectionId":"${exampleSectionId}",` +
-      `"item":{"text":"<the item text>","modality":"optional","evals":{"complexity":2,"risk":1}}}` +
+      `"item":{"text":"<the item text>","modality":"optional","evals":{"complexity":2,"risk":1},` +
+      `"note":"Why: <role in the intent>. Impact: <what it commits to / what dropping loses>. Modality: <why this classification>."}}` +
       ` — modality doctrine: "mandatory" = the intent CANNOT be delivered without this item; ` +
       `"optional" = valuable, but the intent survives without it. Classify honestly per item, never by default. ` +
-      `Evals values are 1|2|3 (omit a facet if unsure)`,
+      `Evals values are 1|2|3 (omit a facet if unsure). ALWAYS include the note — the human decides on it`,
     proposeEdit: `{"type":"proposeEdit","actor":"${actor}","itemId":"${exampleItemId}","newText":"<replacement text>"}`,
     addItemNote: `{"type":"addItemNote","actor":"${actor}","itemId":"${exampleItemId}","text":"<the note>"}`,
     attachEvidence:
@@ -331,15 +332,23 @@ export function normalizeWorkerActions(
         const risk = asEvalValue(evalsRec.risk);
         if (complexity !== undefined) evals.complexity = complexity;
         if (risk !== undefined) evals.risk = risk;
+        const item: {
+          text: string;
+          modality: Modality;
+          evals: { complexity?: 1 | 2 | 3; risk?: 1 | 2 | 3 };
+          note?: string;
+        } = {
+          text,
+          modality: asModality(itemRec?.modality ?? rec.modality),
+          evals,
+        };
+        const note = asNonEmptyString(itemRec?.note ?? rec.note);
+        if (note !== null) item.note = note;
         valid.push({
           type: "proposeItem",
           actor: asWorkerActor(rec.actor, opts.defaultActor),
           sectionId,
-          item: {
-            text,
-            modality: asModality(itemRec?.modality ?? rec.modality),
-            evals,
-          },
+          item,
         });
         continue;
       }
