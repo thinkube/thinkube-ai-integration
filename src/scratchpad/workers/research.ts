@@ -4,6 +4,7 @@ import * as nodeFs from "node:fs/promises";
 import type { Action, WorkingModel } from "../model";
 import { GATES } from "./worker";
 import type { QueryFn, QueryOptions, WorkerRun } from "./worker";
+import { normalizeWorkerActions, renderActionGuide } from "./actionGuide";
 
 // ===== Exported types =====
 
@@ -132,7 +133,8 @@ function buildResearchPrompt(
     `- NEVER write files directly — all dossier output goes through the sanctioned dossier writer.\n` +
     (corpusPath
       ? `- Corpus scope: ${corpusPath} — consult TEPs, retros, and defects there for context.\n`
-      : "")
+      : "") +
+    `\n${renderActionGuide(model, GATES.research.allowedTools, "research")}`
   );
 }
 
@@ -241,11 +243,31 @@ export function research(
 
       // ── Run the query round ────────────────────────────────────────────────
       const queryFn = deps.loadQuery();
-      const rawActions: Action[] = [];
+      const parsedActions: Action[] = [];
       for await (const msg of queryFn({ prompt, options })) {
         if (msg.type === "actions") {
-          rawActions.push(...msg.actions);
+          parsedActions.push(...msg.actions);
         }
+      }
+
+      // ── Validation seam: coerce/verify BEFORE the assembly pipeline ───────
+      // Malformed shapes (e.g. "tool" instead of "type", section names instead
+      // of sectionIds) are salvaged or rejected here — nothing off-contract
+      // reaches the reducer's throw sites.
+      const { valid: rawActions, rejected } = normalizeWorkerActions(
+        parsedActions as unknown[],
+        model,
+        {
+          defaultActor: "research",
+          allowedTools: GATES.research.allowedTools,
+          nowIso: deps.now().toISOString(),
+        },
+      );
+      if (rejected.length > 0) {
+        console.error(
+          `[research.run] rejected ${rejected.length} malformed/out-of-gate action(s): ` +
+            rejected.map((r) => r.reason).join("; "),
+        );
       }
 
       // ── Write the dossier (always — marks the round happened) ─────────────

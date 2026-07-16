@@ -778,7 +778,7 @@
     "package": "vsce package",
     "deploy": "scripts/deploy.sh",
     "deploy:release": "scripts/deploy.sh --bump",
-    "test": "tsc -p tsconfig.test.json && node --test out-test/",
+    "test": "rm -rf out-test && tsc -p tsconfig.test.json && node --test out-test/",
     "test:vscode": "node ./dist/test/runTest.js",
     "publish:ovsx": "ovsx publish",
     "prepublish:ovsx": "npm run compile && npm run package",

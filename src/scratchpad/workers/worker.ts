@@ -1,4 +1,9 @@
 import type { Action, ToolName, WorkingModel } from "../model";
+import {
+  normalizeWorkerActions,
+  renderActionGuide,
+  type WorkerActor,
+} from "./actionGuide";
 
 // Re-export ToolName from the worker seam: QueryOptions/QueryFn/GATES here are all
 // expressed in terms of it, so a consumer importing the gating API from this module
@@ -41,6 +46,12 @@ export interface PhaseWorkerDeps {
   mcpTools?: string[];
   /** Corpus paths passed into QueryOptions for this worker. */
   corpusPaths?: string[];
+  /**
+   * The worker actor stamped on normalized actions and shown in the action
+   * guide's worked examples. Defaults to "integrator" for gates whose tools
+   * carry no actor (e.g. reframe's editGoal).
+   */
+  actor?: WorkerActor;
 }
 
 export interface WorkerFactoryDeps {
@@ -233,13 +244,18 @@ export function createPhaseWorker(deps: PhaseWorkerDeps): WorkerRun {
 
     buildPrompt(workingModel: WorkingModel, conversation: string[]): string {
       const modelJson = JSON.stringify(workingModel, null, 2);
+      const guide = renderActionGuide(
+        workingModel,
+        deps.allowedTools,
+        deps.actor ?? "integrator",
+      );
       if (deps.blindToConversation) {
-        return `Analyze the working model and generate actions.\n\nWorking Model:\n${modelJson}`;
+        return `Analyze the working model and generate actions.\n\nWorking Model:\n${modelJson}\n\n${guide}`;
       }
       const convText = conversation.join("\n");
       return (
         `Analyze the working model and conversation, then generate actions.\n\n` +
-        `Working Model:\n${modelJson}\n\nConversation:\n${convText}`
+        `Working Model:\n${modelJson}\n\nConversation:\n${convText}\n\n${guide}`
       );
     },
 
@@ -256,7 +272,31 @@ export function createPhaseWorker(deps: PhaseWorkerDeps): WorkerRun {
           actions.push(...msg.actions);
         }
       }
-      return actions;
+      // Validation seam: coerce/verify every parsed action against the live
+      // model and this worker's gate BEFORE anything reaches the reducer. A
+      // malformed action becomes a readable rejection, never a mid-round throw.
+      const { valid, rejected } = normalizeWorkerActions(
+        actions as unknown[],
+        workingModel,
+        {
+          defaultActor: deps.actor ?? "integrator",
+          allowedTools: deps.allowedTools,
+        },
+      );
+      if (rejected.length > 0) {
+        console.error(
+          `[phaseWorker] rejected ${rejected.length} malformed/out-of-gate action(s): ` +
+            rejected.map((r) => r.reason).join("; "),
+        );
+      }
+      if (valid.length === 0 && rejected.length > 0) {
+        // Every action the round produced was unusable — surface that honestly
+        // as a failed round rather than landing a silent no-op (false green).
+        throw new Error(
+          `The worker produced ${rejected.length} action(s), all malformed — first: ${rejected[0].reason}`,
+        );
+      }
+      return valid;
     },
   };
 }
@@ -348,8 +388,8 @@ export function makeProductionQueryFnThunk(modelId: string): () => QueryFn {
         );
       }
       systemParts.push(
-        'Respond with a JSON object: { "actions": [ ...action objects... ] }',
-        "Each action must conform to the Action type and use only allowed tools.",
+        'Respond with EXACTLY ONE JSON object: { "actions": [ ...action objects... ] }',
+        'The task prompt below contains the exact JSON shape for every action you may emit, plus the live sectionId/itemId values — copy those shapes exactly (the key is "type", never "tool"). Malformed actions and invented IDs are rejected.',
       );
 
       // WIRE THE LIVE TOOLS: turn the round's mcpTools groups into allowedTools the
@@ -430,6 +470,7 @@ export function gapFiller(deps: WorkerFactoryDeps): WorkerRun {
     model: deps.model,
     allowedTools: GATES.gapFiller.allowedTools,
     disallowedTools: GATES.gapFiller.disallowedTools,
+    actor: "gap-filler",
   });
 
   return {
@@ -465,7 +506,12 @@ export function gapFiller(deps: WorkerFactoryDeps): WorkerRun {
         `You are the gap-filler worker. Propose new items (proposeItem) for each thinking-space section to help elaborate the intent.\n\n` +
         `Intent (goal):\n${intentText}` +
         itemsBlock +
-        `\n\nGenerate proposeItem actions for sections that need more detail. Do not check items — only propose them (checked:false, state:active).`
+        `\n\nGenerate proposeItem actions for sections that need more detail. Do not check items — only propose them.\n\n` +
+        renderActionGuide(
+          workingModel,
+          GATES.gapFiller.allowedTools,
+          "gap-filler",
+        )
       );
     },
   };
@@ -484,5 +530,6 @@ export function integrator(deps: WorkerFactoryDeps): WorkerRun {
     model: deps.model,
     allowedTools: GATES.integrator.allowedTools,
     disallowedTools: GATES.integrator.disallowedTools,
+    actor: "integrator",
   });
 }

@@ -206,7 +206,22 @@ class ScratchpadSessionImpl implements ScratchpadSession {
   }
 
   dispatch(action: Action): Delta {
-    const { model, delta } = reduce(this._model, action);
+    // Backstop: the reducer throws on runtime-invalid data (unknown action
+    // type, unknown section/item id). Upstream seams normalize worker output,
+    // but nothing invalid may EVER crash a round or reach the webview as a raw
+    // error — convert any residual throw into a rejected delta (model unchanged).
+    let model: WorkingModel;
+    let delta: Delta;
+    try {
+      ({ model, delta } = reduce(this._model, action));
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[dispatch] reducer threw for action.type=${(action as { type?: string }).type}: ${reason}`,
+      );
+      model = this._model;
+      delta = { kind: "rejected", action, reason };
+    }
     this._model = model;
     this._deltas.push(delta);
     // Notify listeners
