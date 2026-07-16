@@ -23,8 +23,10 @@ import { interpret } from "./workers/interpreter";
 import { freeze as doFreeze } from "./freeze";
 import type { ApprovalToken, SigningTool } from "./freeze";
 export type { SigningTool } from "./freeze";
-import { toReadinessRecord } from "./dryRunSlice";
+import { toReadinessRecord, makeProductionRunSlicer } from "./dryRunSlice";
 import type { DryRunResult, SlicerVerdict } from "./dryRunSlice";
+import { makeServerSigningTool } from "./freeze";
+import { ThinkubeStore } from "../store/ThinkubeStore";
 export type { DryRunResult, SlicerVerdict } from "./dryRunSlice";
 
 // Re-export so callers can import the message type from session / index.
@@ -575,6 +577,8 @@ class ScratchpadSessionImpl implements ScratchpadSession {
         // The freeze{} message arrival MINTS the ApprovalToken (human-by-construction).
         // Pipeline: assert freezeEnabled → projectDelta → stamp → writeTep(proposed)
         //           → stampShipped → save
+        // Every outcome is SURFACED (field defect 2026-07-16: failures were
+        // swallowed silently and success gave no pointer to the created TEP).
         if (this._signing) {
           const approval: ApprovalToken = {
             value: `human-approval-${Date.now()}`,
@@ -587,15 +591,48 @@ class ScratchpadSessionImpl implements ScratchpadSession {
             });
             this.dispatch({ type: "stampShipped", itemIds, tepId: tep });
             await this.flush();
-          } catch {
-            // Freeze failed (not enabled, signing error, etc.) — ignore silently
-            // so the panel can surface the reason via the freeze button state.
+            vscode.window.showInformationMessage(
+              `${tep} created (status: proposed) — it is now in this thinking space's TEPs panel.`,
+            );
+            // Best-effort tree refresh so the new TEP is visible immediately.
+            void vscode.commands
+              .executeCommand("thinkube.thinkingSpace.refresh")
+              .then(undefined, () => undefined);
+          } catch (err) {
+            vscode.window.showErrorMessage(
+              `Freeze failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
           }
+        } else {
+          vscode.window.showErrorMessage(
+            "Freeze unavailable: no signing tool is wired. Set THINKUBE_SIGNING_KEY_DIR and reload the window.",
+          );
         }
         break;
       case "command": {
         // SL-5: interpret the utterance, dispatch returned actions, render message.
         const utterance = message.utterance;
+        // Round-trigger commands (field request 2026-07-16): worker rounds are
+        // not expressible as item actions, so the interpreter's gate can never
+        // reach them — recognize them deterministically here instead.
+        const lowered = utterance.trim().toLowerCase();
+        if (lowered === "reframe" || lowered.startsWith("reframe ")) {
+          this._commandMessage = undefined;
+          this._updatePanel();
+          await this.postFromWebview({ type: "reframe" });
+          break;
+        }
+        if (
+          lowered === "check readiness" ||
+          lowered === "readiness" ||
+          lowered === "dry run" ||
+          lowered === "dry-run"
+        ) {
+          this._commandMessage = undefined;
+          this._updatePanel();
+          await this.postFromWebview({ type: "checkReadiness" });
+          break;
+        }
         // Clear prior message, mark in-flight, update panel to disable the field.
         this._commandMessage = undefined;
         this._commandInFlight = true;
@@ -839,6 +876,28 @@ export async function openScratchpad(
     deps?.dossier ??
     (sidecarRoot ? makeDefaultDossierStore(sidecarRoot, namespace) : undefined);
 
+  // Resolve runSlicer: injected fake, or the production blind readiness judge.
+  // (Wiring gap found in field use 2026-07-16: without a runSlicer no readiness
+  // record can ever be written, so freeze could never enable in production.)
+  const runSlicerFn = deps?.runSlicer ?? makeProductionRunSlicer(workerModel);
+
+  // Resolve signing: injected fake, or the production ThinkubeStore-backed tool
+  // (same secret mechanism as spec certification — THINKUBE_SIGNING_KEY_DIR).
+  // Left undefined when the env or sidecarRoot is missing; the freeze handler
+  // then surfaces a loud, actionable error instead of doing nothing.
+  let signingTool = deps?.signing;
+  if (!signingTool && sidecarRoot) {
+    const keyDir = process.env.THINKUBE_SIGNING_KEY_DIR?.trim();
+    if (keyDir) {
+      const wsRoot =
+        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? sidecarRoot;
+      signingTool = makeServerSigningTool(
+        new ThinkubeStore(wsRoot, nodePath.join(sidecarRoot, namespace)),
+        keyDir,
+      );
+    }
+  }
+
   const session = new ScratchpadSessionImpl(
     model,
     sidecarRoot,
@@ -848,8 +907,8 @@ export async function openScratchpad(
     loadQueryFn,
     dossierStore,
     nowFn,
-    deps?.runSlicer,
-    deps?.signing,
+    runSlicerFn,
+    signingTool,
   );
   _session = session;
   session.revealPanel();

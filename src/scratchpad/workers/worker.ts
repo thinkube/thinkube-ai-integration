@@ -374,6 +374,7 @@ export function makeProductionQueryFnThunk(modelId: string): () => QueryFn {
       // depending on an SDK system-prompt option.
       const systemParts: string[] = [
         "You are a Tandem Scratchpad worker. Your job is to generate structured actions for the thinking space.",
+        "The thinking space is domain- and technology-agnostic: propose at intent altitude — what must hold, be decided, or be verified — never implementation detail (languages, frameworks, libraries, endpoints, CI systems), and do not assume the project is a software project, unless the intent text itself names those specifics.",
         `Allowed tools: ${args.options.allowedTools.join(", ") || "(none)"}`,
         `Disallowed tools: ${args.options.disallowedTools.join(", ") || "(none)"}`,
       ];
@@ -408,7 +409,32 @@ export function makeProductionQueryFnThunk(modelId: string): () => QueryFn {
         thinking: { type: "disabled" },
       };
       if (allowedTools.length > 0) {
-        options.allowedTools = allowedTools;
+        // Corpus grounding requires the read tools — an allowlist without them
+        // made "ground your responses in files here" unactionable.
+        options.allowedTools =
+          args.options.corpusPaths && args.options.corpusPaths.length > 0
+            ? [...allowedTools, "Read", "Grep", "Glob"]
+            : allowedTools;
+        // Live-tooled rounds (research) may read but never mutate.
+        options.disallowedTools = ["Write", "Edit", "NotebookEdit"];
+      } else {
+        // Blind generation rounds (prefill/integrator/reframe/interpreter):
+        // the verdict comes from the prompt ALONE. Without this, the spawned
+        // agent could read the host workspace and flavor its proposals with
+        // whatever project it happens to be sitting in (field defect
+        // 2026-07-16: prefill items presumed this extension's tech stack).
+        options.disallowedTools = [
+          "Read",
+          "Grep",
+          "Glob",
+          "Bash",
+          "WebFetch",
+          "WebSearch",
+          "Write",
+          "Edit",
+          "NotebookEdit",
+          "Task",
+        ];
       }
 
       const fullPrompt = `${systemParts.join("\n")}\n\n${args.prompt}`;
@@ -506,7 +532,9 @@ export function gapFiller(deps: WorkerFactoryDeps): WorkerRun {
         `You are the gap-filler worker. Propose new items (proposeItem) for each thinking-space section to help elaborate the intent.\n\n` +
         `Intent (goal):\n${intentText}` +
         itemsBlock +
-        `\n\nGenerate proposeItem actions for sections that need more detail. Do not check items — only propose them.\n\n` +
+        `\n\nGenerate proposeItem actions for sections that need more detail. Do not check items — only propose them. ` +
+        `Stay at intent altitude: propose what must hold, be decided, or be verified — not implementation choices ` +
+        `(languages, frameworks, endpoints, tooling) — and assume nothing about the project's domain beyond the intent text itself.\n\n` +
         renderActionGuide(
           workingModel,
           GATES.gapFiller.allowedTools,

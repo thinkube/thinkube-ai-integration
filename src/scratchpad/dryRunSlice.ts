@@ -71,3 +71,139 @@ export function toReadinessRecord(
     gapSection: dry.gapSection as SectionKind | null,
   };
 }
+
+// ── Production runSlicer (wiring gap found in field use, 2026-07-16) ──────────
+// The session's checkReadiness path and the freeze gate were fully built, but no
+// production runSlicer was ever injected — probes injected fakes, so freeze
+// could NEVER enable in a real session. This default judge closes that gap:
+// a blind, non-committing single-shot verdict on the intent's decomposability.
+
+const SECTION_KINDS = new Set([
+  "goal",
+  "constraints",
+  "elements",
+  "gap",
+  "criteria",
+  "verification",
+]);
+
+/**
+ * Parse a readiness-judge reply into a DryRunResult. Pure; exported for tests.
+ * Unparseable or invalid replies return the honest not-ready verdict
+ * { cleanCut:false, gapSection:null } — freeze stays locked, never a false green.
+ */
+export function parseSlicerVerdict(text: string): DryRunResult {
+  const notReady: DryRunResult = {
+    cleanCut: false,
+    gapSection: null,
+    decomposition: [],
+  };
+  const jsonMatch = (text ?? "").match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return notReady;
+  try {
+    const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
+    if (typeof parsed.cleanCut !== "boolean") return notReady;
+    const gapSection =
+      typeof parsed.gapSection === "string" &&
+      SECTION_KINDS.has(parsed.gapSection)
+        ? parsed.gapSection
+        : null;
+    const decomposition = Array.isArray(parsed.decomposition)
+      ? parsed.decomposition.filter((d): d is string => typeof d === "string")
+      : [];
+    // cleanCut:false with no named gap is legal (gapSection null); cleanCut:true
+    // always clears the gap.
+    return {
+      cleanCut: parsed.cleanCut,
+      gapSection: parsed.cleanCut ? null : gapSection,
+      decomposition,
+    };
+  } catch {
+    return notReady;
+  }
+}
+
+/**
+ * Build the production runSlicer: a blind single-shot readiness judge over the
+ * intent text. NEVER writes anything (per the DryRunDeps contract) — it only
+ * returns a verdict. SDK-absent or failed rounds return not-ready, honestly.
+ */
+export function makeProductionRunSlicer(
+  modelId: string,
+): (intent: string) => Promise<DryRunResult> {
+  return async (intent: string): Promise<DryRunResult> => {
+    const notReady: DryRunResult = {
+      cleanCut: false,
+      gapSection: null,
+      decomposition: [],
+    };
+    let sdkQuery: (args: {
+      prompt: string;
+      options: Record<string, unknown>;
+    }) => AsyncIterable<unknown>;
+    try {
+      const mod = (await import("@anthropic-ai/claude-agent-sdk")) as {
+        query: typeof sdkQuery;
+      };
+      sdkQuery = mod.query;
+    } catch {
+      return notReady;
+    }
+
+    const prompt =
+      `You are a readiness judge for a thinking space. This is a NON-COMMITTING dry run: ` +
+      `you never write files or create anything — you only return a verdict.\n\n` +
+      `Judge whether the intent below is ready to be frozen into a proposal: it decomposes ` +
+      `into coherent work with no unresolved ambiguity a downstream planner would have to guess at. ` +
+      `The thinking space is domain-agnostic — do not assume a software project or any technology ` +
+      `beyond what the intent itself states.\n\n` +
+      `Intent:\n${intent}\n\n` +
+      `Respond with EXACTLY ONE JSON object and nothing else:\n` +
+      `{"cleanCut": <boolean>, "gapSection": <"constraints"|"elements"|"gap"|"criteria"|"verification"|null>, ` +
+      `"decomposition": ["<work item title>", ...]}\n` +
+      `cleanCut true only when the intent needs no further shaping; when false, name the section ` +
+      `whose content is missing or ambiguous in gapSection (or null if the gap is the intent itself).`;
+
+    try {
+      let resultText = "";
+      let assistantText = "";
+      for await (const msg of sdkQuery({
+        prompt,
+        options: {
+          model: modelId,
+          permissionMode: "bypassPermissions",
+          thinking: { type: "disabled" },
+          // Blind judge: verdict from the prompt only — no repo, web, or shell.
+          disallowedTools: [
+            "Read",
+            "Grep",
+            "Glob",
+            "Bash",
+            "WebFetch",
+            "WebSearch",
+            "Write",
+            "Edit",
+            "NotebookEdit",
+            "Task",
+          ],
+        },
+      })) {
+        const rec = msg as Record<string, unknown>;
+        if (rec.type === "assistant") {
+          const m = rec.message as { content?: unknown } | undefined;
+          const content = Array.isArray(m?.content) ? m!.content : [];
+          for (const b of content as Array<Record<string, unknown>>) {
+            if (b.type === "text" && typeof b.text === "string") {
+              assistantText += b.text;
+            }
+          }
+        } else if (rec.type === "result" && typeof rec.result === "string") {
+          resultText = rec.result;
+        }
+      }
+      return parseSlicerVerdict(resultText || assistantText);
+    } catch {
+      return notReady;
+    }
+  };
+}

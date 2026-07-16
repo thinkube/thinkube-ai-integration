@@ -237,6 +237,41 @@ function checklistSectionHtml(
  *    interpretation is in flight; a <div class="command-error"> appears under the
  *    field when commandMessage is present.
  */
+/**
+ * Human-readable freeze readiness status — one actionable sentence derived
+ * from the same signals as the freeze button's data-reason attribute.
+ * Exported for tests.
+ */
+export function freezeStatusText(
+  model: WorkingModel,
+  canFreeze: boolean,
+): string {
+  if (canFreeze) {
+    return "Ready to freeze — Freeze signs the checked items into a proposed TEP.";
+  }
+  const uncovered = uncoveredSections(model);
+  if (uncovered.length > 0) {
+    const parts = uncovered.map((k) =>
+      k === "goal" ? "goal (write the intent text)" : k,
+    );
+    return `Freeze locked — every section needs at least one CHECKED item; still uncovered: ${parts.join(", ")}.`;
+  }
+  const hist = model.readinessHistory;
+  if (hist.length === 0) {
+    return "Freeze locked — coverage is green; run “Check readiness” to get a clean-cut verdict on the intent.";
+  }
+  const latest = hist[hist.length - 1];
+  if (!latest.covered) {
+    return "Freeze locked — the last readiness run saw incomplete coverage; re-run “Check readiness” now that items are checked.";
+  }
+  if (!latest.cleanCut) {
+    return latest.gapSection
+      ? `Freeze locked — the readiness check found a gap in “${latest.gapSection}”; settle it and re-run “Check readiness”.`
+      : "Freeze locked — the readiness check did not find a clean cut; refine the intent and re-run “Check readiness”.";
+  }
+  return "Freeze locked — run “Check readiness”.";
+}
+
 export function buildScratchpadHtml(
   model: WorkingModel,
   _deltas?: unknown[],
@@ -291,6 +326,7 @@ export function buildScratchpadHtml(
         </section>`
       : "";
 
+  // (freeze status text is computed below via freezeStatusText)
   // Freeze control: disabled attribute PRESENT when freezeEnabled is false.
   // data-reason names the FIRST failing signal:
   //   "coverage:<kind>" when a section is uncovered,
@@ -321,6 +357,12 @@ export function buildScratchpadHtml(
   const freezeBtn = canFreeze
     ? `<button id="freeze" data-reason="" onclick="triggerFreeze()">Freeze</button>`
     : `<button id="freeze" disabled data-reason="${esc(freezeReason)}" onclick="triggerFreeze()">Freeze</button>`;
+
+  // Human-visible readiness status — the same signals as data-reason, but as a
+  // sentence a person can act on (field defect 2026-07-16: the reason lived only
+  // in an invisible DOM attribute, so "what do I do to enable Freeze?" had no
+  // answer on the surface).
+  const freezeStatus = freezeStatusText(model, canFreeze);
 
   return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -379,6 +421,10 @@ export function buildScratchpadHtml(
     #command-input { flex: 1; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 4px 8px; border-radius: 2px; }
     #command-input:disabled { opacity: 0.5; cursor: not-allowed; }
     #command-btn { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 4px 12px; border-radius: 2px; cursor: pointer; }
+    .freeze-controls-row { display: flex; gap: 8px; align-items: center; }
+    .freeze-controls-row button { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 4px 12px; border-radius: 2px; cursor: pointer; }
+    .freeze-controls-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .freeze-status { margin-top: 8px; font-size: 0.85em; opacity: 0.85; }
   </style>
   ${commandMessage ? `<style>.command-error { margin-top: 8px; padding: 6px 10px; border-radius: 3px; background: var(--vscode-inputValidation-errorBackground, rgba(244,67,54,0.1)); color: var(--vscode-errorForeground); font-size: 0.85em; }</style>` : ""}
 </head>
@@ -404,7 +450,11 @@ export function buildScratchpadHtml(
   </section>
   <section class="freeze-control">
     <h2>Freeze</h2>
-    ${freezeBtn}
+    <div class="freeze-controls-row">
+      <button id="check-readiness" onclick="triggerReadiness()">Check readiness</button>
+      ${freezeBtn}
+    </div>
+    <div class="freeze-status">${esc(freezeStatus)}</div>
   </section>
   <script>
     const vscode = acquireVsCodeApi();
@@ -426,6 +476,10 @@ export function buildScratchpadHtml(
 
     function triggerFreeze() {
       vscode.postMessage({ type: 'freeze' });
+    }
+
+    function triggerReadiness() {
+      vscode.postMessage({ type: 'checkReadiness' });
     }
 
     function triggerPrefill() {
