@@ -262,16 +262,26 @@ export function registerThinkySession(
         thinkyDiag(
           `content: bound=${JSON.stringify(bound)} opening=${opening ? "yes" : "NO"}`,
         );
-        const history = opening
-          ? [
-              {
-                response: [new vscode.ChatResponseMarkdownPart(opening)],
-                participant: THINKY_SESSION_TYPE,
-                result: {},
-              },
-            ]
-          : [];
-        return { history, requestHandler: undefined };
+        // A response turn in `history` with no preceding request is SILENTLY
+        // DROPPED by the panel's reconstruction (verified in the workbench:
+        // responses only attach to the previous request). The sanctioned
+        // vehicle for "the agent speaks first" is activeResponseCallback —
+        // an on-open response stream built exactly for requestless output.
+        const openingText = opening;
+        return {
+          history: [],
+          requestHandler: undefined,
+          ...(openingText
+            ? {
+                activeResponseCallback: async (stream: {
+                  markdown(value: string): void;
+                }) => {
+                  thinkyDiag("activeResponseCallback streaming the opening");
+                  stream.markdown(openingText);
+                },
+              }
+            : {}),
+        };
       },
     };
     context.subscriptions.push(
