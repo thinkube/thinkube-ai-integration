@@ -388,3 +388,34 @@ test("three-dimension gate (2026-07-17): convergence, complexity, risk — evalu
   assert.match(body, /Residual risk accepted — "the element": single-tenant tool/);
 });
 
+test("journal coverage (2026-07-17): [serves:] traces parse; untraced intents report zero", () => {
+  const { journalCoverage } = require("./projection") as {
+    journalCoverage: (m: WorkingModel) => {
+      served: number[];
+      remaining: number[];
+      total: number;
+    };
+  };
+  let m = emptyModel("tep");
+  m = reduce(m, { type: "seedGoal", text: "first ask" }).model;
+  m = reduce(m, { type: "addRoughRequest", text: "second ask" }).model;
+  m = reduce(m, { type: "addRoughRequest", text: "third ask" }).model;
+
+  m = reduce(m, {
+    type: "curateIntent",
+    text:
+      "One synthesis sentence.\n\n- deliver the widget [serves: 1, 3]\n- respect the budget [serves: 1]",
+  }).model;
+  const cov = journalCoverage(m);
+  assert.equal(cov.total, 3);
+  assert.deepEqual(cov.served, [1, 3]);
+  assert.deepEqual(cov.remaining, [2]);
+
+  // Out-of-range trace numbers are ignored, not counted.
+  m = reduce(m, {
+    type: "curateIntent",
+    text: "- everything [serves: 7]",
+  }).model;
+  assert.deepEqual(journalCoverage(m).served, []);
+});
+

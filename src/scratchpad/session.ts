@@ -23,7 +23,7 @@ import { buildScratchpadHtml, ScratchpadDocumentView } from "./views/document";
 import type { RoundActivity, ScratchpadInboundMessage } from "./views/document";
 import { interpret } from "./workers/interpreter";
 import { freeze as doFreeze } from "./freeze";
-import { projectDelta, projectCut } from "./projection";
+import { projectDelta, projectCut, journalCoverage } from "./projection";
 import type { ApprovalToken, SigningTool } from "./freeze";
 export type { SigningTool } from "./freeze";
 import { toReadinessRecord, makeProductionRunSlicer } from "./dryRunSlice";
@@ -772,6 +772,14 @@ class ScratchpadSessionImpl implements ScratchpadSession {
           ? projectCut(this._model, { elementIds: [...this._cut] })
           : projectDelta(this._model);
         const warnings: string[] = [];
+        const cov = journalCoverage(this._model);
+        if (cov.total > 0) {
+          warnings.push(
+            cov.served.length > 0
+              ? `Journal coverage: the intent serves entr${cov.served.length === 1 ? "y" : "ies"} ${cov.served.join(", ")} of ${cov.total}${cov.remaining.length ? ` — entr${cov.remaining.length === 1 ? "y" : "ies"} ${cov.remaining.join(", ")} remain in the space` : " — all entries served"}.`
+              : "Journal coverage: the intent carries NO [serves:] traces — run Reframe (v0.1.242+) to regenerate it with traced commitments.",
+          );
+        }
         if (cutActive) {
           const cutProj = proj as ReturnType<typeof projectCut>;
           if (cutProj.uncheckedElements.length > 0) {
@@ -957,9 +965,24 @@ class ScratchpadSessionImpl implements ScratchpadSession {
             // the bare goal alone could neither see nor explain a
             // section-level gap (2026-07-16).
             const goalSec = this._model.sections.find((s) => s.kind === "goal");
-            const lines: string[] = [goalSec?.text ?? ""];
-            for (const r of this._model.roughRequests ?? []) {
-              lines.push(`\nRough request: ${r.text}`);
+            // NUMBERED journal — the judge's north star.
+            const journal = [
+              ...((goalSec?.text ?? "").trim() ? [goalSec!.text.trim()] : []),
+              ...(this._model.roughRequests ?? []).map((r) => r.text),
+            ];
+            const lines: string[] = [
+              "Journal (the human's raw asks, numbered — the north star):",
+              ...journal.map((t, i) => `${i + 1}. ${t}`),
+            ];
+            // Cut-scoped readiness (2026-07-17): with a cut active, the
+            // verdict judges THE CUT — its closure and its curated intent —
+            // not the whole space.
+            const cutScope =
+              this._cut.size > 0 ? this._cutClosureIds() : undefined;
+            if (cutScope) {
+              lines.push(
+                `\nNOTE: this readiness run is CUT-SCOPED — only the items below ship in the next TEP; unlisted journal entries may legitimately remain for future cuts (they are NOT gaps unless the intent claims them).`,
+              );
             }
             if (this._model.curatedIntent?.trim()) {
               lines.push(`\nCurated intent:\n${this._model.curatedIntent.trim()}`);
@@ -967,7 +990,10 @@ class ScratchpadSessionImpl implements ScratchpadSession {
             for (const sec of this._model.sections) {
               if (sec.kind === "goal") continue;
               const checked = sec.items.filter(
-                (it) => it.checked && it.state === "active",
+                (it) =>
+                  it.checked &&
+                  it.state === "active" &&
+                  (cutScope === undefined || cutScope.has(it.id)),
               );
               if (checked.length > 0) {
                 lines.push(`\n${sec.kind} (settled):`);
@@ -1049,10 +1075,14 @@ class ScratchpadSessionImpl implements ScratchpadSession {
             });
             this._cut.clear();
             await this.flush();
+            const fcov = journalCoverage(this._model);
             vscode.window.showInformationMessage(
-              cut
+              (cut
                 ? `${tep} created from the cut: ${itemIds.length} element(s) shipped, ${flagIds.length} context item(s) flagged (still live for future cuts).`
-                : `${tep} created (status: proposed) — it is now in this thinking space's TEPs panel.`,
+                : `${tep} created (status: proposed) — it is now in this thinking space's TEPs panel.`) +
+                (fcov.remaining.length > 0
+                  ? ` Journal entries ${fcov.remaining.join(", ")} remain open in the space.`
+                  : ""),
             );
             // Best-effort tree refresh so the new TEP is visible immediately.
             void vscode.commands

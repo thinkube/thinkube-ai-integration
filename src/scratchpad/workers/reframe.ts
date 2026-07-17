@@ -51,12 +51,16 @@ export function reframe(
       const requests = workingModel.roughRequests ?? [];
       const goalText =
         workingModel.sections.find((s) => s.kind === "goal")?.text ?? "";
-      const requestLines = [
-        ...(goalText.trim() ? [`  - ${goalText.trim()}`] : []),
-        ...requests.map((r) => `  - ${r.text}`),
+      // NUMBERED journal — the human's raw asks are the non-derived anchor;
+      // every commitment must trace to entry numbers.
+      const journal = [
+        ...(goalText.trim() ? [goalText.trim()] : []),
+        ...requests.map((r) => r.text),
       ];
       const requestsBlock =
-        requestLines.length > 0 ? requestLines.join("\n") : "  (none)";
+        journal.length > 0
+          ? journal.map((t, i) => `  ${i + 1}. ${t}`).join("\n")
+          : "  (none)";
 
       return (
         `You are the reframe worker. Synthesize the CURATED INTENT${scope ? " for the current CUT (an upcoming TEP)" : ""}: ` +
@@ -67,7 +71,13 @@ export function reframe(
         `Checked items only${scope ? " (inside the cut)" : ""}:\n${checkedBlock}\n\n` +
         `Produce ONE curateIntent action carrying BOTH:\n` +
         `- "title": a crisp headline for the TEP, MAX 80 CHARACTERS — a name, not a summary.\n` +
-        `- "text": the curated intent itself.\n` +
+        `- "text": the curated intent in EXACTLY this shape:\n` +
+        `    <1-2 sentences of synthesis — what this adds up to and why>\n` +
+        `    (blank line)\n` +
+        `    - <commitment — one decidable claim a spec author can turn into an acceptance criterion> [serves: <journal entry numbers>]\n` +
+        `    - <next commitment> [serves: …]\n` +
+        `  EVERY bullet must end with its [serves: n, m] trace to the numbered journal entries above — ` +
+        `a commitment serving no entry does not belong; an entry in scope served by no commitment is a gap you must not paper over.\n` +
         `Gap items are OPEN QUESTIONS, never content: do NOT copy or enumerate them in the intent — ` +
         `the intent states what will be delivered and under which constraints/criteria. ` +
         `Do not include any unchecked item's content.\n\n` +

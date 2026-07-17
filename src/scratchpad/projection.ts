@@ -488,3 +488,29 @@ export function cutReadiness(
   return { elements, openGaps, pass };
 }
 
+/**
+ * Journal coverage (2026-07-17): which of the human's journal entries the
+ * curated intent's commitments claim to serve — parsed from the [serves: n]
+ * trace marks. The non-circular half of convergence: the journal is the only
+ * text in the space not derived from inside the loop.
+ */
+export function journalCoverage(model: WorkingModel): {
+  served: number[];
+  remaining: number[];
+  total: number;
+} {
+  const goalText = goalSection(model).text.trim();
+  const total = (goalText ? 1 : 0) + (model.roughRequests?.length ?? 0);
+  const served = new Set<number>();
+  const text = model.curatedIntent ?? "";
+  for (const m of text.matchAll(/\[serves:\s*([0-9,\s]+)\]/gi)) {
+    for (const n of m[1].split(",")) {
+      const v = parseInt(n.trim(), 10);
+      if (!isNaN(v) && v >= 1 && v <= total) served.add(v);
+    }
+  }
+  const remaining: number[] = [];
+  for (let i = 1; i <= total; i++) if (!served.has(i)) remaining.push(i);
+  return { served: [...served].sort((a, b) => a - b), remaining, total };
+}
+
