@@ -198,13 +198,20 @@ function itemHtml(
   dep?: ItemDepMeta,
   isElement = false,
   inCut = false,
+  cutRole?: "context" | "context-unsettled",
 ): string {
   const depClass =
     dep?.focusRole !== undefined ? ` dep-${dep.focusRole}` : "";
   const isProtectedItem =
     item.state === "shipped" || (item.flaggedBy?.length ?? 0) > 0;
+  const cutClass =
+    cutRole === "context"
+      ? " cut-context"
+      : cutRole === "context-unsettled"
+        ? " cut-context unsettled"
+        : "";
   const liAttrs: string[] = [
-    `class="item${selected ? " selected" : ""}${depClass}${inCut ? " in-cut" : ""}${isProtectedItem ? " protected" : ""}"`,
+    `class="item${selected ? " selected" : ""}${depClass}${inCut ? " in-cut" : ""}${cutClass}${isProtectedItem ? " protected" : ""}"`,
     `data-item-id="${esc(item.id)}"`,
     `data-state="${esc(item.state)}"`,
     `data-origin="${esc(item.origin)}"`,
@@ -351,6 +358,14 @@ function itemHtml(
         selectButton +
         `</span>`
       : "";
+  // Cut-context badge: this row was pulled into the cut through the edges.
+  const cutContextBadge =
+    cutRole === "context"
+      ? `<span class="cut-badge" title="Pulled into the cut as context — will be flagged with the TEP on freeze and stay live">in cut (context)</span>`
+      : cutRole === "context-unsettled"
+        ? `<span class="cut-badge unsettled" title="In the cut's reach but NOT settled — check it to include it; unchecked context is left out of the TEP">in cut reach — unsettled</span>`
+        : "";
+
   // TEP-flag badge: this item is signed context — protected, supersede-only.
   const flagBadge =
     (item.flaggedBy?.length ?? 0) > 0
@@ -400,6 +415,7 @@ function itemHtml(
     evalBadges +
     `<span class="item-text">${esc(item.text)}</span>` +
     staleBadge +
+    cutContextBadge +
     flagBadge +
     pendingEditSpan +
     evidenceChips +
@@ -494,6 +510,7 @@ function checklistSectionHtml(
   selection?: ReadonlySet<string>,
   depMeta?: Map<string, ItemDepMeta>,
   cut?: ReadonlySet<string>,
+  cutContext?: { flagged: ReadonlySet<string>; unsettled: ReadonlySet<string> },
 ): string {
   const marker = STATE_MARKERS[section.state];
   // Dropped items are not rendered; all other states show
@@ -508,6 +525,11 @@ function checklistSectionHtml(
               depMeta?.get(it.id),
               section.kind === "elements",
               cut?.has(it.id) ?? false,
+              cutContext?.flagged.has(it.id)
+                ? "context"
+                : cutContext?.unsettled.has(it.id)
+                  ? "context-unsettled"
+                  : undefined,
             ),
           )
           .join("")}</ul>`
@@ -695,6 +717,30 @@ export function buildScratchpadHtml(
         model.roughRequests,
       )
     : "";
+  // Cut context (computed BEFORE sections render so rows can be marked):
+  // flagged = pulled and settled (will flag on freeze); unsettled = pulled by
+  // the edges but unchecked (silently excluded unless the human settles it).
+  const cutElementsForRows = [...cut].filter((id) =>
+    model.sections.some(
+      (s) =>
+        s.kind === "elements" &&
+        s.items.some((it) => it.id === id && it.state !== "dropped"),
+    ),
+  );
+  let cutContext:
+    | { flagged: ReadonlySet<string>; unsettled: ReadonlySet<string> }
+    | undefined;
+  if (cutElementsForRows.length > 0) {
+    const projForRows = projectCut(model, { elementIds: cutElementsForRows });
+    const flagged = new Set(projForRows.flagIds);
+    cutContext = {
+      flagged,
+      unsettled: new Set(
+        projForRows.contextIds.filter((id) => !flagged.has(id)),
+      ),
+    };
+  }
+
   const sectionsHtml = nonGoalSections
     .map((s) =>
       checklistSectionHtml(
@@ -704,6 +750,7 @@ export function buildScratchpadHtml(
         selection,
         depMeta,
         cut,
+        cutContext,
       ),
     )
     .join("\n");
@@ -924,6 +971,9 @@ export function buildScratchpadHtml(
     #cut-bar .cut-note { opacity: 0.7; font-size: 0.85em; margin-left: auto; }
     #cut-bar button { background: var(--vscode-button-secondaryBackground, transparent); color: var(--vscode-button-secondaryForeground, var(--vscode-foreground)); border: 1px solid var(--vscode-panel-border); padding: 2px 10px; border-radius: 2px; cursor: pointer; }
     li.item.in-cut { border-left: 3px double var(--vscode-charts-yellow, #cca700); padding-left: 6px; }
+    li.item.cut-context { border-left: 3px dotted var(--vscode-charts-yellow, #cca700); padding-left: 6px; }
+    .cut-badge { font-size: 0.8em; color: var(--vscode-charts-yellow, #cca700); border: 1px dotted var(--vscode-charts-yellow, #cca700); border-radius: 3px; padding: 0 5px; }
+    .cut-badge.unsettled { color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
     li.item.protected { background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-charts-yellow, #cca700) 8%); }
     .flag-badge { font-size: 0.8em; color: var(--vscode-charts-yellow, #cca700); border: 1px solid var(--vscode-charts-yellow, #cca700); border-radius: 3px; padding: 0 5px; }
     .curated-intent { border: 1px solid var(--vscode-panel-border); border-radius: 4px; margin-bottom: 12px; padding: 12px; }

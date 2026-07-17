@@ -204,6 +204,9 @@ export function projectCut(
   shipIds: string[];
   flagIds: string[];
   uncheckedElements: string[];
+  /** EVERY context item the edges pull in, checked or not — the view marks
+   *  them so "N context pulled" is visible on the rows themselves. */
+  contextIds: string[];
 } {
   const byId = new Map<
     string,
@@ -284,5 +287,6 @@ export function projectCut(
     shipIds,
     flagIds,
     uncheckedElements,
+    contextIds: [...context],
   };
 }
