@@ -481,8 +481,9 @@ function goalSectionHtml(
   roundInFlight?: boolean,
   roughRequests?: readonly { id: string; text: string }[],
 ): string {
-  const marker = STATE_MARKERS[section.state];
   const goalWasEmpty = section.text === "";
+  const goalState: SectionState = goalWasEmpty ? "empty" : "settled";
+  const marker = STATE_MARKERS[goalState];
   const activityAttr =
     activity !== undefined ? ` data-activity="${activity}"` : "";
   const activityClass = activity !== undefined ? ` activity-${activity}` : "";
@@ -495,9 +496,9 @@ function goalSectionHtml(
   return /* html */ `
 <section class="section goal-section${activityClass}" data-kind="goal" data-id="${esc(section.id)}"${activityAttr}>
   <div class="section-header">
-    <span class="state-marker" title="${esc(section.state)}">${marker}</span>
+    <span class="state-marker" title="${esc(goalState)}">${marker}</span>
     <span class="kind-label">goal</span>
-    <span class="state-label">${esc(section.state)}</span>
+    <span class="state-label">${esc(goalState)}</span>
     <button id="prefill-btn" class="worker-btn"${prefillDisabled} onclick="triggerPrefill()">Prefill</button>
     <button id="reframe-btn" class="worker-btn"${prefillDisabled} onclick="triggerReframe()">Reframe</button>
     <button id="explain-btn" class="worker-btn"${prefillDisabled} onclick="triggerExplainAll()" title="One round annotates every unexplained item with Why / Impact / Modality">Explain</button>
@@ -530,6 +531,20 @@ function goalSectionHtml(
 }
 
 /** Render a non-goal section as a checklist with add-item controls. */
+/** Displayed section state, DERIVED from the items (2026-07-17: the stored
+ *  SectionState is an SP-1 fossil nothing updates — every section read
+ *  "empty" forever). empty → no items; proposed → none settled; shaping →
+ *  partially settled; settled → every open item settled/attended. */
+function derivedSectionState(section: Section): SectionState {
+  const visible = section.items.filter((it) => it.state !== "dropped");
+  if (visible.length === 0) return "empty";
+  const active = visible.filter((it) => it.state === "active");
+  const checkedActive = active.filter((it) => it.checked);
+  if (active.length === 0) return "settled"; // all resolved/shipped/deferred
+  if (checkedActive.length === 0) return "proposed";
+  return checkedActive.length === active.length ? "settled" : "shaping";
+}
+
 function checklistSectionHtml(
   section: Section,
   activity?: SectionActivity,
@@ -539,7 +554,8 @@ function checklistSectionHtml(
   cut?: ReadonlySet<string>,
   cutContext?: { flagged: ReadonlySet<string>; unsettled: ReadonlySet<string> },
 ): string {
-  const marker = STATE_MARKERS[section.state];
+  const displayState = derivedSectionState(section);
+  const marker = STATE_MARKERS[displayState];
   // Dropped items are not rendered; all other states show
   const visibleItems = section.items.filter((it) => it.state !== "dropped");
   const itemsHtml =
@@ -574,9 +590,9 @@ function checklistSectionHtml(
   return /* html */ `
 <section class="section${activityClass}" data-kind="${esc(section.kind)}" data-id="${esc(section.id)}"${activityAttr}>
   <div class="section-header">
-    <span class="state-marker" title="${esc(section.state)}">${marker}</span>
+    <span class="state-marker" title="${esc(displayState)}">${marker}</span>
     <span class="kind-label">${esc(section.kind)}</span>
-    <span class="state-label">${esc(section.state)}</span>
+    <span class="state-label" title="empty → proposed → shaping → settled, derived from the items">${esc(displayState)}</span>
   </div>
   ${itemsHtml}
   ${errorHtml}
