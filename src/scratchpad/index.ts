@@ -98,6 +98,8 @@ function boardRoot(): string | undefined {
  * so this only surfaces the mouth. isPartialQuery keeps the mention in the
  * input without submitting. Fail-soft on hosts without the chat view.
  */
+import { thinkyDiag } from "./chat/diag";
+
 async function openThinkyChat(namespace?: string, space?: string): Promise<void> {
   const enabled = vscode.workspace
     .getConfiguration("thinkube.thinky")
@@ -114,9 +116,12 @@ async function openThinkyChat(namespace?: string, space?: string): Promise<void>
         path: `/${namespace}/${space}`,
       });
       await vscode.commands.executeCommand("vscode.open", uri);
+      thinkyDiag(`opened session editor for ${uri.toString()}`);
       return;
-    } catch {
-      /* fall through to the generic chat view */
+    } catch (err) {
+      thinkyDiag(
+        `vscode.open FAILED for thinky:/${namespace}/${space} — ${err instanceof Error ? err.message : String(err)} — falling back to generic chat`,
+      );
     }
   }
   try {

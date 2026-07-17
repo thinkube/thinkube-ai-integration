@@ -39,6 +39,7 @@ import {
   type ThinkySessionLike,
 } from "./chatCore";
 import { runThinkyAgentTurn } from "./agent";
+import { thinkyDiag } from "./diag";
 import type { ThinkyAgentSessionLike } from "./agent";
 
 export const THINKY_SESSION_TYPE = "thinky";
@@ -212,6 +213,9 @@ export function registerThinkySession(
 
     const contentProvider = {
       async provideChatSessionContent(id: unknown): Promise<unknown> {
+        thinkyDiag(`provideChatSessionContent id=${JSON.stringify(
+          typeof id === "string" ? id : ((id as { path?: string })?.path ?? id),
+        )}`);
         // Opening a listed session pre-binds its space (silently) so the
         // first message answers without a cold start.
         const path =
@@ -255,6 +259,9 @@ export function registerThinkySession(
             /* space unreadable — session still opens, handler reports */
           }
         }
+        thinkyDiag(
+          `content: bound=${JSON.stringify(bound)} opening=${opening ? "yes" : "NO"}`,
+        );
         const history = opening
           ? [
               {
