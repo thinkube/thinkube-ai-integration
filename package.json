@@ -762,8 +762,8 @@
         },
         "thinkube.workers.logToOutput": {
           "type": "boolean",
-          "default": false,
-          "description": "Stream AI worker sessions into the Output panel (scratchpad rounds → 'Thinkube Scratchpad'; orchestration auditors/assessors → 'Thinkube Orchestrator'). Useful for testing and debugging; off by default so worker chatter never occupies the panel."
+          "default": true,
+          "description": "Stream AI worker sessions into the Output panel (scratchpad rounds → 'Thinkube Scratchpad'; orchestration auditors/assessors → 'Thinkube Orchestrator'). On by default during the field-testing phase; turn off to keep the panel quiet."
         },
         "thinkube.agentTeams.enableExperimental": {
           "type": "boolean",
