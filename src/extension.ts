@@ -61,6 +61,7 @@ import type { ScratchpadSessionDeps, ScratchpadSession } from "./scratchpad";
 import { registerThinkyParticipant } from "./scratchpad/chat/participant";
 import { registerItemsTree } from "./scratchpad/views/itemsTree";
 import { registerThinkyLanguageModel } from "./scratchpad/chat/lmProvider";
+import { registerThinkySession } from "./scratchpad/chat/thinkySession";
 
 /** Public API returned by activate() — the runtime seam for extension-host probes. */
 export interface TandemExtensionApi {
@@ -458,6 +459,12 @@ export function activate(context: vscode.ExtensionContext): TandemExtensionApi {
   // Claude Code login — fills the chat panel's model list without GitHub
   // auth or API keys. Guarded — ships dark on hosts without the LM API.
   registerThinkyLanguageModel(context);
+
+  // Thinky as a first-class chat SESSION type (our own entry in the agent
+  // picker — icon, welcome, placeholder, slash commands). Needs the
+  // chatSessionsProvider proposal granted via product.json; ships dark
+  // elsewhere while the @thinky mention keeps working.
+  registerThinkySession(context);
 
   // Defect distributions (TEP-22/SP-1): the three tables + the manual-entry row.
   registerDefectCommands(context, {
