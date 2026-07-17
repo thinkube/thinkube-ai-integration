@@ -29,6 +29,29 @@ async function respond(
   messages: readonly LmMessageLike[],
   progress: LmProgressLike,
 ): Promise<void> {
+  try {
+    await respondInner(modelId, messages, progress);
+  } catch (err) {
+    // Never fail the panel request raw — stream an honest error reply.
+    const TextPart = (
+      vscode as unknown as {
+        LanguageModelTextPart: new (value: string) => unknown;
+      }
+    ).LanguageModelTextPart;
+    progress.report(
+      new TextPart(
+        `The Thinkube Claude model hit an error: ${err instanceof Error ? err.message : String(err)}. ` +
+          `For thinking-space work, use the Thinky session — this model is a plain chat.`,
+      ),
+    );
+  }
+}
+
+async function respondInner(
+  modelId: string,
+  messages: readonly LmMessageLike[],
+  progress: LmProgressLike,
+): Promise<void> {
   const { query } = (await import("@anthropic-ai/claude-agent-sdk")) as {
     query: (args: {
       prompt: string;
@@ -47,7 +70,11 @@ async function respond(
       model: aliasForModelId(modelId),
       permissionMode: "bypassPermissions",
       thinking: { type: "disabled" },
-      maxTurns: 1,
+      // Field defect 2026-07-17: maxTurns:1 made the SDK error ("Reached
+      // maximum number of turns (1)") whenever the first turn was not a
+      // complete result — the panel then failed the whole request. Give the
+      // CLI room; tools are disallowed so turns stay cheap.
+      maxTurns: 8,
       disallowedTools: [
         "Read",
         "Grep",
