@@ -6,6 +6,7 @@
  * the live worker outcome is the human's verdict.
  */
 import * as vscode from "vscode";
+import { workerLogEnabled } from "../services/workerLog";
 import { ThinkubeStore } from "../store/ThinkubeStore";
 import { WorktreeService } from "../services/WorktreeService";
 import {
@@ -323,14 +324,14 @@ export function registerOrchestrateCommands(
                 checkContract: createSdkContractCheck({
                   cwd: canonical,
                   model: resolveWorkerModel(workerModel, "judge"),
-                  log: (l) => output.appendLine(l),
+                  log: (l) => { if (workerLogEnabled()) output.appendLine(l); },
                 }),
                 // Intent check (2026-07-14): the north-star reading at delivery —
                 // reads the parent TEP + the delivered tree, informs the Accept.
                 checkIntent: createSdkIntentCheck({
                   cwd: canonical,
                   model: resolveWorkerModel(workerModel, "judge"),
-                  log: (l) => output.appendLine(l),
+                  log: (l) => { if (workerLogEnabled()) output.appendLine(l); },
                 }),
                 // Plan-repair lane (2026-07-12): when the judge attributes a red to the
                 // PLAN (an instrument misserving the intent), this session proposes the
@@ -340,7 +341,7 @@ export function registerOrchestrateCommands(
                 repairPlan: createSdkPlanRepair({
                   cwd: canonical,
                   model: resolveWorkerModel(workerModel, "judge"),
-                  log: (l) => output.appendLine(l),
+                  log: (l) => { if (workerLogEnabled()) output.appendLine(l); },
                 }),
                 verifyCommand: orchestratorCfg
                   .get<string>("verifyCommand")
@@ -363,7 +364,7 @@ export function registerOrchestrateCommands(
                       workerModel.workerModelByRole?.auditor ??
                       workerModel.workerModel ??
                       "sonnet",
-                    log: (l) => output.appendLine(l),
+                    log: (l) => { if (workerLogEnabled()) output.appendLine(l); },
                   });
                   await writeSpec(
                     store,

@@ -146,6 +146,7 @@ export function parseSlicerVerdict(text: string): DryRunResult {
  */
 export function makeProductionRunSlicer(
   modelId: string,
+  log?: (line: string) => void,
 ): (intent: string) => Promise<DryRunResult> {
   return async (intent: string): Promise<DryRunResult> => {
     const notReady: DryRunResult = {
@@ -219,7 +220,11 @@ export function makeProductionRunSlicer(
           resultText = rec.result;
         }
       }
-      return parseSlicerVerdict(resultText || assistantText);
+      const verdict = parseSlicerVerdict(resultText || assistantText);
+      log?.(
+        `▸ readiness verdict: cleanCut=${verdict.cleanCut}${verdict.gapSection ? ` gap=${verdict.gapSection}` : ""}${verdict.reason ? ` — ${verdict.reason}` : ""}`,
+      );
+      return verdict;
     } catch {
       return notReady;
     }

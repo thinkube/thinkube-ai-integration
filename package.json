@@ -760,6 +760,11 @@
           "default": true,
           "description": "When you open a worker's log (the ≣ on a control-center graph node), pop it directly into its own editor window instead of a beside tab. Falls back to a beside tab where auxiliary windows aren't supported. Turn off to keep logs beside the editor."
         },
+        "thinkube.workers.logToOutput": {
+          "type": "boolean",
+          "default": false,
+          "description": "Stream AI worker sessions into the Output panel (scratchpad rounds → 'Thinkube Scratchpad'; orchestration auditors/assessors → 'Thinkube Orchestrator'). Useful for testing and debugging; off by default so worker chatter never occupies the panel."
+        },
         "thinkube.agentTeams.enableExperimental": {
           "type": "boolean",
           "default": false,

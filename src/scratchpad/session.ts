@@ -29,6 +29,7 @@ import { toReadinessRecord, makeProductionRunSlicer } from "./dryRunSlice";
 import type { DryRunResult, SlicerVerdict } from "./dryRunSlice";
 import { makeServerSigningTool } from "./freeze";
 import { ThinkubeStore } from "../store/ThinkubeStore";
+import { workerLogEnabled } from "../services/workerLog";
 export type { DryRunResult, SlicerVerdict } from "./dryRunSlice";
 
 // Re-export so callers can import the message type from session / index.
@@ -135,6 +136,24 @@ let _extensionUri: vscode.Uri | undefined;
  */
 export function _bootstrapExtensionUri(uri: vscode.Uri): void {
   _extensionUri = uri;
+}
+
+/**
+ * Lazy "Thinkube Scratchpad" output channel — created on first logged line,
+ * and only when `thinkube.workers.logToOutput` is enabled (config read live,
+ * so toggling works without a reload). Worker streams are debugging gold but
+ * must never occupy the Output panel by default.
+ */
+let _scratchpadChannel: vscode.OutputChannel | undefined;
+function scratchpadLog(line: string): void {
+  if (!workerLogEnabled()) return;
+  try {
+    _scratchpadChannel ??=
+      vscode.window.createOutputChannel("Thinkube Scratchpad");
+    _scratchpadChannel.appendLine(line);
+  } catch {
+    /* headless test host — no output channel */
+  }
 }
 
 // ===== Session implementation =====
@@ -1045,6 +1064,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
   ): Promise<void> {
     // Mark as running
     this._roundInFlight = true;
+    scratchpadLog(`━━ ${roundName} round starting (targets: ${targetedKinds.join(", ")})`);
     this._roundActivity = {
       targetedKinds,
       errors: {},
@@ -1058,6 +1078,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
       // Clear activity BEFORE dispatching actions so that any view.update()
       // triggered by dispatch() already shows the post-round state ("landed"
       // with no running indicator — rendered as data-activity="landed").
+      scratchpadLog(`━━ ${roundName} round landed`);
       this._roundActivity = {
         targetedKinds,
         errors: {},
@@ -1079,6 +1100,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
       // Mark failed — render error inside each targeted section
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error(`[_runWorkerRound] CAUGHT ERROR: ${errorMsg}`);
+      scratchpadLog(`━━ ${roundName} round FAILED: ${errorMsg}`);
       const errors: Partial<Record<SectionKind, string>> = {};
       for (const kind of targetedKinds) {
         errors[kind] = errorMsg;
@@ -1234,7 +1256,7 @@ export async function openScratchpad(
 
   // Resolve loadQuery: use injected fake or production SDK thunk
   const loadQueryFn: () => QueryFn =
-    deps?.loadQuery ?? makeProductionQueryFnThunk(workerModel);
+    deps?.loadQuery ?? makeProductionQueryFnThunk(workerModel, scratchpadLog);
 
   // Resolve clock: use injected fake or system clock
   const nowFn: () => Date = deps?.now ?? (() => new Date());
@@ -1248,7 +1270,8 @@ export async function openScratchpad(
   // Resolve runSlicer: injected fake, or the production blind readiness judge.
   // (Wiring gap found in field use 2026-07-16: without a runSlicer no readiness
   // record can ever be written, so freeze could never enable in production.)
-  const runSlicerFn = deps?.runSlicer ?? makeProductionRunSlicer(workerModel);
+  const runSlicerFn =
+    deps?.runSlicer ?? makeProductionRunSlicer(workerModel, scratchpadLog);
 
   // Resolve signing: injected fake, or the production ThinkubeStore-backed tool
   // (same secret mechanism as spec certification — THINKUBE_SIGNING_KEY_DIR).

@@ -378,7 +378,10 @@ export function deriveAllowedTools(mcpTools: string[] | undefined): string[] {
  * as an SDK model alias (e.g. "sonnet"), which the Agent SDK — unlike the raw
  * Messages API — accepts.
  */
-export function makeProductionQueryFnThunk(modelId: string): () => QueryFn {
+export function makeProductionQueryFnThunk(
+  modelId: string,
+  log?: (line: string) => void,
+): () => QueryFn {
   return (): QueryFn =>
     async function* (args: {
       prompt: string;
@@ -472,6 +475,11 @@ export function makeProductionQueryFnThunk(modelId: string): () => QueryFn {
       // actions JSON out of it.
       let resultText = "";
       let assistantText = "";
+      log?.(
+        `▸ worker spawn (model: ${modelId}; tools: ${
+          (options.allowedTools as string[] | undefined)?.join(", ") ?? "none (blind)"
+        })`,
+      );
       try {
         for await (const msg of sdkQuery({ prompt: fullPrompt, options })) {
           const rec = msg as Record<string, unknown>;
@@ -481,14 +489,22 @@ export function makeProductionQueryFnThunk(modelId: string): () => QueryFn {
             for (const b of content as Array<Record<string, unknown>>) {
               if (b.type === "text" && typeof b.text === "string") {
                 assistantText += b.text;
+                for (const line of b.text.split("\n")) {
+                  if (line.trim()) log?.(`  │ ${line}`);
+                }
+              } else if (b.type === "tool_use") {
+                log?.(`  ⚒ tool: ${String((b as { name?: unknown }).name ?? "?")}`);
               }
             }
           } else if (rec.type === "result" && typeof rec.result === "string") {
             resultText = rec.result;
           }
         }
-      } catch {
+      } catch (err) {
         // Spawn/run failure — land the round with zero actions rather than crash.
+        log?.(
+          `  ✗ worker stream failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
         return;
       }
 
