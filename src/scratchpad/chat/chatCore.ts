@@ -14,6 +14,49 @@
 import type { WorkingModel } from "../model";
 import type { ScratchpadInboundMessage } from "../session";
 
+/**
+ * Session-resource binding (2026-07-17): a Thinky chat session's resource URI
+ * is thinky:/<namespace>/<space> — namespace may be nested (e.g.
+ * "Platform/projects/plugin-delivery"), space is the last segment.
+ */
+export function spaceToSessionPath(namespace: string, space: string): string {
+  return `/${namespace}/${space}`;
+}
+
+export function sessionPathToSpace(
+  path: string,
+): { namespace: string; space: string } | undefined {
+  const clean = path.replace(/^\/+/, "").replace(/\/+$/, "");
+  const idx = clean.lastIndexOf("/");
+  if (idx <= 0) return undefined;
+  const namespace = clean.slice(0, idx);
+  const space = clean.slice(idx + 1);
+  if (!namespace || !space) return undefined;
+  return { namespace, space };
+}
+
+/**
+ * Extract the bound space from a participant request's chatContext (shape
+ * verified against the shipped extension host: context.chatSessionContext
+ * .chatSessionItem.resource is the session URI). Returns undefined for
+ * untitled sessions and non-session (@mention) requests — those use the
+ * active space.
+ */
+export function boundSpaceFromChatContext(
+  chatContext: unknown,
+): { namespace: string; space: string } | undefined {
+  if (typeof chatContext !== "object" || chatContext === null) return undefined;
+  const sc = (chatContext as { chatSessionContext?: unknown }).chatSessionContext;
+  if (typeof sc !== "object" || sc === null) return undefined;
+  const item = (sc as { chatSessionItem?: unknown }).chatSessionItem;
+  if (typeof item !== "object" || item === null) return undefined;
+  const resource = (item as { resource?: unknown }).resource;
+  if (typeof resource !== "object" || resource === null) return undefined;
+  const path = (resource as { path?: unknown }).path;
+  if (typeof path !== "string") return undefined;
+  return sessionPathToSpace(path);
+}
+
 /** The narrow session surface the chat handler needs. */
 export interface ThinkySessionLike {
   readonly model: WorkingModel;

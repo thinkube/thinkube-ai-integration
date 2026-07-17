@@ -133,3 +133,41 @@ test("reply always carries the outcome then the status, plus follow-up buttons",
   assert.equal(stream.buttons[0].command, "thinkube.thinky.say");
   assert.deepEqual(stream.buttons[0].arguments, ["check readiness"]);
 });
+
+// ── Session↔space binding (2026-07-17) ───────────────────────────────────────
+
+test("session path round-trips nested namespaces", async () => {
+  const { spaceToSessionPath, sessionPathToSpace } = await import("./chatCore");
+  const path = spaceToSessionPath(
+    "Platform/projects/plugin-delivery",
+    "restart",
+  );
+  assert.equal(path, "/Platform/projects/plugin-delivery/restart");
+  assert.deepEqual(sessionPathToSpace(path), {
+    namespace: "Platform/projects/plugin-delivery",
+    space: "restart",
+  });
+  assert.equal(sessionPathToSpace("/only-one-segment"), undefined);
+  assert.equal(sessionPathToSpace(""), undefined);
+});
+
+test("boundSpaceFromChatContext reads the verified context shape, tolerates absence", async () => {
+  const { boundSpaceFromChatContext } = await import("./chatCore");
+  const bound = boundSpaceFromChatContext({
+    chatSessionContext: {
+      chatSessionItem: {
+        resource: { path: "/Platform/projects/plugin-delivery/restart" },
+      },
+    },
+  });
+  assert.deepEqual(bound, {
+    namespace: "Platform/projects/plugin-delivery",
+    space: "restart",
+  });
+  assert.equal(boundSpaceFromChatContext(undefined), undefined);
+  assert.equal(boundSpaceFromChatContext({}), undefined);
+  assert.equal(
+    boundSpaceFromChatContext({ chatSessionContext: { isUntitled: true } }),
+    undefined,
+  );
+});

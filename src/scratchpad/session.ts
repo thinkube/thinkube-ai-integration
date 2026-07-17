@@ -63,6 +63,12 @@ export interface ScratchpadSessionDeps {
    */
   sidecarRoot?: string;
   /**
+   * Reveal the webview panel on open (default true). The chat session
+   * binding (2026-07-17) opens spaces SILENTLY — a chat request must not
+   * yank the webview panel into focus.
+   */
+  reveal?: boolean;
+  /**
    * Injectable worker query factory (a test injects a fake QueryFn).
    */
   loadQuery?: () => QueryFn;
@@ -133,6 +139,9 @@ export interface ScratchpadSession {
    * command field). The @thinky chat participant reads it to reply (Phase C).
    */
   readonly lastCommandMessage: string | undefined;
+  /** Identity: which document this session holds (chat binding, 2026-07-17). */
+  readonly namespace: string;
+  readonly space: string;
 }
 
 // ===== Module-level state =====
@@ -255,6 +264,14 @@ class ScratchpadSessionImpl implements ScratchpadSession {
 
   get lastCommandMessage(): string | undefined {
     return this._commandMessage;
+  }
+
+  get namespace(): string {
+    return this._namespace;
+  }
+
+  get space(): string {
+    return this._space;
   }
 
   dispatch(action: Action): Delta {
@@ -1628,8 +1645,10 @@ export async function openScratchpad(
     signingTool,
   );
   _session = session;
-  session.revealPanel();
-  await awaitPanelVisible();
+  if (deps?.reveal !== false) {
+    session.revealPanel();
+    await awaitPanelVisible();
+  }
   return session;
 }
 

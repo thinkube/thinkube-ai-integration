@@ -12,6 +12,12 @@
  *    thinkube.thinkube-tandem via product.json in the Thinkube image) serves
  *    session content; fresh sessions are `{history: [], requestHandler:
  *    undefined}` so requests route to the participant.
+ *  - `registerChatSessionItemProvider` lists the sessions — and HERE the
+ *    linkage the methodology wants: EVERY THINKING SPACE IS A SESSION
+ *    (resource thinky:/<namespace>/<space>). Each request carries its
+ *    session resource in chatContext.chatSessionContext.chatSessionItem, so
+ *    it binds to ITS space, not the singleton — the bound space is opened
+ *    silently (reveal:false) before handling.
  *
  * The handler is the SAME chatCore used by @thinky — one seam, three mouths
  * (webview command field, @thinky mention, Thinky session).
@@ -20,11 +26,98 @@
  * grant, registration fails soft and the @thinky mention path still works.
  */
 
+import * as nodeFs from "node:fs";
+import * as nodePath from "node:path";
 import * as vscode from "vscode";
-import { getScratchpadSession } from "../session";
-import { handleThinkyRequest, type ThinkySessionLike } from "./chatCore";
+import { getScratchpadSession, openScratchpad } from "../session";
+import type { ScratchpadSession } from "../session";
+import {
+  boundSpaceFromChatContext,
+  handleThinkyRequest,
+  spaceToSessionPath,
+  type ThinkySessionLike,
+} from "./chatCore";
 
 export const THINKY_SESSION_TYPE = "thinky";
+
+function boardRoot(): string | undefined {
+  return (
+    vscode.workspace
+      .getConfiguration("thinkube.thinkingSpace")
+      .get<string>("root")
+      ?.trim() || undefined
+  );
+}
+
+/**
+ * Enumerate thinking spaces under the board root: every
+ * <root>/<namespace…>/thinking/<space>.json (namespace may be nested).
+ * Exported for tests via dependency-free scanning.
+ */
+export function listThinkingSpaces(
+  root: string,
+): { namespace: string; space: string }[] {
+  const out: { namespace: string; space: string }[] = [];
+  const walk = (dir: string, rel: string, depth: number): void => {
+    if (depth > 6) return;
+    let entries: nodeFs.Dirent[];
+    try {
+      entries = nodeFs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (!e.isDirectory() || e.name.startsWith(".")) continue;
+      if (e.name === "thinking" && rel) {
+        let files: string[];
+        try {
+          files = nodeFs.readdirSync(nodePath.join(dir, e.name));
+        } catch {
+          continue;
+        }
+        for (const f of files) {
+          if (f.endsWith(".json")) {
+            out.push({ namespace: rel, space: f.slice(0, -5) });
+          }
+        }
+        continue;
+      }
+      walk(
+        nodePath.join(dir, e.name),
+        rel ? `${rel}/${e.name}` : e.name,
+        depth + 1,
+      );
+    }
+  };
+  walk(root, "", 0);
+  return out.sort((a, b) =>
+    `${a.namespace}/${a.space}`.localeCompare(`${b.namespace}/${b.space}`),
+  );
+}
+
+/**
+ * Resolve the scratchpad session for a bound space: reuse the active one if
+ * it IS that space, else open silently (no panel reveal from a chat turn).
+ */
+async function ensureSpaceSession(bound: {
+  namespace: string;
+  space: string;
+}): Promise<ScratchpadSession> {
+  const current = getScratchpadSession();
+  if (
+    current &&
+    current.namespace === bound.namespace &&
+    current.space === bound.space
+  ) {
+    return current;
+  }
+  return openScratchpad({
+    namespace: bound.namespace,
+    space: bound.space,
+    sidecarRoot: boardRoot(),
+    reveal: false,
+  });
+}
 
 export function registerThinkySession(
   context: vscode.ExtensionContext,
@@ -53,6 +146,10 @@ export function registerThinkySession(
           provider: unknown,
           participant: unknown,
         ) => vscode.Disposable;
+        registerChatSessionItemProvider?: (
+          type: string,
+          provider: unknown,
+        ) => vscode.Disposable;
       };
     }
   ).chat;
@@ -66,10 +163,20 @@ export function registerThinkySession(
   try {
     const participant = chatApi.createChatParticipant(
       THINKY_SESSION_TYPE,
-      async (request, _chatContext, stream, _token) => {
-        const session = getScratchpadSession() as
-          | ThinkySessionLike
-          | undefined;
+      async (request, chatContext, stream, _token) => {
+        // Bind to the session's OWN space when the request carries one;
+        // untitled sessions fall back to the active space.
+        const bound = boundSpaceFromChatContext(chatContext);
+        let session: ThinkySessionLike | undefined;
+        if (bound) {
+          try {
+            session = (await ensureSpaceSession(bound)) as ThinkySessionLike;
+          } catch {
+            session = undefined;
+          }
+        } else {
+          session = getScratchpadSession() as ThinkySessionLike | undefined;
+        }
         await handleThinkyRequest(
           { prompt: request.prompt, command: request.command },
           session,
@@ -80,18 +187,62 @@ export function registerThinkySession(
     participant.iconPath = new vscode.ThemeIcon("sparkle");
     context.subscriptions.push(participant);
 
-    const provider = {
-      async provideChatSessionContent(): Promise<unknown> {
+    const contentProvider = {
+      async provideChatSessionContent(id: unknown): Promise<unknown> {
+        // Opening a listed session pre-binds its space (silently) so the
+        // first message answers without a cold start.
+        const path =
+          typeof id === "string"
+            ? id
+            : ((id as { path?: string })?.path ?? "");
+        const bound = boundSpaceFromChatContext({
+          chatSessionContext: {
+            chatSessionItem: { resource: { path: String(path) } },
+          },
+        });
+        if (bound) {
+          try {
+            await ensureSpaceSession(bound);
+          } catch {
+            /* space unreadable — session still opens, handler reports */
+          }
+        }
         return { history: [], requestHandler: undefined };
       },
     };
     context.subscriptions.push(
       chatApi.registerChatSessionContentProvider(
         THINKY_SESSION_TYPE,
-        provider,
+        contentProvider,
         participant,
       ),
     );
+
+    // Sessions list = thinking spaces (the linkage). Deprecated in favor of
+    // the controller API upstream but functional in this build; guarded.
+    if (chatApi.registerChatSessionItemProvider) {
+      const itemProvider = {
+        async provideChatSessionItems(): Promise<unknown[]> {
+          const root = boardRoot();
+          if (!root) return [];
+          return listThinkingSpaces(root).map(({ namespace, space }) => ({
+            resource: vscode.Uri.from({
+              scheme: THINKY_SESSION_TYPE,
+              path: spaceToSessionPath(namespace, space),
+            }),
+            label: space,
+            description: namespace,
+            tooltip: `Thinking space ${namespace}/${space}`,
+          }));
+        },
+      };
+      context.subscriptions.push(
+        chatApi.registerChatSessionItemProvider(
+          THINKY_SESSION_TYPE,
+          itemProvider,
+        ),
+      );
+    }
   } catch {
     // Proposal not granted in this host (stock product.json) — ship dark.
   }
