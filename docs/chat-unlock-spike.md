@@ -62,6 +62,14 @@ works in either surface.
   through the local CLI login. It only skips the GitHub/Copilot identity ceremony.
 - `github.copilot.chat.claudeAgent.allowDangerouslySkipPermissions` stays default-off;
   the agent asks before tool use like terminal Claude Code does.
+- Field finding (2026-07-17): "No language model available" in the anonymous panel —
+  the bundled Claude Agent session lists its models from the **Copilot server catalog**
+  (`getAllChatEndpoints()` filtered to Anthropic), the one link that genuinely needs a
+  GitHub token. Resolution: thinkube-tandem v0.1.252 registers its own LM vendor
+  (`thinkube-claude`) serving Sonnet/Opus/Haiku through the Agent SDK on the local
+  Claude Code login — the picker fills without GitHub. The bundled "Claude Agent"
+  session stays dark unless signed in; @thinky + the thinkube-claude models are the
+  supported path.
 - Field finding (2026-07-17): with a BYOK main model the chat input nags
   "Set BYOK utility models" and internal utility calls (titles, summaries) have no
   endpoint. `chat.byokUtilityModelDefault: "mainAgent"` (core-level key, values
