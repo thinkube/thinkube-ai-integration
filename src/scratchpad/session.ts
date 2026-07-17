@@ -830,17 +830,19 @@ class ScratchpadSessionImpl implements ScratchpadSession {
       case "addRoughRequest": {
         // Append-only journal of raw human asks (2026-07-16 redesign). The
         // FIRST entry seeds the goal — one input, no special first-run
-        // ceremony (2026-07-17). Every landed entry immediately triggers an
-        // expansion round so the space absorbs it.
+        // ceremony (2026-07-17). NO auto-expansion (guided-flow field defect
+        // 2026-07-17: the agent journaled the first intake message verbatim
+        // and this seam immediately decomposed the whole space, violating
+        // "the human triggers the derivation" — expansion now runs ONLY via
+        // the explicit prefill/expand_space act).
         const goalIsEmpty = !(
           this._model.sections.find((s) => s.kind === "goal")?.text ?? ""
         ).trim();
-        const delta = goalIsEmpty
-          ? this.dispatch({ type: "seedGoal", text: message.text })
-          : this.dispatch({ type: "addRoughRequest", text: message.text });
-        if (delta.kind === "applied") {
-          await this.askForStructure();
-        }
+        this.dispatch(
+          goalIsEmpty
+            ? { type: "seedGoal", text: message.text }
+            : { type: "addRoughRequest", text: message.text },
+        );
         break;
       }
       case "toggleCut": {
