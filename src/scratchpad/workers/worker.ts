@@ -88,7 +88,8 @@ export const GATES: Record<
   | "adversarial"
   | "research"
   | "interpreter"
-  | "explainer",
+  | "explainer"
+  | "linker",
   { allowedTools: ToolName[]; disallowedTools: ToolName[] }
 > = {
   /**
@@ -200,6 +201,27 @@ export const GATES: Record<
       "editGoal",
       "resolveEdit",
       "attachEvidence",
+    ],
+  },
+  /**
+   * Linker: proposes dependency edges (requires) between EXISTING items —
+   * pre-edge spaces have none, so cuts pulled zero context. Edges only; it
+   * can neither propose, note, check, nor edit anything.
+   */
+  linker: {
+    allowedTools: ["linkItems"],
+    disallowedTools: [
+      "proposeItem",
+      "proposeEdit",
+      "addItemNote",
+      "attachEvidence",
+      "checkItem",
+      "uncheckItem",
+      "addItem",
+      "freeze",
+      "editGoal",
+      "curateIntent",
+      "resolveEdit",
     ],
   },
   /**
@@ -628,6 +650,60 @@ export function integrator(deps: WorkerFactoryDeps): WorkerRun {
     disallowedTools: GATES.integrator.disallowedTools,
     actor: "integrator",
   });
+}
+
+/**
+ * Linker worker — pre-gated with GATES.linker (linkItems only).
+ *
+ * ONE blind round proposes dependency edges between EXISTING items: an edge
+ * only where one item's meaning genuinely depends on another (a constraint
+ * governing an element, a criterion judging it, a gap questioning it).
+ * Conservative by doctrine: a wrong edge pollutes every future cut.
+ */
+export function linker(deps: WorkerFactoryDeps): WorkerRun {
+  const base = createPhaseWorker({
+    loadQuery: deps.loadQuery,
+    model: deps.model,
+    allowedTools: GATES.linker.allowedTools,
+    disallowedTools: GATES.linker.disallowedTools,
+    actor: "integrator",
+  });
+
+  return {
+    ...base,
+    buildPrompt(workingModel: WorkingModel, _conversation: string[]): string {
+      const goalSec = workingModel.sections.find((s) => s.kind === "goal");
+      const intentText = goalSec?.text ?? "";
+      const itemLines: string[] = [];
+      for (const section of workingModel.sections) {
+        if (section.kind === "goal") continue;
+        for (const item of section.items) {
+          if (item.state === "dropped") continue;
+          const existing =
+            (item.requires?.length ?? 0) > 0
+              ? ` (already requires: ${item.requires!.join(", ")})`
+              : "";
+          const why = item.notes.find((n) => /^\s*Why\s*:/i.test(n.text));
+          itemLines.push(
+            `- [${section.kind}] itemId "${item.id}": "${item.text}"${existing}${
+              why ? `\n    ${why.text.split("\n")[0]}` : ""
+            }`,
+          );
+        }
+      }
+
+      return (
+        `You are the linker worker. Propose dependency edges (linkItems) between the EXISTING items below. ` +
+        `An edge means one item's MEANING depends on another: a constraint that governs an element, a criterion ` +
+        `that judges one, a gap that questions one, a verification that checks one. Edges let a TEP cut pull the ` +
+        `right context automatically — a WRONG edge pollutes every future cut, so be conservative: no edge is ` +
+        `better than a doubtful edge. Do not link items that are merely thematically similar.\n\n` +
+        `Intent (goal):\n${intentText}\n\n` +
+        `Items:\n${itemLines.join("\n")}\n\n` +
+        renderActionGuide(workingModel, GATES.linker.allowedTools, "integrator")
+      );
+    },
+  };
 }
 
 /**

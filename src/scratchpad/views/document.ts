@@ -57,6 +57,8 @@ export type ScratchpadInboundMessage =
   | { type: "toggleCut"; itemId: string }
   | { type: "clearCut" }
   | { type: "previewTep" }
+  | { type: "openEvidence"; dossierRef?: string; source: string }
+  | { type: "suggestLinks" }
   | { type: "removeNote"; itemId: string; noteId: string }
   | { type: "toggleDepFocus"; itemId: string }
   | { type: "toggleSelect"; itemId: string }
@@ -299,11 +301,18 @@ function itemHtml(
         `class="evidence-chip"`,
         `data-method="${esc(ev.method)}"`,
         `data-checked-at="${esc(ev.checkedAt)}"`,
+        `data-source="${esc(ev.source)}"`,
       ];
       if (ev.dossierRef !== undefined) {
         chipAttrs.push(`data-dossier-ref="${esc(ev.dossierRef)}"`);
       }
-      return `<span ${chipAttrs.join(" ")}>${esc(ev.source)}</span>`;
+      // Compact label (field defect 2026-07-17: full paths/URLs rendered as
+      // giant unclickable badges): basename/domain, full source in the
+      // tooltip, click opens the dossier (rendered) or the URL.
+      const label = compactEvidenceLabel(ev.source);
+      const openable = ev.dossierRef !== undefined || /^https?:\/\//.test(ev.source);
+      const title = `${ev.method} — ${ev.source}${ev.dossierRef ? ` (dossier: ${ev.dossierRef})` : ""}${openable ? " — click to open" : ""}`;
+      return `<button ${chipAttrs.join(" ")} title="${esc(title)}">📄 ${esc(label)}</button>`;
     })
     .join("");
 
@@ -406,6 +415,21 @@ function truncateChip(text: string): string {
   return text.length <= 60 ? text : `${text.slice(0, 59)}…`;
 }
 
+/** Compact display label for an evidence source: domain for URLs, basename
+ *  for paths, clipped otherwise. The full source lives in the tooltip. */
+function compactEvidenceLabel(source: string): string {
+  try {
+    if (/^https?:\/\//.test(source)) return new URL(source).hostname;
+  } catch {
+    /* fall through */
+  }
+  if (source.includes("/")) {
+    const base = source.split("/").filter(Boolean).pop() ?? source;
+    return base.length <= 40 ? base : `${base.slice(0, 39)}…`;
+  }
+  return source.length <= 40 ? source : `${source.slice(0, 39)}…`;
+}
+
 /** Render the goal (intent) section — contains EXACTLY ONE #goal-input. */
 function goalSectionHtml(
   section: Section,
@@ -434,6 +458,7 @@ function goalSectionHtml(
     <button id="prefill-btn" class="worker-btn"${prefillDisabled} onclick="triggerPrefill()">Prefill</button>
     <button id="reframe-btn" class="worker-btn"${prefillDisabled} onclick="triggerReframe()">Reframe</button>
     <button id="explain-btn" class="worker-btn"${prefillDisabled} onclick="triggerExplainAll()" title="One round annotates every unexplained item with Why / Impact / Modality">Explain</button>
+    <button id="link-btn" class="worker-btn"${prefillDisabled} onclick="suggestLinks()" title="One round proposes dependency links (requires edges) between existing items — cuts pull context through these">Link</button>
   </div>
   <textarea id="goal-input">${esc(section.text)}</textarea>
   <button onclick="confirmGoal(${JSON.stringify(goalWasEmpty)})">Confirm goal</button>
@@ -700,9 +725,19 @@ export function buildScratchpadHtml(
       proj.uncheckedElements.length > 0
         ? ` · ⚠ ${proj.uncheckedElements.length} not settled`
         : "";
+    const anyEdges = model.sections.some((s) =>
+      s.items.some((it) => (it.requires?.length ?? 0) > 0),
+    );
+    const contextNote =
+      proj.flagIds.length === 0
+        ? anyEdges
+          ? " — the selected elements have no linked context"
+          : " — no dependency links exist yet; run “Suggest links”"
+        : "";
     cutBar = `<div id="cut-bar" title="The cut: these elements ship as the next TEP; their edge-connected context gets flagged and stays live">
-      <span class="cut-count">Cut: ${cutElements.length} element${cutElements.length === 1 ? "" : "s"} (+${proj.flagIds.length} context pulled)${unsettledNote}</span>
+      <span class="cut-count">Cut: ${cutElements.length} element${cutElements.length === 1 ? "" : "s"} (+${proj.flagIds.length} context pulled${contextNote})${unsettledNote}</span>
       <button onclick="triggerReframe()">Curate intent</button>
+      ${proj.flagIds.length === 0 ? `<button onclick="suggestLinks()">Suggest links</button>` : ""}
       <button onclick="previewTep()">Preview draft</button>
       <button onclick="clearCut()">Clear cut</button>
       <span class="cut-note">Freeze ships this cut.</span>
@@ -896,6 +931,8 @@ export function buildScratchpadHtml(
     .edit-accept, .edit-reject { margin-left: 6px; border: 1px solid var(--vscode-panel-border); background: transparent; color: var(--vscode-foreground); border-radius: 2px; padding: 0 6px; cursor: pointer; font-size: 0.85em; }
     .edit-accept:hover { color: var(--vscode-charts-green, #89d185); border-color: var(--vscode-charts-green, #89d185); }
     .edit-reject:hover { color: var(--vscode-errorForeground); border-color: var(--vscode-errorForeground); }
+    .evidence-chip { background: transparent; color: var(--vscode-textLink-foreground, #3794ff); border: 1px solid var(--vscode-panel-border); border-radius: 8px; padding: 0 8px; margin: 0 2px; cursor: pointer; font-size: 0.8em; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .evidence-chip:hover { border-color: var(--vscode-textLink-foreground, #3794ff); }
     .item-notes { flex-basis: 100%; margin: 4px 0 2px 24px; }
     .item-note { font-size: 0.85em; opacity: 0.85; padding: 4px 8px; border-left: 2px solid var(--vscode-panel-border); margin-bottom: 4px; white-space: pre-wrap; position: relative; }
     .note-by { opacity: 0.55; font-size: 0.85em; margin-left: 6px; font-style: italic; }
@@ -947,6 +984,32 @@ export function buildScratchpadHtml(
   <script>
     const vscode = acquireVsCodeApi();
 
+    // Preserve scroll + unconfirmed input text across full-html re-renders
+    // (every dispatch replaces the document; without this the page jumps to
+    // top and clicks land on different rows — field defect 2026-07-17).
+    (function restoreViewState() {
+      var st = vscode.getState() || {};
+      if (typeof st.scrollY === 'number') window.scrollTo(0, st.scrollY);
+      ['goal-input','research-input','command-input','rough-request-input'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el && st.inputs && typeof st.inputs[id] === 'string' && !el.value) {
+          el.value = st.inputs[id];
+        }
+      });
+    })();
+    function saveViewState() {
+      var st = vscode.getState() || {};
+      st.scrollY = window.scrollY;
+      st.inputs = {};
+      ['goal-input','research-input','command-input','rough-request-input'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el && el.value) st.inputs[id] = el.value;
+      });
+      vscode.setState(st);
+    }
+    window.addEventListener('scroll', saveViewState, { passive: true });
+    document.addEventListener('input', saveViewState);
+
     // Optimistic busy: show feedback IMMEDIATELY on gestures that start a
     // worker round — the server-rendered banner replaces this on the next
     // panel update (every update rebuilds the whole HTML, clearing it).
@@ -964,6 +1027,7 @@ export function buildScratchpadHtml(
       const text = textarea ? textarea.value.trim() : '';
       if (!text) return;
       vscode.postMessage({ type: wasEmpty ? 'seedGoal' : 'editGoal', text });
+      var st = vscode.getState() || {}; if (st.inputs) delete st.inputs['goal-input']; vscode.setState(st);
     }
 
     function addItemToSection(sectionId) {
@@ -1005,6 +1069,7 @@ export function buildScratchpadHtml(
       showBusy('Absorbing the rough request (expansion round)…', document.getElementById('rough-request-btn'));
       vscode.postMessage({ type: 'addRoughRequest', text: text });
       if (input) input.value = '';
+      saveViewState();
     }
 
     function previewTep() {
@@ -1015,6 +1080,11 @@ export function buildScratchpadHtml(
       vscode.postMessage({ type: 'clearCut' });
     }
 
+    function suggestLinks() {
+      showBusy('Link round starting…', document.getElementById('link-btn'));
+      vscode.postMessage({ type: 'suggestLinks' });
+    }
+
     function triggerResearch() {
       var input = document.getElementById('research-input');
       var subject = input ? input.value.trim() : '';
@@ -1022,6 +1092,7 @@ export function buildScratchpadHtml(
       showBusy('Research round starting…', document.getElementById('research-btn'));
       vscode.postMessage({ type: 'research', subject: subject });
       if (input) input.value = '';
+      saveViewState();
     }
 
     function submitCommand() {
@@ -1031,12 +1102,22 @@ export function buildScratchpadHtml(
       showBusy('Interpreting command…', document.getElementById('command-btn'));
       vscode.postMessage({ type: 'command', utterance: utterance });
       if (input) input.value = '';
+      saveViewState();
     }
 
     // Per-item controls: selection toggle + explain + dependency focus
     document.addEventListener('click', function(e) {
       var target = e.target;
       if (!target || !target.classList) return;
+      // Evidence chip → open the dossier (rendered) or the source URL.
+      if (target.classList.contains('evidence-chip')) {
+        vscode.postMessage({
+          type: 'openEvidence',
+          dossierRef: target.getAttribute('data-dossier-ref') || undefined,
+          source: target.getAttribute('data-source') || ''
+        });
+        return;
+      }
       // Dependency chip → scroll to its target row (pure client-side).
       if (target.classList.contains('dep-chip')) {
         var tid = target.getAttribute('data-target-id');

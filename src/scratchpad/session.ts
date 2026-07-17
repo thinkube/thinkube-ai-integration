@@ -10,6 +10,7 @@ import {
   explainer,
   gapFiller,
   integrator,
+  linker,
   makeProductionQueryFnThunk,
 } from "./workers/worker";
 import { reframe } from "./workers/reframe";
@@ -30,6 +31,7 @@ import type { DryRunResult, SlicerVerdict } from "./dryRunSlice";
 import { makeServerSigningTool } from "./freeze";
 import { ThinkubeStore } from "../store/ThinkubeStore";
 import { workerLogEnabled } from "../services/workerLog";
+import { showFreshMarkdownPreview } from "../commands/freshPreview";
 export type { DryRunResult, SlicerVerdict } from "./dryRunSlice";
 
 // Re-export so callers can import the message type from session / index.
@@ -639,6 +641,55 @@ class ScratchpadSessionImpl implements ScratchpadSession {
         this._updatePanel();
         break;
       }
+      case "suggestLinks": {
+        // One blind round proposes requires edges between existing items —
+        // the path for pre-edge spaces whose cuts pull zero context.
+        const kinds = new Set<SectionKind>();
+        for (const sec of this._model.sections) {
+          if (sec.kind !== "goal" && sec.items.length > 0) kinds.add(sec.kind);
+        }
+        if (kinds.size === 0) break;
+        await this._runWorkerRound("link", [...kinds], async () => {
+          const worker = linker({
+            loadQuery: this._loadQueryFn,
+            model: this._workerModelId,
+          });
+          return worker.run(this._model, []);
+        });
+        const edges = this._model.sections.reduce(
+          (n, sec) =>
+            n + sec.items.reduce((m, it) => m + (it.requires?.length ?? 0), 0),
+          0,
+        );
+        this._commandMessage = `Link round done — ${edges} edge${edges === 1 ? "" : "s"} now declared in the space.`;
+        this._updatePanel();
+        break;
+      }
+      case "openEvidence": {
+        // Evidence chips open their backing artifact: the dossier (rendered
+        // markdown) when present, else the source URL.
+        try {
+          if (message.dossierRef && this._sidecarRoot) {
+            const abs = nodePath.join(
+              this._sidecarRoot,
+              this._namespace,
+              message.dossierRef,
+            );
+            await showFreshMarkdownPreview(vscode.Uri.file(abs));
+          } else if (/^https?:\/\//.test(message.source)) {
+            await vscode.env.openExternal(vscode.Uri.parse(message.source));
+          } else {
+            vscode.window.showInformationMessage(
+              `Evidence source: ${message.source}`,
+            );
+          }
+        } catch (err) {
+          vscode.window.showErrorMessage(
+            `Could not open evidence: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        break;
+      }
       case "removeNote":
         this.dispatch({
           type: "removeNote",
@@ -713,11 +764,28 @@ class ScratchpadSessionImpl implements ScratchpadSession {
           proj.body +
           `\n`;
         try {
-          const doc = await vscode.workspace.openTextDocument({
-            content: draft,
-            language: "markdown",
-          });
-          await vscode.window.showTextDocument(doc, { preview: true });
+          // RENDERED preview, like spec approval (field defect 2026-07-17:
+          // an untitled editor demanded "save?" on close). The draft lands in
+          // a scratch file (overwritten every preview, never signed) and
+          // opens through the same fresh markdown preview the spec flow uses.
+          if (this._sidecarRoot) {
+            const dir = nodePath.join(
+              this._sidecarRoot,
+              this._namespace,
+              "thinking",
+              ".previews",
+            );
+            await nodeFs.mkdir(dir, { recursive: true });
+            const file = nodePath.join(dir, `${this._space}.draft.md`);
+            await nodeFs.writeFile(file, draft, "utf8");
+            await showFreshMarkdownPreview(vscode.Uri.file(file));
+          } else {
+            const doc = await vscode.workspace.openTextDocument({
+              content: draft,
+              language: "markdown",
+            });
+            await vscode.window.showTextDocument(doc, { preview: true });
+          }
         } catch (err) {
           vscode.window.showErrorMessage(
             `Preview failed: ${err instanceof Error ? err.message : String(err)}`,

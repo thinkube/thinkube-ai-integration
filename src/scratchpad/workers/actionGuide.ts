@@ -68,6 +68,7 @@ const WORKER_EMITTABLE: ReadonlySet<string> = new Set([
   "editGoal",
   "curateIntent",
   "addObjection",
+  "linkItems",
 ]);
 
 // The command-field interpreter's human vocabulary (GATES.interpreter).
@@ -95,6 +96,7 @@ const EMITTABLE: ReadonlySet<string> = new Set([
 
 const SECTION_TAKING: ReadonlySet<string> = new Set(["proposeItem", "addItem"]);
 const ITEM_TAKING: ReadonlySet<string> = new Set([
+  "linkItems",
   "proposeEdit",
   "addItemNote",
   "attachEvidence",
@@ -240,6 +242,10 @@ export function renderActionGuide(
       `"evidence":{"source":"<where>","method":"<how verified>","checkedAt":"<ISO timestamp>","dossierRef":"research/<topic>.md"}}`,
     editGoal: `{"type":"editGoal","text":"<the rewritten goal statement>"}`,
     curateIntent: `{"type":"curateIntent","text":"<the curated intent — the synthesized statement of what this space (or cut) intends>"}`,
+    linkItems:
+      `{"type":"linkItems","actor":"${actor}","itemId":"${exampleItemId}","requires":["<itemId this item depends on>"]}` +
+      ` — declare an edge ONLY where this item's meaning genuinely depends on the other (a constraint governing an element, ` +
+      `a criterion judging it, a gap questioning it). Never link merely-related items`,
     addObjection: `{"type":"addObjection","text":"<the objection>"}`,
     addItem: `{"type":"addItem","actor":"human","sectionId":"${exampleSectionId}","text":"<the item text>","modality":"optional"}`,
     checkItem: `{"type":"checkItem","actor":"human","itemId":"${exampleItemId}"}`,
@@ -556,6 +562,41 @@ export function normalizeWorkerActions(
         }
         // Erasure guard lives in the reducer (empty over non-empty rejected).
         valid.push({ type: "curateIntent", text: rec.text });
+        continue;
+      }
+
+      case "linkItems": {
+        const itemId = resolveItemId(model, rec.itemId ?? rec.id ?? rec.item);
+        if (itemId === null) {
+          rejected.push({ raw, reason: "linkItems targets an unknown item" });
+          continue;
+        }
+        const rawReqs = rec.requires ?? rec.dependsOn ?? rec.links;
+        const resolved: string[] = [];
+        if (Array.isArray(rawReqs)) {
+          for (const ref of rawReqs) {
+            const r = asNonEmptyString(ref);
+            if (r === null) continue;
+            const id = resolveRequiresRef(r);
+            if (id !== null && id !== itemId) resolved.push(id);
+          }
+        }
+        if (resolved.length === 0) {
+          rejected.push({
+            raw,
+            reason: "linkItems resolved no valid edges",
+          });
+          continue;
+        }
+        valid.push({
+          type: "linkItems",
+          actor:
+            opts.defaultActor === "human"
+              ? "human"
+              : asWorkerActor(rec.actor, opts.defaultActor),
+          itemId,
+          requires: [...new Set(resolved)],
+        });
         continue;
       }
 

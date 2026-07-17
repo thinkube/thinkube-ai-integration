@@ -124,7 +124,10 @@ export type ToolName =
   | "stampShipped"
   // 2026-07-16 redesign: the reframe worker maintains the CURATED intent —
   // it never again edits the human's goal/rough words.
-  | "curateIntent";
+  | "curateIntent"
+  // 2026-07-17: dependency edges on EXISTING items (pre-edge spaces have
+  // none, so cuts pulled zero context) — the linker round's only tool.
+  | "linkItems";
 
 export interface Note {
   id: string;
@@ -277,7 +280,11 @@ export type Action =
     }
   // ── 2026-07-16 redesign actions ──
   | { type: "addRoughRequest"; text: string } // human-only, append-only
-  | { type: "curateIntent"; text: string }; // reframe worker (or human edit)
+  | { type: "curateIntent"; text: string } // reframe worker (or human edit)
+  // 2026-07-17: add dependency edges to an EXISTING item (merge-unique).
+  // Structural metadata for future cuts — allowed even on protected items
+  // (it never alters their recorded content).
+  | { type: "linkItems"; actor: Actor; itemId: string; requires: string[] };
 
 /**
  * Delta describing a model mutation.
@@ -1193,6 +1200,49 @@ export function reduce(
           field: `sections.${sectionIdx}.items.${itemIdx}.evidence.${evidenceIdx}`,
           before: undefined,
           after: action.evidence,
+        },
+      };
+    }
+
+    case "linkItems": {
+      const loc = findItem(model, action.itemId);
+      if (!loc) throw new Error(`Item '${action.itemId}' not found`);
+      const { sectionIdx, itemIdx } = loc;
+      const item = model.sections[sectionIdx].items[itemIdx];
+      const allIds = new Set(
+        model.sections.flatMap((s) => s.items.map((it) => it.id)),
+      );
+      const merged = [
+        ...new Set([
+          ...(item.requires ?? []),
+          ...action.requires.filter(
+            (id) => allIds.has(id) && id !== action.itemId,
+          ),
+        ]),
+      ];
+      if (merged.length === (item.requires?.length ?? 0)) {
+        return {
+          model,
+          delta: {
+            kind: "rejected",
+            action,
+            reason: "linkItems added no new valid edges",
+          },
+        };
+      }
+      const before = item.requires ?? [];
+      const newModel = updateItemInModel(model, sectionIdx, itemIdx, (it) => ({
+        ...it,
+        requires: merged,
+      }));
+      return {
+        model: newModel,
+        delta: {
+          kind: "applied",
+          action,
+          field: `sections.${sectionIdx}.items.${itemIdx}.requires`,
+          before,
+          after: merged,
         },
       };
     }
