@@ -655,7 +655,8 @@ export function gapFiller(deps: WorkerFactoryDeps): WorkerRun {
         `NEWEST entry: "${newest}"\n` +
         `- Propose ONLY what the newest entry requires BEYOND the existing items — earlier entries are already absorbed.\n` +
         `- SUFFICIENCY over coverage: a handful of sharp items beats a wall of plausible ones. Aim for the FEWEST items that make the newest entry spec-able (rarely more than 5-6 across all sections).\n` +
-        `- NEVER restate or near-duplicate an existing item. If a section already covers the newest entry, propose NOTHING for it.\n` +
+        `- NEVER restate or near-duplicate ANY listed item IN ANY WORDING — including dropped (human veto) and resolved (answered) ones. ` +
+        `If you believe a vetoed/answered concept must return, say so in an addItemNote on a related item instead of re-proposing it.\n` +
         `- Proposing zero items is a legitimate outcome when the space already covers the entry.`;
 
       const itemLines: string[] = [];
@@ -669,9 +670,18 @@ export function gapFiller(deps: WorkerFactoryDeps): WorkerRun {
             dossierRefs.length > 0
               ? ` [dossier: ${dossierRefs.join(", ")}]`
               : "";
-          const shippedMark = item.state === "shipped" ? " (shipped)" : "";
+          const stateMark =
+            item.state === "active"
+              ? ""
+              : ` (${item.state}${
+                  item.state === "dropped"
+                    ? " — VETOED by the human, never re-propose in any wording"
+                    : item.state === "resolved"
+                      ? " — question ANSWERED, never re-ask in any wording"
+                      : ""
+                })`;
           itemLines.push(
-            `  [${section.kind}]${shippedMark} ${item.text}${refsStr}`,
+            `  [${section.kind}]${stateMark} ${item.text}${refsStr}`,
           );
         }
       }

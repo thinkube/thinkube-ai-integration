@@ -307,15 +307,40 @@ export function normalizeWorkerActions(
   const batchTextToId = new Map<string, string>();
   const batchIds = new Set<string>();
 
-  // Duplicate wall (2026-07-17: per-entry expansion rounds piled up
-  // near-identical items): normalized text of every existing + this-batch
-  // item; duplicate proposals are rejected with a reason.
+  // Duplicate wall (2026-07-17, hardened same day: "replaced a gap by another
+  // gap rephrasing"): EVERY item counts — including dropped and resolved ones
+  // (a drop is a human veto; a resolve is an answered question — re-proposing
+  // either in any wording disrespects the record). Exact-normalized match
+  // catches restatements; token-overlap (Jaccard ≥ 0.75) catches paraphrases.
   const normText = (t: string): string =>
     t.toLowerCase().replace(/\s+/g, " ").replace(/[.,;:!]+$/g, "").trim();
-  const knownTexts = new Set<string>();
+  const tokenSet = (t: string): Set<string> =>
+    new Set(normText(t).split(" ").filter((w) => w.length > 2));
+  const known: { norm: string; tokens: Set<string>; text: string; state: string }[] = [];
   for (const sec of model.sections)
     for (const it of sec.items)
-      if (it.state !== "dropped") knownTexts.add(normText(it.text));
+      known.push({
+        norm: normText(it.text),
+        tokens: tokenSet(it.text),
+        text: it.text,
+        state: it.state,
+      });
+  const findDuplicate = (
+    text: string,
+  ): { text: string; state: string } | undefined => {
+    const norm = normText(text);
+    const toks = tokenSet(text);
+    for (const k of known) {
+      if (k.norm === norm) return k;
+      if (toks.size >= 4 && k.tokens.size >= 4) {
+        let inter = 0;
+        for (const w of toks) if (k.tokens.has(w)) inter++;
+        const union = toks.size + k.tokens.size - inter;
+        if (union > 0 && inter / union >= 0.75) return k;
+      }
+    }
+    return undefined;
+  };
 
   /** Resolve one `requires` reference: existing id → in-batch predicted id →
    *  existing item exact text → earlier-in-batch proposed text. Null if none. */
@@ -386,14 +411,26 @@ export function normalizeWorkerActions(
           rejected.push({ raw, reason: "proposeItem carries no item text" });
           continue;
         }
-        if (knownTexts.has(normText(text))) {
+        const dup = findDuplicate(text);
+        if (dup) {
           rejected.push({
             raw,
-            reason: `duplicate proposal dropped — an item with this text already exists: "${text.slice(0, 60)}"`,
+            reason: `duplicate/near-duplicate proposal rejected — ${
+              dup.state === "dropped"
+                ? "the human already DROPPED this concept"
+                : dup.state === "resolved"
+                  ? "this question was already asked and ANSWERED"
+                  : "an equivalent item already exists"
+            }: "${dup.text.slice(0, 60)}"`,
           });
           continue;
         }
-        knownTexts.add(normText(text));
+        known.push({
+          norm: normText(text),
+          tokens: tokenSet(text),
+          text,
+          state: "active",
+        });
         const evalsRec = asRecord(itemRec?.evals ?? rec.evals) ?? {};
         const evals: { complexity?: 1 | 2 | 3; risk?: 1 | 2 | 3 } = {};
         const complexity = asEvalValue(evalsRec.complexity);

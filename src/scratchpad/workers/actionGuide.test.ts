@@ -364,3 +364,132 @@ test("guide + normalizer agree: items list appears iff an item-taking tool is al
   assert.ok(researchGuide.includes("Live items"));
   assert.ok(researchGuide.includes("an existing item"));
 });
+
+// ── Duplicate wall: tombstones + paraphrases (field defect 2026-07-17:
+//    "It has replaced a gap by another gap rephrasing") ───────────────────────
+
+function modelWithGap(
+  text: string,
+  finalState?: "dropped" | "resolved",
+): { model: WorkingModel; itemId: string; gapSectionId: string } {
+  let model = emptyModel("tep");
+  const gap = model.sections.find((s) => s.kind === "gap");
+  assert.ok(gap);
+  model = reduce(model, {
+    type: "proposeItem",
+    actor: "gap-filler",
+    sectionId: gap.id,
+    item: { text, modality: "optional", evals: {} },
+  }).model;
+  const itemId = model.sections.find((s) => s.kind === "gap")!.items[0].id;
+  if (finalState === "dropped") {
+    model = reduce(model, { type: "dropItem", actor: "human", itemId }).model;
+  } else if (finalState === "resolved") {
+    model = reduce(model, { type: "resolveItem", actor: "human", itemId }).model;
+  }
+  return { model, itemId, gapSectionId: gap.id };
+}
+
+test("wall rejects re-proposing a DROPPED item's exact text (human veto is permanent)", () => {
+  const { model, gapSectionId } = modelWithGap(
+    "Which storage backend should the digest use?",
+    "dropped",
+  );
+  const { valid, rejected } = normalizeWorkerActions(
+    [
+      {
+        type: "proposeItem",
+        actor: "gap-filler",
+        sectionId: gapSectionId,
+        item: { text: "Which storage backend should the digest use?" },
+      },
+    ],
+    model,
+    { defaultActor: "gap-filler", allowedTools: GATES.gapFiller.allowedTools },
+  );
+  assert.equal(valid.length, 0);
+  assert.equal(rejected.length, 1);
+  assert.ok(rejected[0].reason.includes("DROPPED"));
+});
+
+test("wall rejects a PARAPHRASE of a resolved item (token overlap, not exact match)", () => {
+  const { model, gapSectionId } = modelWithGap(
+    "Which storage backend should the context digest use for persistence?",
+    "resolved",
+  );
+  const { valid, rejected } = normalizeWorkerActions(
+    [
+      {
+        type: "proposeItem",
+        actor: "gap-filler",
+        sectionId: gapSectionId,
+        item: {
+          // Rephrased: shares most content words, different wording.
+          text: "Which storage backend should the context digest rely on for persistence?",
+        },
+      },
+    ],
+    model,
+    { defaultActor: "gap-filler", allowedTools: GATES.gapFiller.allowedTools },
+  );
+  assert.equal(valid.length, 0);
+  assert.equal(rejected.length, 1);
+  assert.ok(rejected[0].reason.includes("ANSWERED"));
+});
+
+test("wall lets a genuinely different item through", () => {
+  const { model, gapSectionId } = modelWithGap(
+    "Which storage backend should the digest use?",
+    "resolved",
+  );
+  const { valid, rejected } = normalizeWorkerActions(
+    [
+      {
+        type: "proposeItem",
+        actor: "gap-filler",
+        sectionId: gapSectionId,
+        item: { text: "How is the freeze signing key rotated in production?" },
+      },
+    ],
+    model,
+    { defaultActor: "gap-filler", allowedTools: GATES.gapFiller.allowedTools },
+  );
+  assert.equal(rejected.length, 0);
+  assert.equal(valid.length, 1);
+});
+
+test("wall catches a paraphrase WITHIN the same batch (predicted items count too)", () => {
+  const model = emptyModel("tep");
+  const gap = model.sections.find((s) => s.kind === "gap")!;
+  const { valid, rejected } = normalizeWorkerActions(
+    [
+      {
+        type: "proposeItem",
+        actor: "gap-filler",
+        sectionId: gap.id,
+        item: { text: "How should the panic button confirm destructive resets with the human?" },
+      },
+      {
+        type: "proposeItem",
+        actor: "gap-filler",
+        sectionId: gap.id,
+        item: { text: "How should the panic button confirm destructive resets with the user?" },
+      },
+    ],
+    model,
+    { defaultActor: "gap-filler", allowedTools: GATES.gapFiller.allowedTools },
+  );
+  assert.equal(valid.length, 1);
+  assert.equal(rejected.length, 1);
+});
+
+test("gap-filler prompt tombstones dropped/resolved items and forbids any-wording re-proposal", () => {
+  const { model } = modelWithGap("Which storage backend should the digest use?", "dropped");
+  const run = require("./worker").gapFiller({
+    loadQuery: () => async function* () {},
+    model: "m",
+  });
+  const prompt: string = run.buildPrompt(model, []);
+  assert.ok(prompt.includes("VETOED by the human"));
+  assert.ok(prompt.includes("IN ANY WORDING"));
+});
