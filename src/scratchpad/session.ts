@@ -23,7 +23,12 @@ import { buildScratchpadHtml, ScratchpadDocumentView } from "./views/document";
 import type { RoundActivity, ScratchpadInboundMessage } from "./views/document";
 import { interpret } from "./workers/interpreter";
 import { freeze as doFreeze } from "./freeze";
-import { projectDelta, projectCut, journalCoverage } from "./projection";
+import {
+  projectDelta,
+  projectCut,
+  journalCoverage,
+  impactCoverage,
+} from "./projection";
 import type { ApprovalToken, SigningTool } from "./freeze";
 export type { SigningTool } from "./freeze";
 import { toReadinessRecord, makeProductionRunSlicer } from "./dryRunSlice";
@@ -772,6 +777,11 @@ class ScratchpadSessionImpl implements ScratchpadSession {
           ? projectCut(this._model, { elementIds: [...this._cut] })
           : projectDelta(this._model);
         const warnings: string[] = [];
+        const impact = impactCoverage(
+          this._model,
+          cutActive ? [...this._cut] : undefined,
+        );
+        for (const b of impact.blockers) warnings.push(`PRECISION: ${b}`);
         const cov = journalCoverage(this._model);
         if (cov.total > 0) {
           warnings.push(

@@ -15,7 +15,7 @@ import type {
 } from "../model";
 import { freezeEnabled } from "../model";
 import { uncoveredSections } from "../coverage";
-import { projectCut, cutReadiness } from "../projection";
+import { projectCut, cutReadiness, impactCoverage } from "../projection";
 
 /**
  * The complete inbound message protocol (webview → extension).
@@ -949,7 +949,11 @@ export function buildScratchpadHtml(
   let readinessReport = "";
   if (gateElementIds.length > 0) {
     const gate = cutReadiness(model, gateElementIds);
+    const precision = impactCoverage(model, gateElementIds);
     const rows: string[] = [];
+    for (const b of precision.blockers) {
+      rows.push(`<li class="gate-blocker">⛔ PRECISION: ${esc(b)}</li>`);
+    }
     if (gate.openGaps.length > 0) {
       rows.push(
         `<li class="gate-blocker">⛔ ${gate.openGaps.length} open question(s) in reach — resolve or drop them</li>`,
@@ -961,9 +965,10 @@ export function buildScratchpadHtml(
         `<li class="gate-blocker">⛔ <b>${esc(el.text.slice(0, 60))}</b>: ${esc(el.blockers.join("; "))}</li>`,
       );
     }
-    readinessReport = gate.pass
-      ? `<div class="gate-report pass">✅ Spec-ready: all ${gate.elements.length} shipping element(s) converged, complexity and risk evaluated and mitigated.</div>`
-      : `<div class="gate-report"><b>Not spec-ready (${rows.length} blocker group(s)):</b><ul>${rows.join("")}</ul></div>`;
+    readinessReport =
+      gate.pass && precision.pass
+        ? `<div class="gate-report pass">✅ Spec-ready: ${gate.elements.length} shipping element(s) — converged, precise (all commitments traced, all elements referenced), complexity and risk evaluated and mitigated.</div>`
+        : `<div class="gate-report"><b>Not spec-ready (${rows.length} blocker group(s)):</b><ul>${rows.join("")}</ul></div>`;
   }
 
   return /* html */ `<!DOCTYPE html>

@@ -4,7 +4,12 @@ import type { ThinkubeStore } from "../store/ThinkubeStore";
 import type { Frontmatter } from "../store/frontmatter";
 import type { WorkingModel } from "./model";
 import { freezeEnabled } from "./model";
-import { projectDelta, projectCut, cutReadiness } from "./projection";
+import {
+  projectDelta,
+  projectCut,
+  cutReadiness,
+  impactCoverage,
+} from "./projection";
 
 /**
  * A human-approval token. Any non-null token means "the human approved."
@@ -163,6 +168,16 @@ export async function freeze(
     }
     throw new Error(
       `Freeze refused — the cut is not spec-ready (convergence/complexity/risk):\n- ${lines.slice(0, 8).join("\n- ")}${lines.length > 8 ? `\n- …and ${lines.length - 8} more` : ""}`,
+    );
+  }
+
+  // PRECISION GATE (fourth dimension, 2026-07-17): the impacted items must
+  // be unequivocally identified — every commitment traced [delivered-by:]
+  // and [serves:], every shipping element referenced by some commitment.
+  const precision = impactCoverage(model, gateElementIds);
+  if (!precision.pass) {
+    throw new Error(
+      `Freeze refused — the design is not PRECISE (impacted items not unequivocally identified):\n- ${precision.blockers.join("\n- ")}`,
     );
   }
 

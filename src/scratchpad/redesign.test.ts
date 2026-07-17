@@ -419,3 +419,62 @@ test("journal coverage (2026-07-17): [serves:] traces parse; untraced intents re
   assert.deepEqual(journalCoverage(m).served, []);
 });
 
+test("precision (2026-07-17): commitments traced [delivered-by:], every element referenced", () => {
+  const { impactCoverage } = require("./projection") as {
+    impactCoverage: (
+      m: WorkingModel,
+      cut?: readonly string[],
+    ) => {
+      pass: boolean;
+      blockers: string[];
+      elements: { label: string; referenced: boolean }[];
+      missingDeliveredBy: number;
+    };
+  };
+  let m = emptyModel("tep");
+  m = reduce(m, { type: "seedGoal", text: "the ask" }).model;
+  const els = m.sections.find((s) => s.kind === "elements")!;
+  for (const t of ["element one", "element two"]) {
+    m = reduce(m, {
+      type: "proposeItem",
+      actor: "gap-filler",
+      sectionId: els.id,
+      item: { text: t, modality: "optional", evals: {} },
+    }).model;
+  }
+  for (const it of m.sections.find((s) => s.kind === "elements")!.items) {
+    m = reduce(m, { type: "checkItem", actor: "human", itemId: it.id }).model;
+  }
+
+  // No commitments at all → blocked.
+  assert.equal(impactCoverage(m).pass, false);
+
+  // Traced commitments referencing only E1 → E2 is unattributed scope.
+  m = reduce(m, {
+    type: "curateIntent",
+    text: "Synthesis.\n\n- do the thing [serves: 1] [delivered-by: E1]",
+  }).model;
+  let cov = impactCoverage(m);
+  assert.equal(cov.pass, false);
+  assert.match(cov.blockers.join(" "), /unattributed scope/);
+  assert.equal(cov.elements[1].referenced, false);
+
+  // Full traces → pass; a commitment without delivered-by → blocked again.
+  m = reduce(m, {
+    type: "curateIntent",
+    text:
+      "Synthesis.\n\n- do the thing [serves: 1] [delivered-by: E1]\n- and the other [serves: 1] [delivered-by: E2]",
+  }).model;
+  cov = impactCoverage(m);
+  assert.equal(cov.pass, true, cov.blockers.join(" | "));
+
+  m = reduce(m, {
+    type: "curateIntent",
+    text:
+      "Synthesis.\n\n- do the thing [serves: 1] [delivered-by: E1, E2]\n- floating promise [serves: 1]",
+  }).model;
+  cov = impactCoverage(m);
+  assert.equal(cov.pass, false);
+  assert.equal(cov.missingDeliveredBy, 1);
+});
+

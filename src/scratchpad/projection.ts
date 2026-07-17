@@ -514,3 +514,107 @@ export function journalCoverage(model: WorkingModel): {
   return { served: [...served].sort((a, b) => a - b), remaining, total };
 }
 
+/**
+ * PRECISION (2026-07-17, fourth gate dimension): are the items impacted by
+ * the design unequivocally identified? The mechanical half: every commitment
+ * in the curated intent must carry a forward trace [delivered-by: E1, E3] to
+ * the labeled shipping elements, and every shipping element must be
+ * referenced by some commitment — unattributed scope and undelivered claims
+ * both block. (The judged half — referential ambiguity inside the text — is
+ * the readiness judge's audit.)
+ */
+export function orderedGateElements(
+  model: WorkingModel,
+  cutIds?: readonly string[],
+): { id: string; text: string }[] {
+  const inCut =
+    cutIds !== undefined && cutIds.length > 0 ? new Set(cutIds) : undefined;
+  const out: { id: string; text: string }[] = [];
+  for (const s of model.sections) {
+    if (s.kind !== "elements") continue;
+    for (const it of s.items) {
+      if (!it.checked || it.state !== "active") continue;
+      if (inCut !== undefined && !inCut.has(it.id)) continue;
+      out.push({ id: it.id, text: it.text });
+    }
+  }
+  return out;
+}
+
+export interface ImpactCoverage {
+  /** Shipping elements, labeled E1..En in document order. */
+  elements: { label: string; id: string; text: string; referenced: boolean }[];
+  commitmentCount: number;
+  /** Commitments missing a [delivered-by:] trace. */
+  missingDeliveredBy: number;
+  /** Commitments missing a [serves:] trace. */
+  missingServes: number;
+  pass: boolean;
+  blockers: string[];
+}
+
+export function impactCoverage(
+  model: WorkingModel,
+  cutIds?: readonly string[],
+): ImpactCoverage {
+  const elements = orderedGateElements(model, cutIds).map((e, i) => ({
+    label: `E${i + 1}`,
+    id: e.id,
+    text: e.text,
+    referenced: false,
+  }));
+  const text = model.curatedIntent ?? "";
+  const commitments = text
+    .split("\n")
+    .filter((l) => /^\s*-\s+/.test(l));
+  let missingDeliveredBy = 0;
+  let missingServes = 0;
+  const referenced = new Set<string>();
+  for (const c of commitments) {
+    const db = c.match(/\[delivered-by:\s*([^\]]+)\]/i);
+    if (!db) {
+      missingDeliveredBy++;
+    } else {
+      for (const tok of db[1].matchAll(/E(\d+)/gi)) {
+        referenced.add(`E${tok[1]}`);
+      }
+    }
+    if (!/\[serves:\s*[0-9,\s]+\]/i.test(c)) missingServes++;
+  }
+  for (const el of elements) {
+    el.referenced = referenced.has(el.label);
+  }
+  const blockers: string[] = [];
+  if (commitments.length === 0) {
+    blockers.push(
+      "the curated intent carries no bulleted commitments — run Reframe to regenerate it in the traced shape",
+    );
+  }
+  if (missingDeliveredBy > 0) {
+    blockers.push(
+      `${missingDeliveredBy} commitment(s) name no [delivered-by:] element — a claim nothing identified delivers`,
+    );
+  }
+  if (missingServes > 0) {
+    blockers.push(
+      `${missingServes} commitment(s) carry no [serves:] journal trace`,
+    );
+  }
+  const unreferenced = elements.filter((e) => !e.referenced);
+  if (commitments.length > 0 && unreferenced.length > 0) {
+    blockers.push(
+      `${unreferenced.length} shipping element(s) referenced by NO commitment (unattributed scope): ${unreferenced
+        .map((e) => `${e.label} "${e.text.slice(0, 40)}"`)
+        .join("; ")}`,
+    );
+  }
+  return {
+    elements,
+    commitmentCount: commitments.length,
+    missingDeliveredBy,
+    missingServes,
+    pass: blockers.length === 0,
+    blockers,
+  };
+}
+

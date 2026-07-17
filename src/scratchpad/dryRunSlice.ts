@@ -187,7 +187,10 @@ export function makeProductionRunSlicer(
       `NORTH STAR: the numbered journal entries are the HUMAN's raw asks — the only text not derived from inside ` +
       `the loop. The curated intent's commitments carry [serves: n] traces; verify them: a commitment tracing to ` +
       `no entry, or an in-scope entry that no commitment serves, or an entry silently diluted or contradicted — ` +
-      `each of those is cleanCut:false with the reason naming the entry.`;
+      `each of those is cleanCut:false with the reason naming the entry. ` +
+      `PRECISION AUDIT: for each commitment and each item, ask — could two independent readers select DIFFERENT ` +
+      `targets for this phrase? Vague referents ("the logging system", "improve X") whose impacted items are not ` +
+      `unequivocally identified are cleanCut:false, with the reason quoting the ambiguous phrase and what would pin it.`;
 
     try {
       let resultText = "";
