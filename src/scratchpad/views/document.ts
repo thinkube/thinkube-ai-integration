@@ -460,8 +460,12 @@ function goalSectionHtml(
     <button id="explain-btn" class="worker-btn"${prefillDisabled} onclick="triggerExplainAll()" title="One round annotates every unexplained item with Why / Impact / Modality">Explain</button>
     <button id="link-btn" class="worker-btn"${prefillDisabled} onclick="suggestLinks()" title="One round proposes dependency links (requires edges) between existing items — cuts pull context through these">Link</button>
   </div>
-  <textarea id="goal-input">${esc(section.text)}</textarea>
-  <button onclick="confirmGoal(${JSON.stringify(goalWasEmpty)})">Confirm goal</button>
+  <textarea id="goal-input"${goalWasEmpty ? "" : " readonly"} placeholder="${goalWasEmpty ? "State the initial rough goal — once confirmed it becomes part of the record" : ""}">${esc(section.text)}</textarea>
+  ${
+    goalWasEmpty
+      ? `<button onclick="confirmGoal(true)">Confirm goal</button>`
+      : `<div class="goal-hint">The original ask — recorded. Expand or redirect the space with rough requests below; the Curated intent at the bottom is the living synthesis.</div>`
+  }
   <div class="rough-requests">
     ${(roughRequests ?? [])
       .map(
@@ -906,6 +910,8 @@ export function buildScratchpadHtml(
     @keyframes spin { to { transform: rotate(360deg); } }
     section.section[data-activity="running"] { border-color: var(--vscode-progressBar-background, #0e70c0); animation: pulse 1.6s ease-in-out infinite; }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.65; } }
+    #goal-input[readonly] { opacity: 0.85; border-color: transparent; background: transparent; resize: none; }
+    .goal-hint { font-size: 0.8em; opacity: 0.6; margin-top: 2px; font-style: italic; }
     .rough-requests { margin-top: 8px; }
     .rough-request { font-size: 0.9em; opacity: 0.9; padding: 3px 8px; border-left: 2px solid var(--vscode-charts-blue, #3794ff); margin-bottom: 3px; white-space: pre-wrap; }
     .rough-request-input-area { display: flex; gap: 6px; margin-top: 6px; }
