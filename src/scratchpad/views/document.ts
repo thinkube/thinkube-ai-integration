@@ -460,24 +460,25 @@ function goalSectionHtml(
     <button id="explain-btn" class="worker-btn"${prefillDisabled} onclick="triggerExplainAll()" title="One round annotates every unexplained item with Why / Impact / Modality">Explain</button>
     <button id="link-btn" class="worker-btn"${prefillDisabled} onclick="suggestLinks()" title="One round proposes dependency links (requires edges) between existing items — cuts pull context through these">Link</button>
   </div>
-  <textarea id="goal-input"${goalWasEmpty ? "" : " readonly"} placeholder="${goalWasEmpty ? "State the initial rough goal — once confirmed it becomes part of the record" : ""}">${esc(section.text)}</textarea>
   ${
     goalWasEmpty
-      ? `<button onclick="confirmGoal(true)">Confirm goal</button>`
-      : `<div class="goal-hint">The original ask — recorded. Expand or redirect the space with rough requests below; the Curated intent at the bottom is the living synthesis.</div>`
-  }
-  <div class="rough-requests">
+      ? `<textarea id="goal-input" placeholder="Write the first journal entry — the rough goal. Entries are permanent; the space grows from them."></textarea>
+  <button onclick="confirmGoal(true)">Confirm goal</button>`
+      : `<textarea id="goal-input" hidden>${esc(section.text)}</textarea>
+  <div class="journal">
+    <div class="rough-request journal-origin" title="The first entry — the original ask">1. ${esc(section.text)}</div>
     ${(roughRequests ?? [])
       .map(
-        (r) =>
-          `<div class="rough-request" data-request-id="${esc(r.id)}">↳ ${esc(r.text)}</div>`,
+        (r, i) =>
+          `<div class="rough-request" data-request-id="${esc(r.id)}">${i + 2}. ${esc(r.text)}</div>`,
       )
       .join("")}
     <div class="rough-request-input-area">
-      <input type="text" id="rough-request-input" placeholder="Add a rough request — a new raw ask that expands this space…">
-      <button id="rough-request-btn"${roundInFlight ? " disabled" : ""} onclick="addRoughRequest()">Add request</button>
+      <input type="text" id="rough-request-input" placeholder="Add a journal entry — a new raw ask that expands this space…">
+      <button id="rough-request-btn"${roundInFlight ? " disabled" : ""} onclick="addRoughRequest()">Add entry</button>
     </div>
-  </div>
+  </div>`
+  }
   ${errorHtml}
 </section>`;
 }
@@ -910,9 +911,8 @@ export function buildScratchpadHtml(
     @keyframes spin { to { transform: rotate(360deg); } }
     section.section[data-activity="running"] { border-color: var(--vscode-progressBar-background, #0e70c0); animation: pulse 1.6s ease-in-out infinite; }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.65; } }
-    #goal-input[readonly] { opacity: 0.85; border-color: transparent; background: transparent; resize: none; }
-    .goal-hint { font-size: 0.8em; opacity: 0.6; margin-top: 2px; font-style: italic; }
-    .rough-requests { margin-top: 8px; }
+    .journal { margin-top: 8px; }
+    .journal-origin { font-weight: 500; }
     .rough-request { font-size: 0.9em; opacity: 0.9; padding: 3px 8px; border-left: 2px solid var(--vscode-charts-blue, #3794ff); margin-bottom: 3px; white-space: pre-wrap; }
     .rough-request-input-area { display: flex; gap: 6px; margin-top: 6px; }
     #rough-request-input { flex: 1; padding: 4px 8px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); border-radius: 2px; }
