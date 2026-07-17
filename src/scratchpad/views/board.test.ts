@@ -104,6 +104,17 @@ test("action bar carries every approved verb and no others", () => {
   assert.ok(!html.includes("Prefill"));
 });
 
+test("panic is a top-bar sovereign act wired to the panic message", () => {
+  const html = buildBoardHtml(emptyModel("tep"), { selection: [], cut: [] });
+  assert.ok(html.includes('data-act="panic"'));
+  assert.ok(html.includes("journal and assumptions survive"));
+  const script = html.slice(
+    html.indexOf("<script>") + 8,
+    html.lastIndexOf("</script>"),
+  );
+  assert.ok(script.includes("act==='panic'"));
+});
+
 test("freeze button disabled while the gate blocks; journal fold lists entries", () => {
   let model = emptyModel("tep");
   model = apply(model, { type: "addRoughRequest", text: "second entry" });

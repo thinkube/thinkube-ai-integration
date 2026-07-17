@@ -199,6 +199,7 @@ export function buildBoardHtml(
     `<span class="spacer"></span>` +
     (opts.busy ? `<span class="busy">working…</span>` : "") +
     `<button data-act="openchat">Open chat</button>` +
+    `<button data-act="panic" class="danger" title="Wipe derived state — journal and assumptions survive verbatim (refused after any freeze)">Panic</button>` +
     `<button data-act="freeze" ${canFreeze ? "" : "disabled"} title="${canFreeze ? "Freeze the cut into a TEP" : "Blocked — ask Thinky to check readiness"}">Freeze</button>` +
     `</div>` +
     (opts.commandMessage
@@ -323,6 +324,7 @@ document.body.addEventListener('click', function(e){
     if (act==='setcut') vscodeApi.postMessage({type:'setCutFromSelection'});
     else if (act==='clearsel') vscodeApi.postMessage({type:'clearSelection'});
     else if (act==='ask' || act==='openchat') vscodeApi.postMessage({type:'askThinky'});
+    else if (act==='panic') vscodeApi.postMessage({type:'panic'});
     else if (act==='freeze') vscodeApi.postMessage({type:'freeze'});
     return;
   }
