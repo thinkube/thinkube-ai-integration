@@ -59,6 +59,7 @@ import {
 } from "./scratchpad";
 import type { ScratchpadSessionDeps, ScratchpadSession } from "./scratchpad";
 import { registerThinkyParticipant } from "./scratchpad/chat/participant";
+import { registerItemsTree } from "./scratchpad/views/itemsTree";
 
 /** Public API returned by activate() — the runtime seam for extension-host probes. */
 export interface TandemExtensionApi {
@@ -448,6 +449,9 @@ export function activate(context: vscode.ExtensionContext): TandemExtensionApi {
   // @thinky chat participant (Phase C): the thinking-space chat mouth.
   // Guarded inside — ships dark on hosts without the chat API.
   registerThinkyParticipant(context);
+
+  // Native items tree (Phase D): checkbox settling + cut flow + gate report.
+  registerItemsTree(context);
 
   // Defect distributions (TEP-22/SP-1): the three tables + the manual-entry row.
   registerDefectCommands(context, {
