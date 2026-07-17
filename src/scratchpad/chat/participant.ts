@@ -10,6 +10,8 @@
 import * as vscode from "vscode";
 import { getScratchpadSession } from "../session";
 import { handleThinkyRequest, type ThinkySessionLike } from "./chatCore";
+import { runThinkyAgentTurn } from "./agent";
+import type { ThinkyAgentSessionLike } from "./agent";
 
 export function registerThinkyParticipant(
   context: vscode.ExtensionContext,
@@ -89,10 +91,22 @@ export function registerThinkyParticipant(
       const session = getScratchpadSession() as
         | ThinkySessionLike
         | undefined;
+      const scratchpad = getScratchpadSession();
       await handleThinkyRequest(
         { prompt: request.prompt, command: request.command },
         session,
         stream,
+        scratchpad
+          ? (prompt, onText) =>
+              runThinkyAgentTurn(
+                {
+                  session: scratchpad as unknown as ThinkyAgentSessionLike,
+                  spaceKey: `${scratchpad.namespace}/${scratchpad.space}`,
+                },
+                prompt,
+                onText,
+              )
+          : undefined,
       );
     },
   );

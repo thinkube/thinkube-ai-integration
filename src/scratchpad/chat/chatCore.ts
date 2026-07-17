@@ -115,11 +115,19 @@ export function renderThinkyStatus(model: WorkingModel): string {
 /**
  * Handle one @thinky request. `command` is the slash command (if any),
  * `prompt` the free text. Returns after the session fully processed it.
+ *
+ * When `runAgent` is provided (the Thinky AGENT, 2026-07-17), free text goes
+ * to the persistent conversational agent instead of the command-field pipe —
+ * the pipe remains the fallback (and the slash commands stay deterministic).
  */
 export async function handleThinkyRequest(
   args: { prompt: string; command?: string },
   session: ThinkySessionLike | undefined,
   stream: ThinkyStreamLike,
+  runAgent?: (
+    prompt: string,
+    onText: (chunk: string) => void,
+  ) => Promise<boolean>,
 ): Promise<void> {
   if (!session) {
     stream.markdown(
@@ -137,6 +145,22 @@ export async function handleThinkyRequest(
 
   if (!utterance) {
     stream.markdown(`Here is where the space stands:\n\n${renderThinkyStatus(session.model)}`);
+    return;
+  }
+
+  if (runAgent && !args.command) {
+    const produced = await runAgent(utterance, (chunk) =>
+      stream.markdown(chunk),
+    );
+    if (!produced) {
+      stream.markdown(
+        "The agent produced no reply (worker spawn failed?) — falling back to the command pipe.",
+      );
+      await session.postFromWebview({ type: "command", utterance });
+      stream.markdown(`\n\n${session.lastCommandMessage ?? "Done."}`);
+    }
+    stream.markdown(`\n\n${renderThinkyStatus(session.model)}`);
+    emitFollowUpButtons(session, stream);
     return;
   }
 

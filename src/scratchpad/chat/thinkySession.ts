@@ -37,6 +37,8 @@ import {
   spaceToSessionPath,
   type ThinkySessionLike,
 } from "./chatCore";
+import { runThinkyAgentTurn } from "./agent";
+import type { ThinkyAgentSessionLike } from "./agent";
 
 export const THINKY_SESSION_TYPE = "thinky";
 
@@ -56,8 +58,8 @@ function boardRoot(): string | undefined {
  */
 export function listThinkingSpaces(
   root: string,
-): { namespace: string; space: string }[] {
-  const out: { namespace: string; space: string }[] = [];
+): { namespace: string; space: string; mtimeMs: number }[] {
+  const out: { namespace: string; space: string; mtimeMs: number }[] = [];
   const walk = (dir: string, rel: string, depth: number): void => {
     if (depth > 6) return;
     let entries: nodeFs.Dirent[];
@@ -77,7 +79,13 @@ export function listThinkingSpaces(
         }
         for (const f of files) {
           if (f.endsWith(".json")) {
-            out.push({ namespace: rel, space: f.slice(0, -5) });
+            let mtimeMs = 0;
+            try {
+              mtimeMs = nodeFs.statSync(nodePath.join(dir, e.name, f)).mtimeMs;
+            } catch {
+              /* stat race — item still lists, just without timing */
+            }
+            out.push({ namespace: rel, space: f.slice(0, -5), mtimeMs });
           }
         }
         continue;
@@ -177,10 +185,24 @@ export function registerThinkySession(
         } else {
           session = getScratchpadSession() as ThinkySessionLike | undefined;
         }
+        const scratchpad = session as unknown as
+          | (ThinkyAgentSessionLike & { namespace: string; space: string })
+          | undefined;
         await handleThinkyRequest(
           { prompt: request.prompt, command: request.command },
           session,
           stream,
+          scratchpad
+            ? (prompt, onText) =>
+                runThinkyAgentTurn(
+                  {
+                    session: scratchpad,
+                    spaceKey: `${scratchpad.namespace}/${scratchpad.space}`,
+                  },
+                  prompt,
+                  onText,
+                )
+            : undefined,
         );
       },
     );
@@ -225,15 +247,22 @@ export function registerThinkySession(
         async provideChatSessionItems(): Promise<unknown[]> {
           const root = boardRoot();
           if (!root) return [];
-          return listThinkingSpaces(root).map(({ namespace, space }) => ({
-            resource: vscode.Uri.from({
-              scheme: THINKY_SESSION_TYPE,
-              path: spaceToSessionPath(namespace, space),
+          return listThinkingSpaces(root).map(
+            ({ namespace, space, mtimeMs }) => ({
+              resource: vscode.Uri.from({
+                scheme: THINKY_SESSION_TYPE,
+                path: spaceToSessionPath(namespace, space),
+              }),
+              label: space,
+              description: namespace,
+              tooltip: `Thinking space ${namespace}/${space}`,
+              // Missing timing rendered as epoch 0 — "57 years ago" (field
+              // report). The space file's mtime is the honest timestamp.
+              ...(mtimeMs > 0
+                ? { timing: { created: mtimeMs, startTime: mtimeMs } }
+                : {}),
             }),
-            label: space,
-            description: namespace,
-            tooltip: `Thinking space ${namespace}/${space}`,
-          }));
+          );
         },
       };
       context.subscriptions.push(
