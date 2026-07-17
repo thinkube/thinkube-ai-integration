@@ -330,6 +330,10 @@ export type Action =
     }
   // ── 2026-07-16 redesign actions ──
   | { type: "addRoughRequest"; text: string } // human-only, append-only
+  // 2026-07-17 guided-flow field defect: verbatim capture fossilized meta
+  // wrappers ("yes", "add new journal entry: ..."). A RECORDING ERROR is not
+  // protected thought — deleting an entry is a sovereign human correction.
+  | { type: "removeRoughRequest"; actor: "human"; requestId: string }
   | { type: "curateIntent"; text: string; title?: string } // reframe worker (or human edit)
   // 2026-07-17: add dependency edges to an EXISTING item (merge-unique).
   // Structural metadata for future cuts — allowed even on protected items
@@ -1510,8 +1514,15 @@ export function reduce(
         };
       }
       const requests = model.roughRequests ?? [];
+      // Max+1, not length: after a sovereign deletion, length-based ids
+      // would collide with surviving entries.
+      const nextIdx =
+        requests.reduce((max, r) => {
+          const n = parseInt(r.id.replace(/^req-/, ""), 10);
+          return isNaN(n) ? max : Math.max(max, n);
+        }, -1) + 1;
       const entry: RoughRequest = {
-        id: `req-${requests.length}`,
+        id: `req-${nextIdx}`,
         text: action.text.trim(),
       };
       return {
@@ -1522,6 +1533,35 @@ export function reduce(
           field: `roughRequests.${requests.length}`,
           before: undefined,
           after: entry,
+        },
+      };
+    }
+
+    case "removeRoughRequest": {
+      const requests = model.roughRequests ?? [];
+      const idx = requests.findIndex((r) => r.id === action.requestId);
+      if (idx === -1) {
+        return {
+          model,
+          delta: {
+            kind: "rejected",
+            action,
+            reason: `journal entry ${action.requestId} not found`,
+          },
+        };
+      }
+      const removed = requests[idx];
+      return {
+        model: {
+          ...model,
+          roughRequests: requests.filter((r) => r.id !== action.requestId),
+        },
+        delta: {
+          kind: "applied",
+          action,
+          field: `roughRequests.${idx}`,
+          before: removed,
+          after: undefined,
         },
       };
     }

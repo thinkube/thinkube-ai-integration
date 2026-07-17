@@ -94,7 +94,8 @@ export function buildThinkySystemPrompt(): string {
     `- When refusing a sovereign act, point at the REAL control and never invent UI: settling = the ` +
     `checkbox on the board; staged verbs = the board's action bar; panic (wipe derived state, keep the ` +
     `journal) = the /panic slash command here or the Panic button in the board's top bar; freeze = the ` +
-    `board's Freeze button once the gate is green.\n` +
+    `board's Freeze button once the gate is green; deleting a mis-captured journal entry = the ✕ next to it ` +
+    `in the board's Journal fold.\n` +
     `- Cuts carve a TEP from SETTLED elements. cut_elements accepts element item ids; the closure ` +
     `pulls related context automatically at readiness/preview time.\n` +
     `- Never invent item ids — use exactly the ids in [SPACE STATE]. If the human refers to items ` +
@@ -105,8 +106,10 @@ export function buildThinkySystemPrompt(): string {
     `- If the request needs no tool (a question about the space), answer directly from [SPACE STATE].\n\n` +
     `GUIDED FLOW (while the space has NO items yet — the wizard-as-dialogue):\n` +
     `1. INTAKE: greet with "What do you want to build?" if the journal is empty. For EVERY message that adds ` +
-    `scope, call journal_verbatim (their words, mechanically verbatim) and ask what more — one short question, ` +
-    `no analysis yet. Keep going until they say it's all / that's everything.\n` +
+    `scope, call journal_verbatim and ask what more — one short question, no analysis yet. When the message ` +
+    `mixes meta-talk with content ("yes, add this: …"), extract ONLY the content via the {text} excerpt — an ` +
+    `exact substring; pure confirmations ("yes", "ok") and navigation words are NOT entries, do not journal ` +
+    `them. Keep going until they say it's all / that's everything.\n` +
     `2. CONTEXT: then ask what already exists that matters here, and OFFER to check for yourself via ` +
     `contextualize (the sanctioned read of the declared sources). Statements about the environment go through ` +
     `assumption_verbatim.\n` +
@@ -131,6 +134,24 @@ export interface ThinkyToolDef {
     args: Record<string, unknown>,
     ctx: ThinkyToolCtx,
   ): Promise<string>;
+}
+
+/**
+ * Verbatim-with-extraction (2026-07-17 field defect: wholesale capture
+ * fossilized "yes" and "add new journal entry:" wrappers). The model may
+ * TRIM the human's message to an exact contiguous excerpt — whitespace
+ * normalized — but anything that is not a substring is refused, so
+ * rewriting remains impossible. Returns null when the excerpt fails
+ * validation; the trimmed excerpt (or whole utterance) otherwise.
+ */
+export function extractVerbatim(
+  utterance: string,
+  requested: unknown,
+): string | null {
+  const whole = utterance.trim();
+  if (typeof requested !== "string" || !requested.trim()) return whole;
+  const norm = (t: string): string => t.replace(/\s+/g, " ").trim();
+  return norm(whole).includes(norm(requested)) ? norm(requested) : null;
 }
 
 function validIds(model: WorkingModel, raw: unknown): {
@@ -244,9 +265,11 @@ export const THINKY_TOOLS: Record<string, ThinkyToolDef> = {
   },
   journal_verbatim: {
     description:
-      "Record the human's CURRENT message as a journal entry, VERBATIM (their rough words, never yours). No arguments — the content is taken mechanically from what they just said. Use during guided intake and whenever they add scope.",
-    async run(session, _args, ctx) {
-      const text = ctx.utterance.trim();
+      "Record a journal entry from the human's CURRENT message. Omit {text} to record the whole message verbatim; pass {text} ONLY to extract an exact contiguous excerpt of it (strip wrappers like 'add journal entry:' or a leading 'yes'). Extraction is validated mechanically — anything that is not an exact substring of their message is REJECTED, so you can trim but never rewrite.",
+    async run(session, args, ctx) {
+      const text = extractVerbatim(ctx.utterance, args.text);
+      if (text === null)
+        return "REJECTED — {text} is not an exact substring of the human's message. Trim, never rewrite; or omit {text} to record the whole message.";
       if (!text) return "Nothing recorded — empty message.";
       await session.postFromWebview({ type: "addRoughRequest", text });
       return session.lastCommandMessage ?? "Journal entry recorded verbatim.";
@@ -254,9 +277,11 @@ export const THINKY_TOOLS: Record<string, ThinkyToolDef> = {
   },
   assumption_verbatim: {
     description:
-      "Record the human's CURRENT message as a standing assumption, VERBATIM (a statement all workers must honor). No arguments — the content is taken mechanically from what they just said.",
-    async run(session, _args, ctx) {
-      const text = ctx.utterance.trim();
+      "Record a standing assumption from the human's CURRENT message. Omit {text} for the whole message verbatim; pass {text} ONLY to extract an exact contiguous excerpt (validated mechanically — non-substrings are rejected).",
+    async run(session, args, ctx) {
+      const text = extractVerbatim(ctx.utterance, args.text);
+      if (text === null)
+        return "REJECTED — {text} is not an exact substring of the human's message. Trim, never rewrite; or omit {text}.";
       if (!text) return "Nothing recorded — empty message.";
       if (!session.dispatch) return "This surface cannot record assumptions.";
       const delta = session.dispatch({ type: "addAssumption", text });
@@ -336,8 +361,8 @@ export async function runThinkyAgentTurn(
     reframe: {},
     contextualize: {},
     research: { subject: z.string(), itemId: z.string().optional() },
-    journal_verbatim: {},
-    assumption_verbatim: {},
+    journal_verbatim: { text: z.string().optional() },
+    assumption_verbatim: { text: z.string().optional() },
     expand_space: {},
   };
   const ctx = { utterance: prompt };

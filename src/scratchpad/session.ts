@@ -1231,6 +1231,32 @@ class ScratchpadSessionImpl implements ScratchpadSession {
         this._updatePanel();
         break;
       }
+      case "removeJournalEntry": {
+        // Sovereign correction of a RECORDING ERROR (2026-07-17): verbatim
+        // capture can fossilize meta-wrappers; the human may delete an entry
+        // after a modal confirmation. Workers have no path here.
+        const entry = (this._model.roughRequests ?? []).find(
+          (r) => r.id === message.requestId,
+        );
+        if (!entry) break;
+        const choice = await vscode.window.showWarningMessage(
+          `Delete journal entry "${entry.text.slice(0, 120)}${entry.text.length > 120 ? "…" : ""}"? This removes it from the verbatim record.`,
+          { modal: true },
+          "Delete entry",
+        );
+        if (choice !== "Delete entry") break;
+        const delta = this.dispatch({
+          type: "removeRoughRequest",
+          actor: "human",
+          requestId: message.requestId,
+        });
+        this._commandMessage =
+          delta.kind === "applied"
+            ? "Journal entry deleted."
+            : `Delete refused: ${(delta as { reason: string }).reason}`;
+        this._updatePanel();
+        break;
+      }
       case "setCutFromSelection": {
         // The cut is a RESULT of the selection, not a rival selection mode.
         const elements = new Set(

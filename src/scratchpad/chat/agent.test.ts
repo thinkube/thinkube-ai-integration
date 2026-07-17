@@ -125,30 +125,44 @@ test("stage_items stages valid ids through the selection channel", async () => {
   assert.ok(out.includes("human"));
 });
 
-test("assumption_verbatim records the UTTERANCE verbatim, ignoring any model text", async () => {
+test("assumption_verbatim: whole utterance when text omitted; paraphrase REJECTED", async () => {
   const { model } = seeded();
   const session = fakeSession(model);
-  const out = await THINKY_TOOLS.assumption_verbatim.run(
+  const rejected = await THINKY_TOOLS.assumption_verbatim.run(
     session,
     { text: "a paraphrase the model tried to sneak in" },
     { utterance: "single-user platform" },
   );
+  assert.ok(rejected.includes("REJECTED"));
+  assert.equal(session.model.assumptions?.length ?? 0, 0);
+  const out = await THINKY_TOOLS.assumption_verbatim.run(
+    session,
+    {},
+    { utterance: "single-user platform" },
+  );
   assert.ok(out.includes("assumption #1"));
   assert.equal(session.model.assumptions?.[0].text, "single-user platform");
-  const refused = await THINKY_TOOLS.assumption_verbatim.run(
+  const empty = await THINKY_TOOLS.assumption_verbatim.run(
     session,
     {},
     { utterance: "   " },
   );
-  assert.ok(refused.includes("Nothing recorded"));
+  assert.ok(empty.includes("Nothing recorded"));
 });
 
-test("journal_verbatim posts the raw utterance through the seam, never model text", async () => {
+test("journal_verbatim: non-substring model text is REJECTED, omitted text records whole", async () => {
   const { model } = seeded();
   const session = fakeSession(model);
-  await THINKY_TOOLS.journal_verbatim.run(
+  const rejected = await THINKY_TOOLS.journal_verbatim.run(
     session,
     { text: "model words" },
+    { utterance: "surface per-step log output in a node-anchored log panel" },
+  );
+  assert.ok(rejected.includes("REJECTED"));
+  assert.equal(session.posted.length, 0);
+  await THINKY_TOOLS.journal_verbatim.run(
+    session,
+    {},
     { utterance: "surface per-step log output in a node-anchored log panel" },
   );
   assert.deepEqual(session.posted[0], {
@@ -199,4 +213,44 @@ test("readiness/reframe/research tools speak the exact seam messages", async () 
   );
   const research = session.posted[2] as { subject?: string };
   assert.equal(research.subject, "digest storage");
+});
+
+// ── Verbatim extraction (2026-07-17: wholesale capture fossilized wrappers) ──
+
+test("extractVerbatim: whole message when no excerpt; exact substring accepted; rewrite rejected", async () => {
+  const { extractVerbatim } = await import("./agent");
+  const msg = "yes, add this: extend the graph with auditor nodes";
+  assert.equal(extractVerbatim(msg, undefined), msg);
+  assert.equal(
+    extractVerbatim(msg, "extend the graph with auditor nodes"),
+    "extend the graph with auditor nodes",
+  );
+  assert.equal(extractVerbatim(msg, "extend the graph with audit nodes"), null);
+  // Whitespace differences are tolerated; wording differences are not.
+  assert.equal(
+    extractVerbatim("a  b\n c", "a b c"),
+    "a b c",
+  );
+});
+
+test("journal_verbatim records the validated excerpt and rejects rewrites", async () => {
+  const { model } = seeded();
+  const session = fakeSession(model);
+  const out = await THINKY_TOOLS.journal_verbatim.run(
+    session,
+    { text: "extend the graph" },
+    { utterance: "yes — extend the graph" },
+  );
+  assert.ok(!out.includes("REJECTED"), out);
+  assert.deepEqual(session.posted[0], {
+    type: "addRoughRequest",
+    text: "extend the graph",
+  });
+  const rejected = await THINKY_TOOLS.journal_verbatim.run(
+    session,
+    { text: "a paraphrase of the ask" },
+    { utterance: "yes — extend the graph" },
+  );
+  assert.ok(rejected.includes("REJECTED"));
+  assert.equal(session.posted.length, 1);
 });

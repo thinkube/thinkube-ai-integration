@@ -642,3 +642,34 @@ test("contextualize prompt: sources, journal, budget, refresh block", () => {
   assert.match(p2, /old digest body/);
 });
 
+
+// ── Journal correction (2026-07-17): recording errors are deletable ──────────
+
+test("removeRoughRequest deletes an entry, refuses unknown ids, and later ids never collide", () => {
+  let model = emptyModel("tep");
+  model = reduce(model, { type: "seedGoal", text: "the goal" }).model;
+  model = reduce(model, { type: "addRoughRequest", text: "keep me" }).model;
+  model = reduce(model, { type: "addRoughRequest", text: "yes" }).model;
+  const wrong = model.roughRequests!.find((r) => r.text === "yes")!;
+  const applied = reduce(model, {
+    type: "removeRoughRequest",
+    actor: "human",
+    requestId: wrong.id,
+  });
+  assert.equal(applied.delta.kind, "applied");
+  model = applied.model;
+  assert.deepEqual(
+    model.roughRequests!.map((r) => r.text),
+    ["keep me"],
+  );
+  const refused = reduce(model, {
+    type: "removeRoughRequest",
+    actor: "human",
+    requestId: "req-99",
+  });
+  assert.equal(refused.delta.kind, "rejected");
+  // New entries after a deletion must not reuse a surviving id.
+  model = reduce(model, { type: "addRoughRequest", text: "after delete" }).model;
+  const ids = model.roughRequests!.map((r) => r.id);
+  assert.equal(new Set(ids).size, ids.length);
+});

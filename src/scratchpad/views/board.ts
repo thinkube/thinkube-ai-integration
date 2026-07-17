@@ -208,7 +208,10 @@ export function buildBoardHtml(
     `<div class="goal">${esc(goal?.text ?? "")}</div>` +
     `<details class="fold"><summary>Journal (${1 + journal.length})</summary>` +
     `<ol><li>${esc(goal?.text ?? "")}</li>${journal
-      .map((r) => `<li>${esc(r.text)}</li>`)
+      .map(
+        (r) =>
+          `<li>${esc(r.text)} <button class="jdel" data-journal-del="${r.id}" title="Delete this entry (recording-error correction — asks to confirm)">✕</button></li>`,
+      )
       .join("")}</ol></details>` +
     (assumptions.length > 0
       ? `<details class="fold"><summary>Assumptions (${assumptions.length})</summary>` +
@@ -243,6 +246,8 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);margin
 .goal{padding:14px 16px;font-size:1.05em;white-space:pre-wrap}
 .fold{margin:0 16px 6px 16px}
 .fold summary{cursor:pointer;opacity:.85}
+.jdel{background:none;border:none;color:inherit;opacity:.4;cursor:pointer;padding:0 3px}
+.jdel:hover{opacity:1;color:var(--vscode-errorForeground)}
 .sec{margin:14px 0}
 .sec header{display:flex;align-items:baseline;gap:10px;padding:0 16px}
 .sec h2{font-size:.85em;text-transform:uppercase;letter-spacing:.08em;margin:6px 0;opacity:.8}
@@ -299,9 +304,13 @@ document.body.addEventListener('change', function(e){
 });
 document.body.addEventListener('click', function(e){
   let t = e.target;
-  while (t && t !== document.body && !(t.hasAttribute && (t.hasAttribute('data-chev')||t.hasAttribute('data-verb')||t.hasAttribute('data-act')||t.hasAttribute('data-eval')||t.hasAttribute('data-accept')||t.hasAttribute('data-resolve')||t.hasAttribute('data-resolve-edit')||t.hasAttribute('data-item')||t.hasAttribute('data-check')))) t = t.parentElement;
+  while (t && t !== document.body && !(t.hasAttribute && (t.hasAttribute('data-journal-del')||t.hasAttribute('data-chev')||t.hasAttribute('data-verb')||t.hasAttribute('data-act')||t.hasAttribute('data-eval')||t.hasAttribute('data-accept')||t.hasAttribute('data-resolve')||t.hasAttribute('data-resolve-edit')||t.hasAttribute('data-item')||t.hasAttribute('data-check')))) t = t.parentElement;
   if (!t || t === document.body) return;
   if (t.hasAttribute('data-check')) return; // checkbox handled on change
+  if (t.hasAttribute('data-journal-del')) {
+    vscodeApi.postMessage({type:'removeJournalEntry', requestId:t.getAttribute('data-journal-del')});
+    return;
+  }
   if (t.hasAttribute('data-chev')) {
     const id = t.getAttribute('data-chev');
     const d = document.querySelector('[data-detail="'+id+'"]');
