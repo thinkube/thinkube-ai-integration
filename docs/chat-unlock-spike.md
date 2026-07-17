@@ -41,7 +41,7 @@ workbench and extension found the full gate chain:
 | Where | What | State |
 |---|---|---|
 | `~/.local/share/code-server/User/settings.json` | `"chat.allowAnonymousAccess": true` | applied (live test) |
-| `thinkube-control/13_configure_code_server.yaml` | same setting seeded in the ansible `combine` merge | committed |
+| `thinkube-control/13_configure_code_server.yaml` | same setting + `chat.byokUtilityModelDefault: mainAgent` seeded in the ansible `combine` merge | committed |
 | `harbor-images/base-images/code-server-dev.Containerfile.j2` | jq step dropping `when:"false"` from the claude-code vendor in the builtin's manifest (guarded, fails build if the shape changes) | committed |
 | live `/usr/lib/code-server/lib/vscode/extensions/copilot/package.json` | same jq patch via sudo | applied (live test) |
 
@@ -62,3 +62,7 @@ works in either surface.
   through the local CLI login. It only skips the GitHub/Copilot identity ceremony.
 - `github.copilot.chat.claudeAgent.allowDangerouslySkipPermissions` stays default-off;
   the agent asks before tool use like terminal Claude Code does.
+- Field finding (2026-07-17): with a BYOK main model the chat input nags
+  "Set BYOK utility models" and internal utility calls (titles, summaries) have no
+  endpoint. `chat.byokUtilityModelDefault: "mainAgent"` (core-level key, values
+  none|mainAgent|copilot) routes them to the same Claude model.
