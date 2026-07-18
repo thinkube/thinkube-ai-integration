@@ -277,6 +277,11 @@ export type Action =
         requires?: string[];
         /** WHICH factor produced each eval score (closed vocabularies). */
         factors?: { complexity?: ComplexityFactor; risk?: RiskFactor };
+        /** Journal-entry group this ELEMENT serves (expansion pipeline
+         *  2026-07-18; elements only — the parking key). */
+        servesEntry?: number;
+        /** One-line complexity justification (explainable evals). */
+        complexityRationale?: string;
       };
     }
   | {
@@ -734,6 +739,17 @@ export function reduce(
       };
       if (action.item.requires !== undefined && action.item.requires.length) {
         newItem.requires = [...action.item.requires];
+      }
+      if (action.item.servesEntry !== undefined) {
+        newItem.servesEntry = action.item.servesEntry;
+      }
+      if (
+        action.item.complexityRationale !== undefined &&
+        action.item.complexityRationale.trim()
+      ) {
+        newItem.rationale = {
+          complexity: action.item.complexityRationale.trim(),
+        };
       }
       if (
         action.item.factors !== undefined &&

@@ -444,6 +444,8 @@ export function normalizeWorkerActions(
           note?: string;
           requires?: string[];
           factors?: { complexity?: ComplexityFactor; risk?: RiskFactor };
+          servesEntry?: number;
+          complexityRationale?: string;
         } = {
           text,
           modality: asModality(itemRec?.modality ?? rec.modality),
@@ -451,6 +453,21 @@ export function normalizeWorkerActions(
         };
         const note = asNonEmptyString(itemRec?.note ?? rec.note);
         if (note !== null) item.note = note;
+        // Expansion pipeline (2026-07-18): elements carry their journal-entry
+        // group; every item may carry a complexity rationale.
+        const servesRaw = itemRec?.servesEntry ?? rec.servesEntry;
+        const servesNum =
+          typeof servesRaw === "number"
+            ? servesRaw
+            : typeof servesRaw === "string"
+              ? Number(servesRaw)
+              : NaN;
+        if (Number.isInteger(servesNum) && servesNum >= 1)
+          item.servesEntry = servesNum;
+        const cxRat = asNonEmptyString(
+          itemRec?.complexityRationale ?? rec.complexityRationale,
+        );
+        if (cxRat !== null) item.complexityRationale = cxRat;
 
         // Factors: validated against the closed vocabularies; an invalid
         // factor is dropped (score kept — it just stays unexplained).

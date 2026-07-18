@@ -41,6 +41,10 @@ import { workerLogEnabled } from "../services/workerLog";
 import { runContextualize } from "./workers/contextualizer";
 import { contextSourcesForSpace } from "./productContext";
 import { runChallenger } from "./workers/challenger";
+import {
+  EXPANSION_STAGES,
+  expansionStageWorker,
+} from "./workers/expansionPipeline";
 import { showFreshMarkdownPreview } from "../commands/freshPreview";
 export type { DryRunResult, SlicerVerdict } from "./dryRunSlice";
 
@@ -398,6 +402,37 @@ class ScratchpadSessionImpl implements ScratchpadSession {
         return loop.step(this._model, []);
       },
     );
+  }
+
+  /**
+   * Staged expansion pipeline (expansion redesign 2026-07-18). Runs the four
+   * derivation stages in sequence — elements → constraints → gap → acceptance
+   * — each as its own worker round so the board/chat shows the progression and
+   * each later stage reads the items the earlier ones just landed. Stages 2–4
+   * record their own `requires` edges to the elements (the orphan/cut/risk
+   * machinery all hang off those edges).
+   */
+  async expandStaged(): Promise<void> {
+    const digest = await this._readDigest();
+    for (const stage of EXPANSION_STAGES) {
+      this._commandMessage = `Expanding — ${stage} (stage ${EXPANSION_STAGES.indexOf(stage) + 1} of ${EXPANSION_STAGES.length})…`;
+      this._updatePanel();
+      await this._runWorkerRound(`expand:${stage}`, [stage], async () => {
+        const worker = expansionStageWorker(stage, {
+          loadQuery: this._loadQueryFn,
+          model: this._workerModelId,
+          contextDigest: digest,
+        });
+        const loop = createLoop({ workerFor: () => worker });
+        return loop.step(this._model, []);
+      });
+    }
+    const counts = this._model.sections
+      .filter((s) => s.kind !== "goal")
+      .map((s) => `${s.kind} ${s.items.filter((it) => it.state === "active").length}`)
+      .join(" · ");
+    this._commandMessage = `Expansion complete — ${counts}. Review on the board; nothing is settled yet.`;
+    this._updatePanel();
   }
 
   /**
@@ -1055,8 +1090,10 @@ class ScratchpadSessionImpl implements ScratchpadSession {
 
       // ── Worker round triggers ─────────────────────────────────────────────
       case "prefill":
-        // Runs gapFiller with the production query (or injected fake).
-        await this.askForStructure();
+        // Staged expansion pipeline (2026-07-18): elements → constraints →
+        // gaps → acceptance, each stage deriving from the last and recording
+        // its own edges. Replaces the single flat gapFiller round.
+        await this.expandStaged();
         break;
       case "reframe":
         // Runs reframe worker; prompt carries checked items only.
