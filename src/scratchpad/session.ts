@@ -39,6 +39,7 @@ import { makeServerSigningTool } from "./freeze";
 import { ThinkubeStore } from "../store/ThinkubeStore";
 import { workerLogEnabled } from "../services/workerLog";
 import { runContextualize } from "./workers/contextualizer";
+import { contextSourcesForSpace } from "./productContext";
 import { runChallenger } from "./workers/challenger";
 import { showFreshMarkdownPreview } from "../commands/freshPreview";
 export type { DryRunResult, SlicerVerdict } from "./dryRunSlice";
@@ -291,13 +292,16 @@ class ScratchpadSessionImpl implements ScratchpadSession {
   }
 
   get contextSources(): readonly string[] {
-    const sources: string[] = [];
-    const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    if (ws) sources.push(ws);
-    if (this._sidecarRoot) {
-      sources.push(nodePath.join(this._sidecarRoot, this._namespace));
-    }
-    return sources;
+    // Product-scoped (2026-07-18 field defect: workspaceFolders[0] was the
+    // emptiest root of a 4-folder workspace — structurally blind to the
+    // code). Context = the repositories under the space's PRODUCT tier,
+    // plus the space's own sidecar (methodology memory). Fully structural,
+    // never user-typed.
+    const folders = (vscode.workspace.workspaceFolders ?? []).map((f) => ({
+      name: f.name,
+      path: f.uri.fsPath,
+    }));
+    return contextSourcesForSpace(this._sidecarRoot, this._namespace, folders);
   }
 
   get space(): string {
@@ -804,12 +808,19 @@ class ScratchpadSessionImpl implements ScratchpadSession {
           this._updatePanel();
           break;
         }
-        const sources: string[] = [];
-        const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-        if (ws) sources.push(ws);
-        if (this._sidecarRoot) {
-          sources.push(nodePath.join(this._sidecarRoot, this._namespace));
+        // Product-scoped sources (2026-07-18): the repositories under this
+        // space's PRODUCT tier + the space's own sidecar — mirrors the spec
+        // doctrine (specs bind to one repo; the product bounds the context).
+        const sources = [...this.contextSources];
+        if (sources.length === 0) {
+          this._commandMessage =
+            "Contextualize has no sources: no repositories found under this space's product (sidecar cards + workspace folders resolve none).";
+          this._updatePanel();
+          break;
         }
+        scratchpadLog(
+          `contextualize sources (product-scoped): ${sources.join(", ")}`,
+        );
         await this._runWorkerRound("contextualize", ["goal"], async () => {
           const ref = await runContextualize(
             {
