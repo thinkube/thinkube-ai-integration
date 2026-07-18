@@ -168,3 +168,25 @@ test("elements render directly below the goal, before constraints (2026-07-18)",
   assert.ok(iElements < iConstraints, "elements must precede constraints");
   assert.ok(iConstraints < iAcceptance, "acceptance stays last");
 });
+
+test("integrity findings surface as a fold and row flags (2026-07-18)", () => {
+  let model = emptyModel("tep");
+  const elId = model.sections.find((s) => s.kind === "elements")!.id;
+  model = reduce(model, {
+    type: "proposeItem",
+    actor: "gap-filler",
+    sectionId: elId,
+    item: { text: "lonely element", modality: "optional", evals: {} },
+  }).model;
+  const cId = model.sections.find((s) => s.kind === "constraints")!.id;
+  model = reduce(model, {
+    type: "proposeItem",
+    actor: "gap-filler",
+    sectionId: cId,
+    item: { text: "floating constraint", modality: "optional", evals: {} },
+  }).model;
+  const html = buildBoardHtml(model, { selection: [], cut: [] });
+  assert.ok(html.includes("⚠ Integrity"));
+  assert.ok(html.includes(">orphan<"), "orphan row flag");
+  assert.ok(html.includes(">no acceptance<"), "uncovered element flag");
+});

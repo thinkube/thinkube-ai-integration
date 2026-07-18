@@ -30,6 +30,7 @@ function vs(): typeof vscode {
 import type { WorkingModel, Item, Section, SectionKind } from "../model";
 import { freezeEnabled } from "../model";
 import { computeElementRisk } from "../deriveRisk";
+import { computeIntegrity } from "../integrityGate";
 import type { ScratchpadInboundMessage } from "./document";
 
 /**
@@ -184,7 +185,12 @@ function rowHtml(
   selected: boolean,
   inCut: boolean,
   open: boolean,
+  flags: { orphanIds: Set<string>; uncoveredIds: Set<string>; dupIds: Set<string> },
 ): string {
+  const flagBadges =
+    (flags.orphanIds.has(item.id) ? `<span class="badge flag orphan" title="Orphan — tied to no element">orphan</span>` : "") +
+    (flags.uncoveredIds.has(item.id) ? `<span class="badge flag uncov" title="No acceptance links to this element">no acceptance</span>` : "") +
+    (flags.dupIds.has(item.id) ? `<span class="badge flag dup" title="Near-duplicate of another item">dup?</span>` : "");
   // Elements carry DERIVED risk (2026-07-18): a function of their open gaps,
   // shown as an R badge with its rationale in the detail. Non-elements have
   // no risk of their own.
@@ -213,7 +219,7 @@ function rowHtml(
     `<button class="chev" data-chev="${item.id}">▸</button>` +
     checkbox +
     `<span class="text">${esc(item.text)}</span>` +
-    `<span class="badges">${inCut ? `<span class="badge cutb">cut</span>` : ""}${riskBadge}${badges(item)}</span>` +
+    `<span class="badges">${inCut ? `<span class="badge cutb">cut</span>` : ""}${flagBadges}${riskBadge}${badges(item)}</span>` +
     `</div>` +
     // Detail content is always rendered; CSS hides it until the chevron opens
     // it (open state is client-restored from webview state across re-renders).
@@ -226,6 +232,7 @@ function sectionHtml(
   model: WorkingModel,
   opts: BoardOptions,
   openIds: ReadonlySet<string>,
+  flags: { orphanIds: Set<string>; uncoveredIds: Set<string>; dupIds: Set<string> },
 ): string {
   const items = section.items.filter((it) => it.state !== "dropped");
   const active = items.filter((it) => it.state === "active");
@@ -246,6 +253,7 @@ function sectionHtml(
           sel.has(it.id),
           cut.has(it.id),
           openIds.has(it.id),
+          flags,
         ),
       )
       .join("") +
@@ -263,6 +271,31 @@ export function buildBoardHtml(
   const assumptions = model.assumptions ?? [];
   const canFreeze = freezeEnabled(model);
   const selCount = opts.selection.length;
+  // Integrity findings (2026-07-18): surfaced as a fold + row flags so orphans
+  // / uncovered / duplicates are actionable, not just a one-line summary.
+  const integrity = computeIntegrity(model);
+  const orphanIds = new Set(integrity.orphans.map((o) => o.id));
+  const uncoveredIds = new Set(integrity.uncoveredElements.map((e) => e.id));
+  const dupIds = new Set(integrity.duplicates.flatMap((p) => [p[0].id, p[1].id]));
+  const integrityFold = integrity.clean
+    ? ""
+    : `<details class="fold integrity" open><summary>⚠ Integrity — ${integrity.orphans.length} orphan(s), ${integrity.uncoveredElements.length} uncovered, ${integrity.duplicates.length} duplicate pair(s)</summary>` +
+      (integrity.orphans.length
+        ? `<div class="ig"><b>Orphans</b> (tied to no element — drop, or add the missing element):<ul>${integrity.orphans
+            .map((o) => `<li>[${esc(o.kind)}] ${esc(o.text)}</li>`)
+            .join("")}</ul></div>`
+        : "") +
+      (integrity.uncoveredElements.length
+        ? `<div class="ig"><b>Elements with no acceptance</b>:<ul>${integrity.uncoveredElements
+            .map((e) => `<li>${esc(e.text)}</li>`)
+            .join("")}</ul></div>`
+        : "") +
+      (integrity.duplicates.length
+        ? `<div class="ig"><b>Near-duplicates</b>:<ul>${integrity.duplicates
+            .map((p) => `<li>${esc(p[0].text)} ≈ ${esc(p[1].text)}</li>`)
+            .join("")}</ul></div>`
+        : "") +
+      `</details>`;
 
   const body =
     `<div class="top">` +
@@ -294,7 +327,7 @@ export function buildBoardHtml(
           SECTION_DISPLAY_ORDER.indexOf(a.kind) -
           SECTION_DISPLAY_ORDER.indexOf(b.kind),
       )
-      .map((s) => sectionHtml(s, model, opts, new Set()))
+      .map((s) => sectionHtml(s, model, opts, new Set(), { orphanIds, uncoveredIds, dupIds }))
       .join("") +
     `<div class="bar ${selCount > 0 ? "show" : ""}">` +
     `<span>${selCount} selected</span>` +
@@ -343,6 +376,11 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);margin
 .badge.risk.r2{border-color:var(--vscode-charts-yellow);color:var(--vscode-charts-yellow)}
 .badge.risk.r3{border-color:var(--vscode-errorForeground);color:var(--vscode-errorForeground)}
 .detail .riskrat,.detail .cxrat{margin:2px 0}
+.fold.integrity summary{color:var(--vscode-errorForeground)}
+.fold.integrity .ig{margin:4px 0 4px 8px;font-size:.9em}
+.fold.integrity ul{margin:2px 0 6px 16px}
+.badge.flag.orphan,.badge.flag.dup{border-color:var(--vscode-errorForeground);color:var(--vscode-errorForeground)}
+.badge.flag.uncov{border-color:var(--vscode-charts-yellow);color:var(--vscode-charts-yellow)}
 .badge.lock{color:var(--vscode-charts-orange)}
 .detail{display:none;padding:4px 16px 8px 46px;font-size:.9em;border-left:3px solid transparent}
 .detail.open{display:block}
