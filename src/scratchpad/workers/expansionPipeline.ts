@@ -63,6 +63,79 @@ function sectionId(model: WorkingModel, kind: ExpansionStage): string {
 }
 
 /**
+ * All active item ids belonging to a journal-entry GROUP (parking unit,
+ * 2026-07-18): the elements with servesEntry === entry, plus every active
+ * non-element item reachable from them through requires edges — UNLESS that
+ * item is also reachable from an element in ANOTHER group (shared context is
+ * not parked out from under the groups that still need it).
+ */
+export function groupItemIds(model: WorkingModel, entry: number): string[] {
+  const byId = new Map<
+    string,
+    { kind: string; item: WorkingModel["sections"][0]["items"][0] }
+  >();
+  for (const s of model.sections)
+    for (const it of s.items) byId.set(it.id, { kind: s.kind, item: it });
+  const adj = new Map<string, Set<string>>();
+  const link = (a: string, b: string): void => {
+    (adj.get(a) ?? adj.set(a, new Set()).get(a)!).add(b);
+    (adj.get(b) ?? adj.set(b, new Set()).get(b)!).add(a);
+  };
+  for (const { item } of byId.values())
+    for (const req of item.requires ?? [])
+      if (byId.has(req)) link(item.id, req);
+  const isElement = (id: string): boolean => byId.get(id)?.kind === "elements";
+
+  // The ELEMENTS a non-element item anchors to: reachable through requires
+  // edges WITHOUT traversing through another element (elements are sinks —
+  // otherwise everything is transitively connected through shared elements
+  // and nothing is ever "private").
+  const anchorElements = (start: string): string[] => {
+    const anchors = new Set<string>();
+    const seen = new Set([start]);
+    const q = [start];
+    while (q.length) {
+      const cur = q.shift()!;
+      for (const nb of adj.get(cur) ?? []) {
+        if (seen.has(nb)) continue;
+        seen.add(nb);
+        if (isElement(nb)) {
+          anchors.add(nb); // sink — record, do not expand
+        } else {
+          q.push(nb);
+        }
+      }
+    }
+    return [...anchors];
+  };
+
+  const entryOf = (elementId: string): number | undefined =>
+    byId.get(elementId)?.item.servesEntry;
+
+  const parked = new Set<string>();
+  // This group's elements.
+  for (const [id, v] of byId.entries())
+    if (
+      v.kind === "elements" &&
+      v.item.state === "active" &&
+      v.item.servesEntry === entry
+    )
+      parked.add(id);
+  // Non-element items whose anchor elements are ALL in this group (private).
+  for (const [id, v] of byId.entries()) {
+    if (v.kind === "elements" || v.kind === "goal") continue;
+    if (v.item.state !== "active") continue;
+    const anchors = anchorElements(id);
+    if (
+      anchors.length > 0 &&
+      anchors.every((a) => entryOf(a) === entry)
+    ) {
+      parked.add(id);
+    }
+  }
+  return [...parked];
+}
+/**
  * Build one stage's prompt. Stage 1 iterates the journal; stages 2–4 iterate
  * the elements. Every prompt names EXACTLY ONE target section so the round
  * stays focused, and (2–4) demands a `requires` edge to an element on every

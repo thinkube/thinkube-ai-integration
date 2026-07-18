@@ -278,10 +278,10 @@ export function buildBoardHtml(
       : "") +
     `<div class="goal">${esc(goal?.text ?? "")}</div>` +
     `<details class="fold"><summary>Journal (${1 + journal.length})</summary>` +
-    `<ol><li>${esc(goal?.text ?? "")}</li>${journal
+    `<ol><li>${esc(goal?.text ?? "")} <button class="jpark" data-park="1" title="Park entry 1 — defer this entry's elements and their private context for a later TEP">park</button></li>${journal
       .map(
-        (r) =>
-          `<li>${esc(r.text)} <button class="jdel" data-journal-del="${r.id}" title="Delete this entry (recording-error correction — asks to confirm)">✕</button></li>`,
+        (r, i) =>
+          `<li>${esc(r.text)} <button class="jpark" data-park="${i + 2}" title="Park this entry — defer its elements and private context">park</button> <button class="jdel" data-journal-del="${r.id}" title="Delete this entry (recording-error correction — asks to confirm)">✕</button></li>`,
       )
       .join("")}</ol></details>` +
     (assumptions.length > 0
@@ -322,6 +322,8 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);margin
 .fold{margin:0 16px 6px 16px}
 .fold summary{cursor:pointer;opacity:.85}
 .jdel{background:none;border:none;color:inherit;opacity:.4;cursor:pointer;padding:0 3px}
+.jpark{background:none;border:1px solid var(--vscode-panel-border);border-radius:3px;color:inherit;opacity:.6;cursor:pointer;font-size:.75em;padding:0 4px}
+.jpark:hover{opacity:1}
 .jdel:hover{opacity:1;color:var(--vscode-errorForeground)}
 .sec{margin:14px 0}
 .sec header{display:flex;align-items:baseline;gap:10px;padding:0 16px}
@@ -386,11 +388,15 @@ document.body.addEventListener('change', function(e){
 });
 document.body.addEventListener('click', function(e){
   let t = e.target;
-  while (t && t !== document.body && !(t.hasAttribute && (t.hasAttribute('data-journal-del')||t.hasAttribute('data-chev')||t.hasAttribute('data-verb')||t.hasAttribute('data-act')||t.hasAttribute('data-eval')||t.hasAttribute('data-accept')||t.hasAttribute('data-resolve')||t.hasAttribute('data-resolve-edit')||t.hasAttribute('data-item')||t.hasAttribute('data-check')))) t = t.parentElement;
+  while (t && t !== document.body && !(t.hasAttribute && (t.hasAttribute('data-park')||t.hasAttribute('data-journal-del')||t.hasAttribute('data-chev')||t.hasAttribute('data-verb')||t.hasAttribute('data-act')||t.hasAttribute('data-eval')||t.hasAttribute('data-accept')||t.hasAttribute('data-resolve')||t.hasAttribute('data-resolve-edit')||t.hasAttribute('data-item')||t.hasAttribute('data-check')))) t = t.parentElement;
   if (!t || t === document.body) return;
   if (t.hasAttribute('data-check')) return; // checkbox handled on change
   if (t.hasAttribute('data-journal-del')) {
     vscodeApi.postMessage({type:'removeJournalEntry', requestId:t.getAttribute('data-journal-del')});
+    return;
+  }
+  if (t.hasAttribute('data-park')) {
+    vscodeApi.postMessage({type:'parkGroup', entry:Number(t.getAttribute('data-park'))});
     return;
   }
   if (t.hasAttribute('data-chev')) {

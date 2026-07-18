@@ -82,6 +82,7 @@ export type ScratchpadInboundMessage =
   // ── Board (2026-07-17 redesign): the ONE selection + cut-as-result ──
   | { type: "setSelection"; itemIds: string[] }
   | { type: "removeJournalEntry"; requestId: string }
+  | { type: "parkGroup"; entry: number }
   | { type: "setCutFromSelection" }
   | { type: "askThinky" };
 

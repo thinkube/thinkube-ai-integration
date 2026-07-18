@@ -44,6 +44,7 @@ import { runChallenger } from "./workers/challenger";
 import {
   EXPANSION_STAGES,
   expansionStageWorker,
+  groupItemIds,
 } from "./workers/expansionPipeline";
 import { computeIntegrity, integritySummary } from "./integrityGate";
 import { showFreshMarkdownPreview } from "../commands/freshPreview";
@@ -1302,6 +1303,23 @@ class ScratchpadSessionImpl implements ScratchpadSession {
         this._selection = new Set(
           (message.itemIds ?? []).filter((id) => known.has(id)),
         );
+        this._updatePanel();
+        break;
+      }
+      case "parkGroup": {
+        // Parking (2026-07-18): defer an entire journal-entry group — its
+        // elements + their private derived items — to postpone that
+        // functionality for a later TEP. Shared context stays live.
+        const ids = groupItemIds(this._model, message.entry);
+        if (ids.length === 0) {
+          this._commandMessage = `Nothing to park for journal entry ${message.entry} (no elements serve it yet).`;
+          this._updatePanel();
+          break;
+        }
+        for (const itemId of ids) {
+          this.dispatch({ type: "deferItem", actor: "human", itemId });
+        }
+        this._commandMessage = `Parked journal entry ${message.entry}: ${ids.length} item${ids.length === 1 ? "" : "s"} deferred (supersede or re-open any time).`;
         this._updatePanel();
         break;
       }

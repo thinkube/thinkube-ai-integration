@@ -82,3 +82,30 @@ test("liveElements returns active elements with ids", () => {
     { id: elementId, text: "auditor nodes" },
   ]);
 });
+
+test("parking a group defers its elements + private context, keeps shared context (2026-07-18)", async () => {
+  const { groupItemIds } = await import("./expansionPipeline");
+  let model = emptyModel("tep");
+  // two elements, one per entry
+  const propose = (kind: "elements" | "constraints", text: string, servesEntry?: number, requires?: string[]) => {
+    const sectionId = model.sections.find((s) => s.kind === kind)!.id;
+    model = reduce(model, {
+      type: "proposeItem",
+      actor: "gap-filler",
+      sectionId,
+      item: { text, modality: "optional", evals: {}, ...(servesEntry ? { servesEntry } : {}), ...(requires ? { requires } : {}) },
+    }).model;
+    const items = model.sections.find((s) => s.kind === kind)!.items;
+    return items[items.length - 1].id;
+  };
+  const e1 = propose("elements", "entry-1 element", 1);
+  const e2 = propose("elements", "entry-2 element", 2);
+  const privC = propose("constraints", "private to e1", undefined, [e1]);
+  const shared = propose("constraints", "shared", undefined, [e1, e2]);
+
+  const parked = groupItemIds(model, 1);
+  assert.ok(parked.includes(e1), "e1 element parked");
+  assert.ok(parked.includes(privC), "e1's private constraint parked");
+  assert.ok(!parked.includes(shared), "shared constraint stays live");
+  assert.ok(!parked.includes(e2), "other group's element untouched");
+});

@@ -22,6 +22,7 @@
 
 import type { Delta, WorkingModel } from "../model";
 import type { ScratchpadInboundMessage } from "../session";
+import { computeElementRisk } from "../deriveRisk";
 
 /** The narrow session surface the agent's tools need. */
 export interface ThinkyAgentSessionLike {
@@ -62,7 +63,9 @@ export function renderSpaceSnapshot(session: ThinkyAgentSessionLike): string {
       if (it.checked && it.state === "active") marks.push("✓settled");
       if (it.state !== "active") marks.push(it.state);
       if (it.evals.complexity !== undefined) marks.push(`C${it.evals.complexity}`);
-      if (it.evals.risk !== undefined) marks.push(`R${it.evals.risk}`);
+      if (sec.kind === "elements" && it.state === "active")
+        marks.push(`R${computeElementRisk(model, it.id).score}`);
+      if (it.servesEntry !== undefined) marks.push(`entry${it.servesEntry}`);
       if ((it.flaggedBy ?? []).length > 0) marks.push("protected");
       lines.push(
         `  - ${it.id}${marks.length ? ` [${marks.join(",")}]` : ""} ${it.text.slice(0, 160)}`,
@@ -120,8 +123,11 @@ export function buildThinkySystemPrompt(): string {
     `are DECLARED and fixed (listed in [SPACE STATE]) — NEVER ask the human for repo paths or files; name the ` +
     `declared sources and ask "shall I read them?". Statements about the environment go through ` +
     `assumption_verbatim.\n` +
-    `3. DECOMPOSE: once the digest exists (or they decline context), offer expand_space. Never call it ` +
-    `uninvited — the human triggers the derivation.\n` +
+    `3. DECOMPOSE: once the digest exists (or they decline context), offer expand_space (the staged pipeline). ` +
+    `Never call it uninvited — the human triggers the derivation.\n` +
+    `Risk is DERIVED (a function of an element's open gaps) — never claim to set it; to lower risk, close gaps ` +
+    `(research or the human resolves them). To postpone a journal entry's whole functionality, park_group its ` +
+    `entry number.\n` +
     `The human may break the protocol at any time — follow them; the protocol is a guide, not a form.`
   );
 }
@@ -299,9 +305,21 @@ export const THINKY_TOOLS: Record<string, ThinkyToolDef> = {
       return `Recorded standing assumption #${(session.model.assumptions ?? []).length} (verbatim).`;
     },
   },
+  park_group: {
+    description:
+      "Park a journal-entry GROUP — defer its elements and their private context for a later TEP. Args: {entry: number} (the journal entry number, goal = 1). Shared context stays live.",
+    async run(session, args) {
+      const entry =
+        typeof args.entry === "number" ? args.entry : Number(args.entry);
+      if (!Number.isInteger(entry) || entry < 1)
+        return "Give a journal entry number (goal = 1).";
+      await session.postFromWebview({ type: "parkGroup", entry });
+      return session.lastCommandMessage ?? `Parked journal entry ${entry}.`;
+    },
+  },
   expand_space: {
     description:
-      "Trigger the decomposition round: workers derive elements, constraints, gaps, criteria and verification items from the journal + context digest. Use once intake and context are done (or the human asks to proceed).",
+      "Trigger the staged decomposition pipeline: elements → constraints → gap → acceptance, each stage deriving from the elements and recording its edges, then a closing integrity check. Use once intake and context are done (or the human asks to proceed).",
     async run(session) {
       await session.postFromWebview({ type: "prefill" });
       return (
@@ -370,6 +388,7 @@ export async function runThinkyAgentTurn(
     research: { subject: z.string(), itemId: z.string().optional() },
     journal_verbatim: { text: z.string().optional() },
     assumption_verbatim: { text: z.string().optional() },
+    park_group: { entry: z.number() },
     expand_space: {},
   };
   const ctx = { utterance: prompt };
