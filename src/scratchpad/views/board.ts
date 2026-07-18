@@ -139,7 +139,9 @@ function detailHtml(item: Item, model: WorkingModel): string {
     rows.push(`<div class="edge">requires: ${esc(byId.get(req) ?? req)}</div>`);
   }
   for (const ev of item.evidence) {
-    rows.push(`<div class="evid">evidence: ${esc(ev.source)}</div>`);
+    rows.push(
+      `<div class="evid"><button class="evlink" data-open-evidence data-ref="${esc(ev.dossierRef ?? "")}" data-source="${esc(ev.source)}" title="Open the research dossier (rendered, read-only)">evidence: ${esc(ev.source)}</button></div>`,
+    );
   }
   if (item.accepted?.complexity)
     rows.push(
@@ -302,6 +304,9 @@ export function buildBoardHtml(
     `<span class="title">Thinking Board</span>` +
     `<span class="spacer"></span>` +
     (opts.busy ? `<span class="busy">working…</span>` : "") +
+    (model.contextDigestRef
+      ? `<button data-act="opendigest" title="Open the context digest (rendered, read-only)">Context digest</button>`
+      : "") +
     `<button data-act="openchat">Open chat</button>` +
     `<button data-act="panic" class="danger" title="Wipe derived state — journal and assumptions survive verbatim (refused after any freeze)">Panic</button>` +
     `<button data-act="freeze" ${canFreeze ? "" : "disabled"} title="${canFreeze ? "Freeze the cut into a TEP" : "Blocked — ask Thinky to check readiness"}">Freeze</button>` +
@@ -386,6 +391,7 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);margin
 .detail{display:none;padding:4px 16px 8px 46px;font-size:.9em;border-left:3px solid transparent}
 .detail.open{display:block}
 .detail .note,.detail .edge,.detail .evid,.detail .acc,.detail .pending{margin:2px 0;opacity:.9}
+.detail .evlink{background:none;border:none;color:var(--vscode-textLink-foreground);cursor:pointer;padding:0;text-decoration:underline;font-size:inherit}
 .detail .noteby{display:inline-block;font-size:.75em;opacity:.55;margin-right:6px;text-transform:uppercase;letter-spacing:.05em}
 .detail .notepart{margin:2px 0}
 .detail .notepart b{opacity:1}
@@ -427,7 +433,7 @@ document.body.addEventListener('change', function(e){
 });
 document.body.addEventListener('click', function(e){
   let t = e.target;
-  while (t && t !== document.body && !(t.hasAttribute && (t.hasAttribute('data-park')||t.hasAttribute('data-journal-del')||t.hasAttribute('data-chev')||t.hasAttribute('data-verb')||t.hasAttribute('data-act')||t.hasAttribute('data-eval')||t.hasAttribute('data-accept')||t.hasAttribute('data-resolve')||t.hasAttribute('data-resolve-edit')||t.hasAttribute('data-item')||t.hasAttribute('data-check')))) t = t.parentElement;
+  while (t && t !== document.body && !(t.hasAttribute && (t.hasAttribute('data-open-evidence')||t.hasAttribute('data-park')||t.hasAttribute('data-journal-del')||t.hasAttribute('data-chev')||t.hasAttribute('data-verb')||t.hasAttribute('data-act')||t.hasAttribute('data-eval')||t.hasAttribute('data-accept')||t.hasAttribute('data-resolve')||t.hasAttribute('data-resolve-edit')||t.hasAttribute('data-item')||t.hasAttribute('data-check')))) t = t.parentElement;
   if (!t || t === document.body) return;
   if (t.hasAttribute('data-check')) return; // checkbox handled on change
   if (t.hasAttribute('data-journal-del')) {
@@ -436,6 +442,10 @@ document.body.addEventListener('click', function(e){
   }
   if (t.hasAttribute('data-park')) {
     vscodeApi.postMessage({type:'parkGroup', entry:Number(t.getAttribute('data-park'))});
+    return;
+  }
+  if (t.hasAttribute('data-open-evidence')) {
+    vscodeApi.postMessage({type:'openEvidence', dossierRef:t.getAttribute('data-ref')||undefined, source:t.getAttribute('data-source')||''});
     return;
   }
   if (t.hasAttribute('data-chev')) {
@@ -460,6 +470,7 @@ document.body.addEventListener('click', function(e){
     if (act==='setcut') vscodeApi.postMessage({type:'setCutFromSelection'});
     else if (act==='clearsel') vscodeApi.postMessage({type:'clearSelection'});
     else if (act==='ask' || act==='openchat') vscodeApi.postMessage({type:'askThinky'});
+    else if (act==='opendigest') vscodeApi.postMessage({type:'openEvidence', dossierRef:'research/_context-digest.md', source:'context digest'});
     else if (act==='panic') vscodeApi.postMessage({type:'panic'});
     else if (act==='freeze') vscodeApi.postMessage({type:'freeze'});
     return;

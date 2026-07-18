@@ -1,6 +1,6 @@
 # Expansion redesign — the thinking space as an uncertainty engine
 
-**Status:** design approved 2026-07-18 (field-session with the maintainer); implementation staged, not started.
+**Status:** design approved 2026-07-18; IMPLEMENTED same day, Steps 1–7 (v0.1.276–283), 1079/1079 tests.
 
 ## 1. Thesis
 

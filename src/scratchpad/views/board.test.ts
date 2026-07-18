@@ -190,3 +190,35 @@ test("integrity findings surface as a fold and row flags (2026-07-18)", () => {
   assert.ok(html.includes(">orphan<"), "orphan row flag");
   assert.ok(html.includes(">no acceptance<"), "uncovered element flag");
 });
+
+test("context digest + evidence open as rendered read-only tabs (2026-07-18)", () => {
+  let model = emptyModel("tep");
+  (model as { contextDigestRef?: string }).contextDigestRef =
+    "research/_context-digest.md";
+  const elId = model.sections.find((s) => s.kind === "elements")!.id;
+  model = reduce(model, {
+    type: "proposeItem",
+    actor: "research",
+    sectionId: elId,
+    item: { text: "el", modality: "optional", evals: {} },
+  }).model;
+  const itemId = model.sections.find((s) => s.kind === "elements")!.items[0].id;
+  model = reduce(model, {
+    type: "attachEvidence",
+    actor: "research",
+    itemId,
+    evidence: {
+      source: "the panel component",
+      method: "read",
+      checkedAt: "2026-07-18T00:00:00Z",
+      dossierRef: "research/panel.md",
+    },
+  }).model;
+  const html = buildBoardHtml(model, { selection: [], cut: [] });
+  assert.ok(html.includes('data-act="opendigest"'), "digest link present");
+  assert.ok(html.includes("data-open-evidence"), "evidence is clickable");
+  assert.ok(html.includes('data-ref="research/panel.md"'));
+  const script = html.slice(html.indexOf("<script>") + 8, html.lastIndexOf("</script>"));
+  assert.ok(script.includes("opendigest"));
+  assert.doesNotThrow(() => new Function(script));
+});
