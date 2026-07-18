@@ -324,49 +324,24 @@ test("three-dimension gate (2026-07-17): convergence, complexity, risk — evalu
   assert.equal(gate.pass, false);
   const blockers = gate.elements[0].blockers.join(" | ");
   assert.match(blockers, /no settled acceptance linked/);
-  assert.match(blockers, /risk never evaluated/);
 
-  // Converge it: linked settled acceptance; evaluate risk 3.
+  // Converge it: linked settled acceptance. Risk is DERIVED (2026-07-18) —
+  // with no open gaps in reach it is 1 (ok), so a converged element passes.
   const cri = propose(sec("acceptance"), "measurable outcome", {
     requires: [el],
   });
   check(cri);
-  m = reduce(m, {
-    type: "setEval",
-    actor: "human",
-    itemId: el,
-    facet: "risk",
-    value: 3,
-  }).model;
-  gate = cutReadiness(m, [el]);
-  assert.equal(gate.pass, false);
-  assert.match(gate.elements[0].blockers.join(" "), /risk 3 unmitigated/);
-
-  // Mitigate by SIGNED acceptance (empty reason refused first).
-  const { delta: refused } = reduce(m, {
-    type: "acceptEval",
-    actor: "human",
-    itemId: el,
-    facet: "risk",
-    reason: "   ",
-  });
-  assert.equal(refused.kind, "rejected");
-  m = reduce(m, {
-    type: "acceptEval",
-    actor: "human",
-    itemId: el,
-    facet: "risk",
-    reason: "single-tenant tool; worst case is a re-run",
-  }).model;
   gate = cutReadiness(m, [el]);
   assert.equal(gate.pass, true, gate.elements[0].blockers.join(" | "));
 
-  // An OPEN question linked into the closure blocks the whole cut.
+  // An OPEN gap linked into the closure DRIVES risk up and blocks the cut.
   const q = propose(sec("gap"), "unanswered question", { requires: [el] });
   check(q);
   gate = cutReadiness(m, [el]);
   assert.equal(gate.pass, false);
   assert.equal(gate.openGaps.length, 1);
+  assert.match(gate.elements[0].blockers.join(" "), /risk \d — \d+ open gap/);
+  // Closing the gap re-derives risk downward → the cut passes.
   m = reduce(m, { type: "resolveItem", actor: "human", itemId: q }).model;
   gate = cutReadiness(m, [el]);
   assert.equal(gate.pass, true);
@@ -378,9 +353,25 @@ test("three-dimension gate (2026-07-17): convergence, complexity, risk — evalu
       c: { elementIds: readonly string[] },
     ) => { body: string };
   };
+  // Complexity acceptance still prints a signed residual; risk is derived
+  // (no signed risk residual — you close gaps, you don't accept risk).
+  m = reduce(m, {
+    type: "setEval",
+    actor: "human",
+    itemId: el,
+    facet: "complexity",
+    value: 3,
+  }).model;
+  m = reduce(m, {
+    type: "acceptEval",
+    actor: "human",
+    itemId: el,
+    facet: "complexity",
+    reason: "large surface but well-understood",
+  }).model;
   const body = projectCut(m, { elementIds: [el] }).body;
   assert.match(body, /## Accepted Residuals/);
-  assert.match(body, /Residual risk accepted — "the element": single-tenant tool/);
+  assert.match(body, /Residual complexity accepted — "the element": large surface/);
 });
 
 test("journal coverage (2026-07-17): [serves:] traces parse; untraced intents report zero", () => {

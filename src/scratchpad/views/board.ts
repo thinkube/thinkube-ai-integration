@@ -29,6 +29,7 @@ function vs(): typeof vscode {
 }
 import type { WorkingModel, Item, Section, SectionKind } from "../model";
 import { freezeEnabled } from "../model";
+import { computeElementRisk } from "../deriveRisk";
 import type { ScratchpadInboundMessage } from "./document";
 
 /**
@@ -111,6 +112,15 @@ function detailHtml(item: Item, model: WorkingModel): string {
   for (const s of model.sections)
     for (const it of s.items) byId.set(it.id, it.text);
   const rows: string[] = [];
+  const isElement = model.sections.some(
+    (s) => s.kind === "elements" && s.items.some((it) => it.id === item.id),
+  );
+  if (isElement && item.state === "active") {
+    const r = computeElementRisk(model, item.id);
+    rows.push(`<div class="riskrat"><b>Risk ${r.score}:</b> ${esc(r.rationale.replace(/^Risk \d+ — /, ""))}</div>`);
+  }
+  if (item.rationale?.complexity)
+    rows.push(`<div class="cxrat"><b>Complexity:</b> ${esc(item.rationale.complexity)}</div>`);
   for (const note of item.notes) {
     const by = note.by ? `<span class="noteby">${esc(note.by)}</span>` : "";
     const parts = splitExplainNote(note.text);
@@ -170,10 +180,21 @@ function detailHtml(item: Item, model: WorkingModel): string {
 function rowHtml(
   item: Item,
   model: WorkingModel,
+  kind: string,
   selected: boolean,
   inCut: boolean,
   open: boolean,
 ): string {
+  // Elements carry DERIVED risk (2026-07-18): a function of their open gaps,
+  // shown as an R badge with its rationale in the detail. Non-elements have
+  // no risk of their own.
+  const derivedRisk =
+    kind === "elements" && item.state === "active"
+      ? computeElementRisk(model, item.id)
+      : null;
+  const riskBadge = derivedRisk
+    ? `<span class="badge risk r${derivedRisk.score}" title="${esc(derivedRisk.rationale)}">R${derivedRisk.score}</span>`
+    : "";
   const classes = [
     "item",
     selected ? "sel" : "",
@@ -192,7 +213,7 @@ function rowHtml(
     `<button class="chev" data-chev="${item.id}">▸</button>` +
     checkbox +
     `<span class="text">${esc(item.text)}</span>` +
-    `<span class="badges">${inCut ? `<span class="badge cutb">cut</span>` : ""}${badges(item)}</span>` +
+    `<span class="badges">${inCut ? `<span class="badge cutb">cut</span>` : ""}${riskBadge}${badges(item)}</span>` +
     `</div>` +
     // Detail content is always rendered; CSS hides it until the chevron opens
     // it (open state is client-restored from webview state across re-renders).
@@ -218,7 +239,14 @@ function sectionHtml(
     }</span></header>` +
     items
       .map((it) =>
-        rowHtml(it, model, sel.has(it.id), cut.has(it.id), openIds.has(it.id)),
+        rowHtml(
+          it,
+          model,
+          section.kind,
+          sel.has(it.id),
+          cut.has(it.id),
+          openIds.has(it.id),
+        ),
       )
       .join("") +
     `</section>`
@@ -309,6 +337,10 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);margin
 .badges{display:flex;gap:4px;flex-wrap:wrap}
 .badge{font-size:.72em;border:1px solid var(--vscode-panel-border);border-radius:3px;padding:0 4px;opacity:.85}
 .badge.cutb{border-color:#c9a227;color:#c9a227}
+.badge.risk.r1{border-color:var(--vscode-charts-green);color:var(--vscode-charts-green)}
+.badge.risk.r2{border-color:var(--vscode-charts-yellow);color:var(--vscode-charts-yellow)}
+.badge.risk.r3{border-color:var(--vscode-errorForeground);color:var(--vscode-errorForeground)}
+.detail .riskrat,.detail .cxrat{margin:2px 0}
 .badge.lock{color:var(--vscode-charts-orange)}
 .detail{display:none;padding:4px 16px 8px 46px;font-size:.9em;border-left:3px solid transparent}
 .detail.open{display:block}

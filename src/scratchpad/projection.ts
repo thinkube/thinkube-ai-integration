@@ -1,5 +1,6 @@
 import type { SectionKind, Tenant, WorkingModel } from "./model";
 import { goalSection } from "./model";
+import { computeElementRisk } from "./deriveRisk";
 
 /**
  * The frozen status written to the signing tool for TEP artifacts.
@@ -445,27 +446,26 @@ export function cutReadiness(
       );
     const acceptanceLinked = settledLinked("acceptance");
     const complexity = evalDim(it, "complexity");
-    const risk = evalDim(it, "risk");
+    // Risk is DERIVED (2026-07-18): a pure function of open gaps reachable
+    // from the element. Convergence (score 1, no open gaps) = mitigated; any
+    // open gap = unmitigated, and the blocker names the gaps to close.
+    const derivedRisk = computeElementRisk(model, id);
+    const risk: EvalDimension = derivedRisk.score === 1 ? "ok" : "unmitigated";
     const blockers: string[] = [];
     if (!acceptanceLinked)
       blockers.push(
         "no settled acceptance linked — the spec author would have to invent success conditions",
       );
     if (complexity === "unset") blockers.push("complexity never evaluated");
-    if (risk === "unset") blockers.push("risk never evaluated");
     if (complexity === "challenged")
       blockers.push("complexity score contradicted by the structure");
-    if (risk === "challenged")
-      blockers.push(
-        "risk scored low while other items depend on this — re-evaluate or justify",
-      );
     if (complexity === "unmitigated")
       blockers.push(
         "complexity 3 unmitigated — research it (evidence) or accept it with a reason",
       );
     if (risk === "unmitigated")
       blockers.push(
-        "risk 3 unmitigated — research it (evidence) or accept it with a reason",
+        `risk ${derivedRisk.score} — ${derivedRisk.openGaps.length} open gap${derivedRisk.openGaps.length === 1 ? "" : "s"} in reach; close them (research or resolve) to converge`,
       );
     elements.push({
       elementId: id,
