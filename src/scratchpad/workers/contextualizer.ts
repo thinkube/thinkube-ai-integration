@@ -103,6 +103,10 @@ export async function runContextualize(
         model: deps.model,
         permissionMode: "bypassPermissions",
         thinking: { type: "disabled" },
+        // Bound the read loop (2026-07-18): the round greps/reads the scoped
+        // sources — plenty of turns for one repo, but never unbounded so it
+        // cannot grind across a monorepo forever.
+        maxTurns: 24,
         // Read-only over the declared sources; NO mutation, no web (context
         // is what exists HERE, not what the internet says — research covers
         // the outside world separately, with its own provenance).

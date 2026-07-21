@@ -99,6 +99,7 @@ export async function runGapClose(
         model: deps.model,
         permissionMode: "bypassPermissions",
         thinking: { type: "disabled" },
+        maxTurns: 24,
         allowedTools: ["Read", "Grep", "Glob"],
         disallowedTools: [
           "Write",
