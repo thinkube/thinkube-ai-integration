@@ -1,6 +1,14 @@
 # Expansion redesign — the thinking space as an uncertainty engine
 
-**Status:** design approved 2026-07-18; IMPLEMENTED same day, Steps 1–7 (v0.1.276–283), 1079/1079 tests.
+**Status:** design approved 2026-07-18; IMPLEMENTED same day, Steps 1–7 + the self-driving convergence loop (v0.1.276–286), 1086/1086 tests.
+
+## 0. The self-driving loop (added 2026-07-18, fork b approved)
+
+`expand_space` is ONE continuous flow, no manual inter-step triggers:
+**derive → self-repair orphans → close researchable gaps → recommend decisions → surface.**
+- Self-repair: the pipeline heals its own orphans (link to the element served, or `reclassifyItem` a mislabeled orphan into elements). Never drops.
+- Gap-close (`gapClose.ts`): a read-tool round over the product sources. RESEARCHABLE gaps (a fact in the sources) close themselves (`closeGap` — resolve + evidence); DECISION gaps (a design choice) get a researched `proposeDecision` recommendation the human ratifies with one gesture (board "Ratify" button → `resolveItem`). Design authority stays human; legwork does not.
+- Risk falls mechanically as researchable gaps close; decision-gaps stay open (risk up) until ratified.
 
 ## 1. Thesis
 

@@ -39,6 +39,7 @@ import { makeServerSigningTool } from "./freeze";
 import { ThinkubeStore } from "../store/ThinkubeStore";
 import { workerLogEnabled } from "../services/workerLog";
 import { runContextualize } from "./workers/contextualizer";
+import { thinkyDiag } from "./chat/diag";
 import { contextSourcesForSpace } from "./productContext";
 import { runChallenger } from "./workers/challenger";
 import {
@@ -459,22 +460,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
     // the product sources and closes every RESEARCHABLE gap itself, and
     // RECOMMENDS a decision on each decision-gap for the human to ratify — no
     // manual "now close the gaps" trigger.
-    const gapsToClose = openGaps(this._model);
-    if (gapsToClose.length > 0 && this._sidecarRoot) {
-      this._commandMessage = `Closing gaps — researching ${gapsToClose.length} open question(s)…`;
-      this._updatePanel();
-      await this._runWorkerRound("gap-close", ["gap"], async () => {
-        return runGapClose(
-          {
-            model: this._workerModelId,
-            sources: [...this.contextSources],
-            contextDigest: digest,
-            now: this._now,
-          },
-          this._model,
-        );
-      });
-    }
+    await this.closeOpenGaps(digest);
     // Stage 5b — final integrity read.
     const counts = this._model.sections
       .filter((s) => s.kind !== "goal")
@@ -492,6 +478,60 @@ class ScratchpadSessionImpl implements ScratchpadSession {
   /** The last expansion's integrity report (for surfaces to render). */
   computeIntegrity() {
     return computeIntegrity(this._model);
+  }
+
+  /**
+   * Run the gap-close round standalone (also invoked by expandStaged). Reads
+   * the product sources, closes researchable gaps, recommends decisions.
+   * Re-runnable at any time (2026-07-18): a "close gaps" trigger.
+   */
+  async closeOpenGaps(digest?: string): Promise<void> {
+    const dg = digest ?? (await this._readDigest());
+    const gapsToClose = openGaps(this._model);
+    thinkyDiag(
+      `gap-close: openGaps=${gapsToClose.length} sidecar=${!!this._sidecarRoot} sources=${this.contextSources.length}`,
+    );
+    if (gapsToClose.length === 0) {
+      this._commandMessage = "No open gaps to close.";
+      this._updatePanel();
+      return;
+    }
+    if (!this._sidecarRoot) {
+      this._commandMessage =
+        "Gap-close needs a thinking-space root (sources unavailable).";
+      this._updatePanel();
+      return;
+    }
+    this._commandMessage = `Closing gaps — researching ${gapsToClose.length} open question(s)…`;
+    this._updatePanel();
+    let produced = 0;
+    await this._runWorkerRound("gap-close", ["gap"], async () => {
+      const actions = await runGapClose(
+        {
+          model: this._workerModelId,
+          sources: [...this.contextSources],
+          contextDigest: dg,
+          now: this._now,
+        },
+        this._model,
+      );
+      produced = actions.length;
+      thinkyDiag(
+        `gap-close: round produced ${actions.length} action(s) [${actions.map((a) => a.type).join(",")}]`,
+      );
+      return actions;
+    });
+    const closed = this._model.sections
+      .find((s) => s.kind === "gap")!
+      .items.filter((it) => it.state === "resolved").length;
+    const decisions = this._model.sections
+      .find((s) => s.kind === "gap")!
+      .items.filter((it) => it.state === "active" && it.decisionProposal).length;
+    this._commandMessage =
+      produced === 0
+        ? "Gap-close ran but closed nothing — the round returned no actions (see the Thinkube Scratchpad log). Try again, or the gaps may need your input."
+        : `Gap-close done: ${closed} resolved by research, ${decisions} decision(s) recommended for your Ratify.`;
+    this._updatePanel();
   }
 
   /**
@@ -1462,6 +1502,12 @@ class ScratchpadSessionImpl implements ScratchpadSession {
         }
         if (lowered === "contextualize" || lowered === "context") {
           await this.postFromWebview({ type: "contextualize" });
+          break;
+        }
+        if (lowered === "close gaps" || lowered === "closegaps") {
+          this._commandMessage = undefined;
+          this._updatePanel();
+          await this.closeOpenGaps();
           break;
         }
         // Clear prior message, mark in-flight, update panel to disable the field.

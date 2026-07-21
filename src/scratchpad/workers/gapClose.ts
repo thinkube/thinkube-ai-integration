@@ -16,6 +16,7 @@
  */
 
 import type { Action, WorkingModel } from "../model";
+import { thinkyDiag } from "../chat/diag";
 
 /** Open gap items (active), id + text. */
 export function openGaps(model: WorkingModel): { id: string; text: string }[] {
@@ -121,11 +122,17 @@ export async function runGapClose(
         text = rec.result;
       }
     }
-  } catch {
+  } catch (err) {
+    thinkyDiag(
+      `gap-close SDK error: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return [];
   }
-
-  return parseGapCloseActions(text, gaps, deps.now().toISOString());
+  const actions = parseGapCloseActions(text, gaps, deps.now().toISOString());
+  thinkyDiag(
+    `gap-close: raw=${text.length} chars, parsed=${actions.length} action(s)`,
+  );
+  return actions;
 }
 
 /** Parse + validate the round's JSON into closeGap/proposeDecision actions. */

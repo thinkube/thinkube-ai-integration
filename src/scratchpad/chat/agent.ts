@@ -317,6 +317,14 @@ export const THINKY_TOOLS: Record<string, ThinkyToolDef> = {
       return session.lastCommandMessage ?? `Parked journal entry ${entry}.`;
     },
   },
+  close_gaps: {
+    description:
+      "Run the gap-close round now: read the product sources, close every researchable gap with evidence, and recommend a decision on each decision-gap for the human to ratify. Use when there are open gaps to drive down.",
+    async run(session) {
+      await session.postFromWebview({ type: "command", utterance: "close gaps" });
+      return session.lastCommandMessage ?? "Gap-close round done.";
+    },
+  },
   expand_space: {
     description:
       "Trigger the staged decomposition pipeline: elements → constraints → gap → acceptance, each stage deriving from the elements and recording its edges, then a closing integrity check. Use once intake and context are done (or the human asks to proceed).",
@@ -389,6 +397,7 @@ export async function runThinkyAgentTurn(
     journal_verbatim: { text: z.string().optional() },
     assumption_verbatim: { text: z.string().optional() },
     park_group: { entry: z.number() },
+    close_gaps: {},
     expand_space: {},
   };
   const ctx = { utterance: prompt };
