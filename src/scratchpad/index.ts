@@ -8,6 +8,7 @@ import {
 } from "./session";
 import { emptyModel } from "./model";
 import { serialize } from "./persistence";
+import { slugify } from "./workers/research";
 
 // ===== Public re-exports from model =====
 
@@ -209,33 +210,44 @@ export function registerScratchpadCommands(
         }
         const sidecarRoot = boardRoot();
 
-        // Prompt for a document name.
-        const name = await vscode.window.showInputBox({
+        // Prompt for a free-text title (spaces allowed — it is what you see).
+        // The on-disk file uses a slug of it; the title is stored in the model.
+        const title = await vscode.window.showInputBox({
           prompt: "Name for the new thinking space",
-          placeHolder: "e.g. my-feature",
+          placeHolder: "e.g. Plugin delivery hardening",
           validateInput: (v) => {
             const t = v.trim();
             if (!t) return "Name cannot be empty";
-            if (!/^[a-zA-Z0-9_-]+$/.test(t))
-              return "Use only letters, digits, hyphens, or underscores";
+            if (!slugify(t))
+              return "Name must contain at least one letter or digit";
             return undefined;
           },
         });
-        if (!name) return; // user cancelled
+        if (!title) return; // user cancelled
 
-        const docName = name.trim();
+        const displayTitle = title.trim();
+        const baseSlug = slugify(displayTitle);
 
-        // Seed the fresh-space document on disk (if sidecarRoot is set).
+        // Seed the fresh-space document on disk (if sidecarRoot is set). The
+        // filename is the slug; collisions get a numeric suffix so a new title
+        // never overwrites an existing space.
+        let docName = baseSlug;
         if (sidecarRoot) {
           const thinkingDir = nodePath.join(sidecarRoot, namespace, "thinking");
-          const docPath = nodePath.join(thinkingDir, `${docName}.json`);
           try {
             fs.mkdirSync(thinkingDir, { recursive: true });
-            // Only seed if the file doesn't already exist.
-            if (!fs.existsSync(docPath)) {
-              const freshModel = emptyModel("tep");
-              fs.writeFileSync(docPath, serialize(freshModel), "utf8");
+            let n = 2;
+            while (
+              fs.existsSync(nodePath.join(thinkingDir, `${docName}.json`))
+            ) {
+              docName = `${baseSlug}-${n++}`;
             }
+            const freshModel = { ...emptyModel("tep"), title: displayTitle };
+            fs.writeFileSync(
+              nodePath.join(thinkingDir, `${docName}.json`),
+              serialize(freshModel),
+              "utf8",
+            );
           } catch (err) {
             vscode.window.showErrorMessage(
               `Could not create thinking space: ${err instanceof Error ? err.message : String(err)}`,
@@ -247,6 +259,79 @@ export function registerScratchpadCommands(
         // Open the (possibly just-seeded) document.
         await openScratchpad({ namespace, space: docName, sidecarRoot });
         await openThinkyChat(namespace, docName);
+      },
+    ),
+    // Delete a thinking space and ALL its files — but ONLY while it is still
+    // just a draft: once a TEP has been frozen from it (shipped/flagged items),
+    // that space is the permanent record and refuses deletion (same guard panic
+    // uses). Removes the model, the chat transcript, and the per-space research
+    // digests (research/<space>/).
+    vscode.commands.registerCommand(
+      "thinkube.thinkingSpace.deleteDoc",
+      async (nsArg: unknown, nameArg?: unknown) => {
+        const namespace = nodeString(nsArg, "namespace");
+        const name = nodeString(nameArg, "name") ?? nodeString(nsArg, "name");
+        if (!namespace || !name) {
+          vscode.window.showErrorMessage(
+            "Delete thinking space: could not resolve the space from the tree node.",
+          );
+          return;
+        }
+        const sidecarRoot = boardRoot();
+        if (!sidecarRoot) return;
+        const modelPath = nodePath.join(
+          sidecarRoot,
+          namespace,
+          "thinking",
+          `${name}.json`,
+        );
+        // Guard: refuse once a TEP has been frozen from this space.
+        try {
+          const model = JSON.parse(fs.readFileSync(modelPath, "utf8")) as {
+            sections?: { items?: { state?: string; flaggedBy?: unknown[] }[] }[];
+          };
+          const frozen = (model.sections ?? []).some((s) =>
+            (s.items ?? []).some(
+              (it) =>
+                it.state === "shipped" ||
+                (Array.isArray(it.flaggedBy) && it.flaggedBy.length > 0),
+            ),
+          );
+          if (frozen) {
+            vscode.window.showWarningMessage(
+              `"${name}" has already produced a frozen TEP — it can't be deleted (shipped items are the record).`,
+            );
+            return;
+          }
+        } catch {
+          // unreadable/missing model — nothing to protect, allow the delete
+        }
+        const choice = await vscode.window.showWarningMessage(
+          `Delete thinking space "${name}" and all its files — model, chat transcript, and research digests? This cannot be undone.`,
+          { modal: true },
+          "Delete",
+        );
+        if (choice !== "Delete") return;
+        for (const p of [
+          modelPath,
+          nodePath.join(sidecarRoot, namespace, "thinking", ".chat", `${name}.jsonl`),
+        ]) {
+          try {
+            fs.rmSync(p, { force: true });
+          } catch {
+            /* best-effort */
+          }
+        }
+        try {
+          fs.rmSync(nodePath.join(sidecarRoot, namespace, "research", name), {
+            recursive: true,
+            force: true,
+          });
+        } catch {
+          /* best-effort */
+        }
+        await vscode.commands.executeCommand("thinkube.thinkingSpace.refresh");
+        vscode.window.showInformationMessage(`Deleted thinking space "${name}".`);
       },
     ),
   );

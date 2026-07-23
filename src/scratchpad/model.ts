@@ -93,10 +93,13 @@ export interface Item {
    */
   decisionProposal?: { recommendation: string; reasoning: string };
   /**
-   * Journal-entry group an ELEMENT serves (expansion redesign 2026-07-18):
-   * the index of the numbered journal entry (goal = 1) this element was
-   * derived from. The parking key — deferring a group defers an entry's whole
-   * subtree. Set on elements only.
+   * Journal-entry group this item serves: the index of the numbered journal
+   * entry (goal = 1) this item was derived from — stamped on EVERY item
+   * (elements, constraints, gaps, acceptance), not just elements. It is the
+   * primary structural anchor: an item belongs to the ask that produced it, so
+   * an item with a servesEntry is never an orphan (the `requires` edge to an
+   * element is a secondary refinement for risk/cut precision, not the anchor).
+   * Also the parking key — deferring a group defers an entry's whole subtree.
    */
   servesEntry?: number;
   /**
@@ -247,9 +250,18 @@ export interface WorkingModel {
    * against which existing items are challenged. Append-only human words.
    */
   assumptions?: RoughRequest[];
-  /** Space-relative ref of the context digest dossier (e.g.
-   *  "research/_context-digest.md") — the sanctioned context channel. */
-  contextDigestRef?: string;
+  /** Human-chosen display name for the space (free text, may contain spaces).
+   *  The on-disk file uses a slug of this; surfaces show the title. Falls back
+   *  to the file slug when absent. */
+  title?: string;
+  /**
+   * Journal-entry numbers that have already been through derivation. Adding a
+   * new entry to an expanded space must derive ONLY that entry — re-walking the
+   * derived ones costs a full expand and risks re-inflating the space. This is
+   * the state that makes that possible; it cannot be inferred, because a
+   * refinement entry legitimately produces no items tagged with its own number.
+   */
+  derivedEntries?: number[];
 }
 
 export interface RoughRequest {
@@ -337,9 +349,9 @@ export type Action =
   // 2026-07-17 standing assumptions: append-only human statements that
   // constrain all worker rounds ("this is a single-user platform").
   | { type: "addAssumption"; text: string }
-  // 2026-07-17 context layer: record the digest ref after a contextualize
-  // round writes it. Internal (human-exempt like stampShipped).
-  | { type: "setContextDigest"; ref: string }
+  // Records that a journal entry has been derived, so a later expand can skip
+  // it and derive only the new entries. Internal (worker/orchestrator).
+  | { type: "markEntryDerived"; entry: number }
   | { type: "dropItem"; actor: "human"; itemId: string }
   | { type: "supersedeItem"; actor: Actor; itemId: string; supersedes: string }
   | {
@@ -349,7 +361,10 @@ export type Action =
       newText: string;
     }
   | { type: "resolveEdit"; actor: "human"; itemId: string; accept: boolean }
-  | { type: "addItemNote"; actor: "human"; itemId: string; text: string }
+  // Worker-emittable (2026-07-18): the impact pass annotates an existing item
+  // with WHY a new journal entry contradicts it, so the human sees the reason
+  // on the item itself rather than only in a transient message.
+  | { type: "addItemNote"; actor: Actor; itemId: string; text: string }
   // Human-only: workers may never destroy an annotation (2026-07-16 — needed
   // to clean duplicate/contradictory explainer notes).
   | { type: "removeNote"; actor: "human"; itemId: string; noteId: string }
@@ -384,6 +399,23 @@ export type Action =
   // wrappers ("yes", "add new journal entry: ..."). A RECORDING ERROR is not
   // protected thought — deleting an entry is a sovereign human correction.
   | { type: "removeRoughRequest"; actor: "human"; requestId: string }
+  /**
+   * Rewrite a journal entry (revision, 2026-07-23). Creativity is iterative:
+   * an ask you wrote before the derivation taught you anything is a draft, not
+   * an axiom. Human-only, and empty rewrites are refused like editGoal's.
+   */
+  | { type: "editRoughRequest"; actor: "human"; requestId: string; text: string }
+  /**
+   * DELETE items outright — the only action that removes rather than flips
+   * state. Used by revision: when the ask that produced them changes, its
+   * derived consequences are void, and tombstones nobody will ever read are
+   * just noise. Shipped and TEP-protected items are REFUSED here rather than
+   * skipped, so a caller cannot quietly erase frozen history. Inbound
+   * `requires` edges from survivors are pruned, keeping every edge resolvable.
+   */
+  | { type: "purgeItems"; actor: "human"; itemIds: string[] }
+  /** Mark an entry as needing re-derivation (the inverse of markEntryDerived). */
+  | { type: "unmarkEntryDerived"; entry: number }
   | { type: "setContextScope"; actor: "human"; paths: string[] }
   | { type: "curateIntent"; text: string; title?: string } // reframe worker (or human edit)
   // 2026-07-17: add dependency edges to an EXISTING item (merge-unique).
@@ -1188,23 +1220,23 @@ export function reduce(
       };
     }
 
-    case "setContextDigest": {
-      // Internal action — records where the sanctioned context lives.
-      if (!action.ref.trim()) {
+    case "markEntryDerived": {
+      const before = [...(model.derivedEntries ?? [])];
+      if (before.includes(action.entry)) {
         return {
           model,
-          delta: { kind: "rejected", action, reason: "empty digest ref" },
+          delta: { kind: "rejected", action, reason: "entry already derived" },
         };
       }
-      const before = model.contextDigestRef;
+      const after = [...before, action.entry].sort((a, b) => a - b);
       return {
-        model: { ...model, contextDigestRef: action.ref.trim() },
+        model: { ...model, derivedEntries: after },
         delta: {
           kind: "applied",
           action,
-          field: "contextDigestRef",
+          field: "derivedEntries",
           before,
-          after: action.ref.trim(),
+          after,
         },
       };
     }
@@ -1244,8 +1276,10 @@ export function reduce(
       if (model.assumptions !== undefined) {
         next.assumptions = model.assumptions;
       }
-      if (model.contextDigestRef !== undefined) {
-        next.contextDigestRef = model.contextDigestRef;
+      // The space's NAME is not derived state — panic must not rename it.
+      // (derivedEntries is deliberately NOT carried: nothing is derived now.)
+      if (model.title !== undefined) {
+        next.title = model.title;
       }
       return {
         model: next,
@@ -1771,6 +1805,125 @@ export function reduce(
           field: `roughRequests.${idx}`,
           before: removed,
           after: undefined,
+        },
+      };
+    }
+
+    case "editRoughRequest": {
+      const requests = model.roughRequests ?? [];
+      const idx = requests.findIndex((r) => r.id === action.requestId);
+      if (idx === -1) {
+        return {
+          model,
+          delta: {
+            kind: "rejected",
+            action,
+            reason: `journal entry ${action.requestId} not found`,
+          },
+        };
+      }
+      if (!action.text.trim()) {
+        return {
+          model,
+          delta: {
+            kind: "rejected",
+            action,
+            reason: "empty rewrite refused — delete the entry instead",
+          },
+        };
+      }
+      const before = requests[idx];
+      const after = { ...before, text: action.text.trim() };
+      return {
+        model: {
+          ...model,
+          roughRequests: requests.map((r, i) => (i === idx ? after : r)),
+        },
+        delta: {
+          kind: "applied",
+          action,
+          field: `roughRequests.${idx}`,
+          before,
+          after,
+        },
+      };
+    }
+
+    case "purgeItems": {
+      const ids = new Set(action.itemIds);
+      if (ids.size === 0) {
+        return {
+          model,
+          delta: { kind: "rejected", action, reason: "no items to purge" },
+        };
+      }
+      // History is not erasable. A shipped item served a frozen TEP and code
+      // may exist for it; a protected item is another TEP's context.
+      const protectedIds: string[] = [];
+      const found = new Set<string>();
+      for (const s of model.sections)
+        for (const it of s.items) {
+          if (!ids.has(it.id)) continue;
+          found.add(it.id);
+          if (it.state === "shipped" || (it.flaggedBy ?? []).length > 0)
+            protectedIds.push(it.id);
+        }
+      if (protectedIds.length > 0) {
+        return {
+          model,
+          delta: {
+            kind: "rejected",
+            action,
+            reason: `refused — ${protectedIds.length} item(s) are shipped or TEP-protected: ${protectedIds.join(", ")}`,
+          },
+        };
+      }
+      if (found.size === 0) {
+        return {
+          model,
+          delta: { kind: "rejected", action, reason: "no such items" },
+        };
+      }
+      const sections = model.sections.map((s) => ({
+        ...s,
+        items: s.items
+          .filter((it) => !ids.has(it.id))
+          // Prune inbound edges so every remaining `requires` still resolves.
+          .map((it) =>
+            (it.requires ?? []).some((r) => ids.has(r))
+              ? { ...it, requires: it.requires!.filter((r) => !ids.has(r)) }
+              : it,
+          ),
+      }));
+      return {
+        model: { ...model, sections },
+        delta: {
+          kind: "applied",
+          action,
+          field: "sections",
+          before: found.size,
+          after: 0,
+        },
+      };
+    }
+
+    case "unmarkEntryDerived": {
+      const before = [...(model.derivedEntries ?? [])];
+      if (!before.includes(action.entry)) {
+        return {
+          model,
+          delta: { kind: "rejected", action, reason: "entry was not derived" },
+        };
+      }
+      const after = before.filter((e) => e !== action.entry);
+      return {
+        model: { ...model, derivedEntries: after },
+        delta: {
+          kind: "applied",
+          action,
+          field: "derivedEntries",
+          before,
+          after,
         },
       };
     }

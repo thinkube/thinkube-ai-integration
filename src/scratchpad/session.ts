@@ -38,18 +38,27 @@ import type { DryRunResult, SlicerVerdict } from "./dryRunSlice";
 import { makeServerSigningTool } from "./freeze";
 import { ThinkubeStore } from "../store/ThinkubeStore";
 import { workerLogEnabled } from "../services/workerLog";
-import { runContextualize } from "./workers/contextualizer";
+import { appendLogFile, scratchpadChannel } from "./output";
+import { runContextualizeAsk } from "./workers/contextualizer";
+import { runImpactPass, type EntryFinding } from "./workers/impact";
 import { thinkyDiag } from "./chat/diag";
 import {
   candidateRepoSources,
   contextSourcesForSpace,
 } from "./productContext";
 import { runChallenger } from "./workers/challenger";
+import { describeRevisionPlan, planRevision } from "./revision";
 import {
-  EXPANSION_STAGES,
-  expansionStageWorker,
   groupItemIds,
   repairWorker,
+  journalEntries,
+  EXPANSION_STAGES,
+  expansionStageWorker,
+  askElementsWorker,
+  askSectionWorker,
+  stampAskEdges,
+  stampServesEntry,
+  type AskSection,
 } from "./workers/expansionPipeline";
 import { computeIntegrity, integritySummary } from "./integrityGate";
 import { runGapClose, openGaps } from "./workers/gapClose";
@@ -192,15 +201,23 @@ export function _bootstrapExtensionUri(uri: vscode.Uri): void {
  * so toggling works without a reload). Worker streams are debugging gold but
  * must never occupy the Output panel by default.
  */
-let _scratchpadChannel: vscode.OutputChannel | undefined;
 function scratchpadLog(line: string): void {
   if (!workerLogEnabled()) return;
+  // Mirror to the shared file (one place carries streaming + diagnostics) and
+  // the output channel. The file makes a field round diagnosable without the
+  // Output panel; stamped so it interleaves chronologically with [thinky].
+  appendLogFile(`${new Date().toISOString()} ${line}`);
+  scratchpadChannel()?.appendLine(line);
+}
+
+/** Reveal the "Thinkube Scratchpad" output (without stealing keyboard focus)
+ *  so the human doesn't have to hunt the Output panel to watch a round. */
+function revealScratchpad(): void {
+  if (!workerLogEnabled()) return;
   try {
-    _scratchpadChannel ??=
-      vscode.window.createOutputChannel("Thinkube Scratchpad");
-    _scratchpadChannel.appendLine(line);
+    scratchpadChannel()?.show(true);
   } catch {
-    /* headless test host — no output channel */
+    /* no output channel (test host) */
   }
 }
 
@@ -226,6 +243,10 @@ class ScratchpadSessionImpl implements ScratchpadSession {
   private readonly _space: string;
   private readonly _loadQueryFn: () => QueryFn;
   private readonly _workerModelId: string;
+  /** Model for the JUDGMENT round (gap-close): a stronger model than the
+   *  volume workers, mirroring the orchestrator's "judgment on Opus, volume on
+   *  Sonnet" split. Defaults to "opus". */
+  private readonly _judgeModelId: string;
   private readonly _dossier: DossierStore | undefined;
   private readonly _now: () => Date;
   private readonly _runSlicer:
@@ -244,6 +265,10 @@ class ScratchpadSessionImpl implements ScratchpadSession {
   /** Ephemeral UI selection (item ids) — the first step of the two-step
    *  destructive flow. Never persisted; pruned of dead ids on apply. */
   private _selection: Set<string> = new Set();
+  /** A journal wording being drafted before it is committed (revision). */
+  private _revisionDraft: { entry: number; text: string } | undefined;
+  /** The latest round's accusations against journal entries themselves. */
+  private _entryConcerns: EntryFinding[] = [];
   /** Ephemeral dependency-focus item id (transient inspection highlight). */
   private _focusItemId: string | undefined;
   /** The CUT (third selection channel, 2026-07-16 redesign): element ids
@@ -266,12 +291,14 @@ class ScratchpadSessionImpl implements ScratchpadSession {
     now?: () => Date,
     runSlicer?: (intent: string) => Promise<SlicerVerdict>,
     signing?: SigningTool,
+    judgeModelId?: string,
   ) {
     this._model = model;
     this._sidecarRoot = sidecarRoot;
     this._namespace = namespace;
     this._space = space;
     this._workerModelId = workerModelId;
+    this._judgeModelId = judgeModelId ?? "opus";
     this._loadQueryFn = loadQueryFn;
     this._dossier = dossier;
     this._now = now ?? (() => new Date());
@@ -297,6 +324,12 @@ class ScratchpadSessionImpl implements ScratchpadSession {
 
   get selectionCount(): number {
     return this._selection.size;
+  }
+
+  /** Elements currently in the TEP cut — lets the chat know which phase the
+   *  space is in (a cut is what makes readiness meaningful). */
+  get cutCount(): number {
+    return this._cut.size;
   }
 
   get selectedItemIds(): readonly string[] {
@@ -467,23 +500,251 @@ class ScratchpadSessionImpl implements ScratchpadSession {
    * machinery all hang off those edges).
    */
   async expandStaged(): Promise<void> {
-    const digest = await this._readDigest();
-    for (const stage of EXPANSION_STAGES) {
-      this._commandMessage = `Expanding — ${stage} (stage ${EXPANSION_STAGES.indexOf(stage) + 1} of ${EXPANSION_STAGES.length})…`;
+    revealScratchpad();
+    // Offer the scope picker first when the human has not narrowed and there
+    // is more than one candidate repo — expand reads context from the scoped
+    // sources, so narrowing here keeps each ask's read fast and on-target.
+    if (
+      this._model.contextScope === undefined &&
+      this._candidateRepos().length > 1
+    ) {
+      const ok = await this.scopeContext();
+      if (!ok) {
+        this._commandMessage = "Expansion cancelled — no context scope chosen.";
+        this._updatePanel();
+        return;
+      }
+    }
+    // GLOBAL PASSES (2026-07-18 ask-anchor rebuild): contextualize the whole
+    // journal, then ONE pass per section — elements, constraints, gap,
+    // acceptance — over ALL elements at once (no per-ask re-walking). Every
+    // section item is stamped `servesEntry` (its ask) deterministically from
+    // the element it derives from, so orphans are impossible by construction.
+    const asks = journalEntries(this._model);
+    const canContext = !!this._dossier && !!this._sidecarRoot;
+    // INCREMENTAL (2026-07-18): entries already derived are left alone. Adding
+    // an entry to an expanded space derives only that entry — a full re-walk
+    // costs another whole expand and risks re-inflating the space.
+    const alreadyDerived = new Set(this._model.derivedEntries ?? []);
+    const targetAsks = asks
+      .map((text, i) => ({ n: i + 1, text }))
+      .filter((a) => !alreadyDerived.has(a.n));
+    const isIncremental = alreadyDerived.size > 0;
+    if (targetAsks.length === 0) {
+      this._commandMessage =
+        "Every journal entry is already derived — add a new entry, or close gaps / settle on the board.";
       this._updatePanel();
-      await this._runWorkerRound(`expand:${stage}`, [stage], async () => {
-        const worker = expansionStageWorker(stage, {
+      return;
+    }
+
+    // 1. Context: one focused digest per journal ask (auditable at
+    //    research/<space>/_ask-<n>.md); each ask's own digest grounds its
+    //    elements round, the union grounds the global section passes.
+    const askDigests = new Map<number, string>();
+    if (canContext) {
+      const assumptions = (this._model.assumptions ?? []).map((a) => a.text);
+      for (const [idx, ask] of targetAsks.entries()) {
+        this._commandMessage = `Reading context — entry ${ask.n} (${idx + 1}/${targetAsks.length})…`;
+        this._updatePanel();
+        const res = await runContextualizeAsk(
+          {
+            loadQuery: this._loadQueryFn,
+            model: this._judgeModelId,
+            dossier: this._dossier!,
+            sources: [...this.contextSources],
+            log: scratchpadLog,
+          },
+          ask.n,
+          ask.text,
+          assumptions,
+        );
+        if (res?.text) askDigests.set(ask.n, res.text);
+      }
+    }
+    const digest = await this._readDigest();
+    const elementsSecId =
+      this._model.sections.find((s) => s.kind === "elements")?.id ?? "";
+
+    // 2. ELEMENTS — one round PER ASK. Each ask's subject matter is DISTINCT,
+    //    so this is not the redundant part (that was re-deriving the sections
+    //    per ask, which stay global below). Per-ask here is the forcing
+    //    function: a single global pass silently derived only the first ask.
+    for (const [idx, ask] of targetAsks.entries()) {
+      const askNum = ask.n;
+      this._commandMessage = `Deriving elements — entry ${askNum} (${idx + 1}/${targetAsks.length})…`;
+      this._updatePanel();
+      await this._runWorkerRound(`ask${askNum}:elements`, ["elements"], async () => {
+        const worker = askElementsWorker(askNum, ask.text, {
           loadQuery: this._loadQueryFn,
           model: this._workerModelId,
-          contextDigest: digest,
+          contextDigest: askDigests.get(askNum) ?? digest,
         });
-        const loop = createLoop({ workerFor: () => worker });
-        return loop.step(this._model, []);
+        const actions = await createLoop({ workerFor: () => worker }).step(
+          this._model,
+          [],
+        );
+        // This round KNOWS its ask — stamp it rather than guessing a default.
+        return actions.map((a) =>
+          a.type === "proposeItem" && a.sectionId === elementsSecId
+            ? { ...a, item: { ...a.item, servesEntry: askNum } }
+            : a,
+        );
       });
+      // Record it as derived so a later expand skips it.
+      this.dispatch({ type: "markEntryDerived", entry: askNum });
     }
-    // Stage 5a — SELF-REPAIR (2026-07-18): the pipeline heals its own orphans
-    // (link to the element they serve, or promote a mislabeled orphan into
-    // elements) so expand_space does not hand the human its own mistakes.
+
+    // 3. COVERAGE GATE: an ask that produced no elements is either a genuine
+    //    refinement ask or a missed derivation — surface it, never hide it.
+    const perAsk = new Map<number, number>();
+    for (const it of this._model.sections.find((s) => s.kind === "elements")
+      ?.items ?? [])
+      if (it.state === "active" && it.servesEntry !== undefined)
+        perAsk.set(it.servesEntry, (perAsk.get(it.servesEntry) ?? 0) + 1);
+    const uncoveredAsks = asks
+      .map((_, i) => i + 1)
+      .filter((n) => !perAsk.has(n));
+    if (uncoveredAsks.length) {
+      scratchpadLog(
+        `━━ coverage: ask(s) ${uncoveredAsks.join(", ")} produced NO elements`,
+      );
+    }
+
+    // 4. SECTIONS.
+    const sectionStages = EXPANSION_STAGES.filter(
+      (s) => s !== "elements",
+    ) as AskSection[];
+    const liveElements = () =>
+      (this._model.sections.find((s) => s.kind === "elements")?.items ?? [])
+        .filter((it) => it.state === "active")
+        .map((it) => ({ id: it.id, text: it.text, serves: it.servesEntry ?? 1 }));
+
+    if (!isIncremental) {
+      // FULL expand: ONE global pass each over ALL elements (this is where the
+      // per-ask re-walking used to multiply the space). Each item is anchored
+      // to its ask via the element it derives from.
+      for (const stage of sectionStages) {
+        this._commandMessage = `Expanding — ${stage}…`;
+        this._updatePanel();
+        await this._runWorkerRound(`expand:${stage}`, [stage], async () => {
+          const worker = expansionStageWorker(stage, {
+            loadQuery: this._loadQueryFn,
+            model: this._workerModelId,
+            contextDigest: digest,
+          });
+          const actions = await createLoop({ workerFor: () => worker }).step(
+            this._model,
+            [],
+          );
+          return stampServesEntry(actions, liveElements());
+        });
+      }
+    } else {
+      // INCREMENTAL: derive each NEW entry's sections scoped to ITS elements —
+      // or, when the entry only refines what exists (no new elements), scoped
+      // to the live elements it bounds. Derived entries are never re-walked.
+      for (const ask of targetAsks) {
+        const all = liveElements();
+        const own = all.filter((e) => e.serves === ask.n);
+        const isRefinement = own.length === 0;
+        const scope = (isRefinement ? all : own).map((e) => ({
+          id: e.id,
+          text: e.text,
+        }));
+        if (scope.length === 0) continue; // nothing to hang sections off yet
+        for (const section of sectionStages) {
+          this._commandMessage = `Entry ${ask.n}: ${section}…`;
+          this._updatePanel();
+          await this._runWorkerRound(
+            `entry${ask.n}:${section}`,
+            [section],
+            async () => {
+              const worker = askSectionWorker(
+                section,
+                ask.n,
+                scope,
+                ask.text,
+                {
+                  loadQuery: this._loadQueryFn,
+                  model: this._workerModelId,
+                  contextDigest: askDigests.get(ask.n) ?? digest,
+                },
+                isRefinement,
+              );
+              const actions = await createLoop({ workerFor: () => worker }).step(
+                this._model,
+                [],
+              );
+              // Edges to the elements it bounds, and the anchor is THIS entry —
+              // the entry that caused the item to exist.
+              return stampAskEdges(
+                actions,
+                scope.map((e) => e.id),
+              ).map((a) =>
+                a.type === "proposeItem"
+                  ? { ...a, item: { ...a.item, servesEntry: ask.n } }
+                  : a,
+              );
+            },
+          );
+        }
+      }
+    }
+
+    // 5. IMPACT — only when adding to an already-derived space. A new entry can
+    //    contradict or supersede what is already committed; without this the
+    //    space would hold both and freeze a contradiction. Findings are
+    //    annotated onto the affected items and STAGED for the human to resolve
+    //    (keep / drop / supersede) — the machine never applies the verdict.
+    let impactNote = "";
+    if (isIncremental) {
+      this._commandMessage = "Checking impact on the existing space…";
+      this._updatePanel();
+      const report = await runImpactPass(
+        {
+          model: this._judgeModelId,
+          contextDigest: digest,
+          effort: "high",
+          log: scratchpadLog,
+        },
+        this._model,
+        targetAsks,
+      );
+      for (const f of report.findings) {
+        this.dispatch({
+          type: "addItemNote",
+          actor: "research",
+          itemId: f.itemId,
+          text: `Impact — ${f.kind} by journal entr${targetAsks.length === 1 ? "y" : "ies"} ${targetAsks
+            .map((a) => a.n)
+            .join(", ")}: ${f.why}`,
+        });
+      }
+      if (report.findings.length > 0) {
+        this._selection = new Set(report.findings.map((f) => f.itemId));
+        impactNote =
+          `⚠ ${report.findings.length} existing item(s) collide with the new entry — ` +
+          `staged for you (see the note on each): keep, drop, or supersede. `;
+      }
+      if (report.askConflicts.length > 0) {
+        impactNote +=
+          `⚠ The new entry conflicts with: ${report.askConflicts.join("; ")}. `;
+      }
+      // The upward channel: the round may find the ENTRY itself at fault.
+      // Nothing is applied — the wording is the human's, so this only offers.
+      this._entryConcerns = report.entryFindings;
+      if (report.entryFindings.length > 0) {
+        impactNote +=
+          `⚠ ${report.entryFindings.length} journal entr` +
+          `${report.entryFindings.length === 1 ? "y is" : "ies are"} themselves ` +
+          `questionable (${report.entryFindings.map((f) => `entry ${f.entry}: ${f.kind}`).join("; ")}) — ` +
+          `ask Thinky to revise them. `;
+      }
+    }
+
+    // Backstop repair: per-ask edge-stamping should leave no orphans, so this
+    // runs only for an imported or legacy orphan — link it to the element it
+    // serves, or promote a mislabeled orphan into elements.
     let integrity = computeIntegrity(this._model);
     if (integrity.orphans.length > 0) {
       this._commandMessage = `Repairing — ${integrity.orphans.length} orphan(s)…`;
@@ -505,18 +766,23 @@ class ScratchpadSessionImpl implements ScratchpadSession {
       );
       integrity = computeIntegrity(this._model);
     }
-    // Stage 6 — SELF-DRIVING gap-close (2026-07-18 fork b): the machine reads
-    // the product sources and closes every RESEARCHABLE gap itself, and
-    // RECOMMENDS a decision on each decision-gap for the human to ratify — no
-    // manual "now close the gaps" trigger.
-    await this.closeOpenGaps(digest);
-    // Stage 5b — final integrity read.
+    // Gap-close (judgment path on the judge model): resolves researchable
+    // gaps, DECIDES the decidable ones into constraints, and recommends a
+    // decision on each genuine intent fork for the human to ratify. Re-reads
+    // the digest (no arg) so it judges the fresh per-ask digests just written.
+    await this.closeOpenGaps();
     const counts = this._model.sections
       .filter((s) => s.kind !== "goal")
       .map((s) => `${s.kind} ${s.items.filter((it) => it.state === "active").length}`)
       .join(" · ");
     this._commandMessage =
-      `Expansion complete — ${counts}. ${integritySummary(integrity)} ` +
+      `${isIncremental ? "Derived new entries" : "Expansion complete"} — ${counts}. ` +
+      `${integritySummary(integrity)} ` +
+      impactNote +
+      (uncoveredAsks.length
+        ? `⚠ Journal entr${uncoveredAsks.length === 1 ? "y" : "ies"} ${uncoveredAsks.join(", ")} produced NO elements — ` +
+          `either they only refine existing ones, or the derivation missed them; check before cutting. `
+        : "") +
       `Review on the board; nothing is settled yet.`;
     scratchpadLog(
       `━━ integrity: ${integrity.orphans.length} orphans, ${integrity.uncoveredElements.length} uncovered, ${integrity.duplicates.length} dup-pairs`,
@@ -535,6 +801,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
    * Re-runnable at any time (2026-07-18): a "close gaps" trigger.
    */
   async closeOpenGaps(digest?: string): Promise<void> {
+    revealScratchpad();
     const dg = digest ?? (await this._readDigest());
     const gapsToClose = openGaps(this._model);
     thinkyDiag(
@@ -551,16 +818,21 @@ class ScratchpadSessionImpl implements ScratchpadSession {
       this._updatePanel();
       return;
     }
-    this._commandMessage = `Closing gaps — researching ${gapsToClose.length} open question(s)…`;
+    this._commandMessage = `Closing gaps — judging ${gapsToClose.length} open question(s) on ${this._judgeModelId}…`;
     this._updatePanel();
+    const constraintsBefore = this._model.sections
+      .find((s) => s.kind === "constraints")!
+      .items.filter((it) => it.state === "active").length;
     let produced = 0;
-    await this._runWorkerRound("gap-close", ["gap"], async () => {
+    await this._runWorkerRound("gap-close", ["gap", "constraints"], async () => {
       const actions = await runGapClose(
         {
-          model: this._workerModelId,
+          model: this._judgeModelId,
           sources: [...this.contextSources],
           contextDigest: dg,
           now: this._now,
+          effort: "high",
+          log: scratchpadLog,
         },
         this._model,
       );
@@ -570,16 +842,20 @@ class ScratchpadSessionImpl implements ScratchpadSession {
       );
       return actions;
     });
-    const closed = this._model.sections
+    const resolved = this._model.sections
       .find((s) => s.kind === "gap")!
       .items.filter((it) => it.state === "resolved").length;
-    const decisions = this._model.sections
+    const decided =
+      this._model.sections
+        .find((s) => s.kind === "constraints")!
+        .items.filter((it) => it.state === "active").length - constraintsBefore;
+    const forks = this._model.sections
       .find((s) => s.kind === "gap")!
       .items.filter((it) => it.state === "active" && it.decisionProposal).length;
     this._commandMessage =
       produced === 0
         ? "Gap-close ran but closed nothing — the round returned no actions (see the Thinkube Scratchpad log). Try again, or the gaps may need your input."
-        : `Gap-close done: ${closed} resolved by research, ${decisions} decision(s) recommended for your Ratify.`;
+        : `Gap-close done: ${resolved} resolved, ${decided} decided into constraints (review/override on the board), ${forks} intent fork(s) awaiting your Ratify.`;
     this._updatePanel();
   }
 
@@ -587,9 +863,147 @@ class ScratchpadSessionImpl implements ScratchpadSession {
    * Run the REFRAME worker.
    * Wired to the reframe{} message.
    *
-   * The reframe prompt contains checked items only (no unchecked text).
-   * Targets only the goal section (it may produce an editGoal action).
+   * The reframe prompt contains checked items only (no unchecked text), and
+   * the gate allows exactly one action — curateIntent. The human's own goal
+   * text is never touched: reframe writes the curated intent beside it.
    */
+  // ── Revision (2026-07-23) ───────────────────────────────────────────────
+  // Rewording an ask is destructive, so it is a two-beat act: the wording is
+  // drafted and argued over for free, then committed once. The draft lives on
+  // the session (not the model) — an abandoned draft leaves no trace.
+
+  /** The wording currently being drafted, if any. */
+  get revisionDraft(): { entry: number; text: string } | undefined {
+    return this._revisionDraft;
+  }
+
+  /** Journal entries a round has flagged as themselves at fault. */
+  get entryConcerns(): readonly EntryFinding[] {
+    return this._entryConcerns;
+  }
+
+  /** Hold a proposed wording for an entry and describe what applying it costs. */
+  stageRevision(entry: number, text: string): string {
+    const plan = planRevision(this._model, entry);
+    if (plan.refusal) return `Cannot revise: ${plan.refusal}`;
+    if (!text.trim()) return "Give the new wording for the entry.";
+    this._revisionDraft = { entry, text: text.trim() };
+    this._updatePanel();
+    return `${describeRevisionPlan(plan, text.trim())}\n\nNothing has changed yet — say the word to apply it, or keep refining the wording.`;
+  }
+
+  discardRevision(): string {
+    const had = this._revisionDraft !== undefined;
+    this._revisionDraft = undefined;
+    this._updatePanel();
+    return had ? "Revision draft discarded." : "There was no revision draft.";
+  }
+
+  /**
+   * Judge the DRAFT against the space without committing it: the same impact
+   * pass the incremental derivation runs, pointed at a wording that does not
+   * exist yet. Nothing is annotated or staged — this only reports.
+   */
+  async dryRunRevision(): Promise<string> {
+    const draft = this._revisionDraft;
+    if (!draft) return "No revision draft to test.";
+    revealScratchpad();
+    this._commandMessage = `Testing the revision of entry ${draft.entry}…`;
+    this._updatePanel();
+    // The entry's own subtree is about to be deleted, so collisions with it
+    // are noise; judge the draft against what would SURVIVE.
+    const plan = planRevision(this._model, draft.entry);
+    const doomed = new Set(plan.purge.map((h) => h.id));
+    const survivors: WorkingModel = {
+      ...this._model,
+      sections: this._model.sections.map((s) => ({
+        ...s,
+        items: s.items.filter((it) => !doomed.has(it.id)),
+      })),
+    };
+    const report = await runImpactPass(
+      {
+        model: this._judgeModelId,
+        contextDigest: await this._readDigest(),
+        effort: "high",
+        log: scratchpadLog,
+      },
+      survivors,
+      [{ n: draft.entry, text: draft.text }],
+    );
+    this._commandMessage = undefined;
+    this._updatePanel();
+    const lines: string[] = [];
+    if (report.findings.length === 0 && report.askConflicts.length === 0)
+      return "Dry run: the new wording collides with nothing that survives the revision.";
+    if (report.findings.length > 0) {
+      lines.push(
+        `${report.findings.length} surviving item(s) would collide with the new wording:`,
+      );
+      for (const f of report.findings) {
+        const it = this._model.sections
+          .flatMap((s) => s.items)
+          .find((x) => x.id === f.itemId);
+        const shipped = it?.state === "shipped" ? " [SHIPPED — cannot change]" : "";
+        lines.push(`  - ${f.kind}${shipped}: ${it?.text ?? f.itemId} — ${f.why}`);
+      }
+    }
+    if (report.askConflicts.length > 0)
+      lines.push(`The wording itself conflicts with: ${report.askConflicts.join("; ")}`);
+    lines.push("Nothing has been changed — this was a dry run.");
+    return lines.join("\n");
+  }
+
+  /**
+   * Commit the drafted revision: delete what the old wording produced (sparing
+   * shipped/protected items), rewrite the entry, and send it back for
+   * derivation. The re-derivation runs the normal incremental path, so the
+   * impact pass judges the new wording against the rest of the space.
+   */
+  async applyRevision(): Promise<string> {
+    const draft = this._revisionDraft;
+    if (!draft) return "No revision draft to apply.";
+    const plan = planRevision(this._model, draft.entry);
+    if (plan.refusal) return `Cannot revise: ${plan.refusal}`;
+
+    if (plan.purge.length > 0) {
+      const delta = this.dispatch({
+        type: "purgeItems",
+        actor: "human",
+        itemIds: plan.purge.map((h) => h.id),
+      });
+      if (delta.kind !== "applied")
+        return `Revision aborted — ${(delta as { reason?: string }).reason ?? "the purge was refused"}. Nothing changed.`;
+    }
+    const rewrite: Action =
+      plan.requestId === undefined
+        ? { type: "editGoal", text: draft.text }
+        : {
+            type: "editRoughRequest",
+            actor: "human",
+            requestId: plan.requestId,
+            text: draft.text,
+          };
+    const wrote = this.dispatch(rewrite);
+    if (wrote.kind !== "applied")
+      return `Revision aborted — ${(wrote as { reason?: string }).reason ?? "the rewrite was refused"}.`;
+    // Back into the queue: the entry is now underived, so expand walks it alone.
+    this.dispatch({ type: "unmarkEntryDerived", entry: draft.entry });
+    this._revisionDraft = undefined;
+    this._selection.clear();
+    const purged = plan.purge.length;
+    const kept = plan.preserved.length;
+    this._commandMessage =
+      `Entry ${draft.entry} revised — ${purged} derived item(s) deleted` +
+      `${kept > 0 ? `, ${kept} shipped/protected kept` : ""}. Re-deriving…`;
+    this._updatePanel();
+    await this.expandStaged();
+    return (
+      `Entry ${draft.entry} rewritten and re-derived. Deleted ${purged} item(s) from the old wording` +
+      `${kept > 0 ? `; kept ${kept} that a frozen TEP already shipped or protects` : ""}.`
+    );
+  }
+
   async runReframe(): Promise<void> {
     const cutScoped = this._cut.size > 0;
     await this._runWorkerRound("reframe", ["goal"], async () => {
@@ -1017,23 +1431,34 @@ class ScratchpadSessionImpl implements ScratchpadSession {
         scratchpadLog(
           `contextualize sources (product-scoped): ${sources.join(", ")}`,
         );
+        // OPTIONAL PREVIEW (2026-07-18): standalone contextualize regenerates
+        // the SAME per-ask digests expand_space folds in — so what the human
+        // previews is exactly what derivation will inject. It is for
+        // auditability/debugging, NOT a ceremonial gate: expand runs it anyway.
         await this._runWorkerRound("contextualize", ["goal"], async () => {
-          const ref = await runContextualize(
-            {
-              loadQuery: this._loadQueryFn,
-              model: this._workerModelId,
-              dossier: this._dossier!,
-              sources,
-            },
-            this._model,
-          );
-          if (ref) {
-            this.dispatch({ type: "setContextDigest", ref });
-            this._commandMessage = `Context digest written (${ref}) — every worker round now receives it. Open an evidence-style view of it any time via research/${"_context-digest"}.md.`;
-          } else {
-            this._commandMessage =
-              "Contextualize produced no digest (round failed) — try again; the space stays context-blind until it succeeds.";
+          const asks = journalEntries(this._model);
+          const assumptions = (this._model.assumptions ?? []).map((a) => a.text);
+          const refs: string[] = [];
+          for (let i = 0; i < asks.length; i++) {
+            this._commandMessage = `Contextualizing ask ${i + 1}/${asks.length}…`;
+            this._updatePanel();
+            const res = await runContextualizeAsk(
+              {
+                loadQuery: this._loadQueryFn,
+                model: this._workerModelId,
+                dossier: this._dossier!,
+                sources,
+                log: scratchpadLog,
+              },
+              i + 1,
+              asks[i],
+              assumptions,
+            );
+            if (res?.ref) refs.push(res.ref);
           }
+          this._commandMessage = refs.length
+            ? `Contextualized ${refs.length}/${asks.length} ask${asks.length === 1 ? "" : "s"} — open each rendered digest from the board (research/_ask-<n>.md). Expand folds these in automatically.`
+            : "Contextualize produced no digests (rounds failed) — try again; the space stays context-blind until it succeeds.";
           return [];
         });
         this._updatePanel();
@@ -1537,6 +1962,28 @@ class ScratchpadSessionImpl implements ScratchpadSession {
         // not expressible as item actions, so the interpreter's gate can never
         // reach them — recognize them deterministically here instead.
         const lowered = utterance.trim().toLowerCase();
+        // Phase acts the chat's buttons emit — routed deterministically here
+        // rather than hoping the agent interprets a button's utterance.
+        if (
+          lowered === "expand" ||
+          lowered === "expand space" ||
+          lowered === "expand_space"
+        ) {
+          this._commandMessage = undefined;
+          this._updatePanel();
+          await this.postFromWebview({ type: "prefill" });
+          break;
+        }
+        if (lowered === "freeze") {
+          await this.postFromWebview({ type: "freeze" });
+          break;
+        }
+        if (lowered === "open board" || lowered === "board") {
+          this.revealPanel();
+          this._commandMessage = "Board revealed — settle, ratify, or cut there.";
+          this._updatePanel();
+          break;
+        }
         if (lowered === "reframe" || lowered.startsWith("reframe ")) {
           this._commandMessage = undefined;
           this._updatePanel();
@@ -1729,6 +2176,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
   ): Promise<void> {
     // Mark as running
     this._roundInFlight = true;
+    revealScratchpad();
     scratchpadLog(`━━ ${roundName} round starting (targets: ${targetedKinds.join(", ")})`);
     this._roundActivity = {
       targetedKinds,
@@ -1783,19 +2231,41 @@ class ScratchpadSessionImpl implements ScratchpadSession {
     }
   }
 
-  /** Read the context digest markdown (fail-soft) — the sanctioned context
-   *  channel injected into every generative round (2026-07-17). */
+  /** The whole-space context: every per-ask digest (research/<space>/_ask-<n>.md)
+   *  concatenated, for rounds that span asks (gap-close, repair, question).
+   *  Fail-soft — undefined when none have been written yet. */
   private async _readDigest(): Promise<string | undefined> {
-    const ref = this._model.contextDigestRef;
-    if (!ref || !this._sidecarRoot) return undefined;
+    if (!this._sidecarRoot) return undefined;
+    const dir = nodePath.join(
+      this._sidecarRoot,
+      this._namespace,
+      "research",
+      this._space,
+    );
+    let names: string[];
     try {
-      return await nodeFs.readFile(
-        nodePath.join(this._sidecarRoot, this._namespace, ref),
-        "utf8",
-      );
+      names = await nodeFs.readdir(dir);
     } catch {
       return undefined;
     }
+    const askFiles = names
+      .filter((n) => /^_ask-\d+\.md$/.test(n))
+      .sort(
+        (a, b) =>
+          Number(a.match(/\d+/)![0]) - Number(b.match(/\d+/)![0]),
+      );
+    const parts: string[] = [];
+    for (const f of askFiles) {
+      try {
+        const body = (
+          await nodeFs.readFile(nodePath.join(dir, f), "utf8")
+        ).trim();
+        if (body) parts.push(`## ${f}\n\n${body}`);
+      } catch {
+        // skip an unreadable digest
+      }
+    }
+    return parts.length ? parts.join("\n\n") : undefined;
   }
 
   /** Ids inside the current cut: the selected elements plus the context their
@@ -1823,6 +2293,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
       cut: [...this._cut],
       commandMessage: this._commandMessage,
       busy: this._commandInFlight || this._roundInFlight,
+      space: this._space,
     };
   }
 
@@ -1943,10 +2414,12 @@ export async function openScratchpad(
   const nowFn: () => Date = deps?.now ?? (() => new Date());
 
   // Resolve dossier store: use injected store or create the default one
-  // rooted at <sidecarRoot>/<namespace>/research/
+  // rooted per space at <sidecarRoot>/<namespace>/research/<space>/
   const dossierStore: DossierStore | undefined =
     deps?.dossier ??
-    (sidecarRoot ? makeDefaultDossierStore(sidecarRoot, namespace) : undefined);
+    (sidecarRoot
+      ? makeDefaultDossierStore(sidecarRoot, namespace, space)
+      : undefined);
 
   // Resolve runSlicer: injected fake, or the production blind readiness judge.
   // (Wiring gap found in field use 2026-07-16: without a runSlicer no readiness

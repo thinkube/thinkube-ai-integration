@@ -1,4 +1,5 @@
 import type { Action, ToolName, WorkingModel } from "../model";
+import { summarizeEvent } from "./streamLog";
 import {
   normalizeWorkerActions,
   renderActionGuide,
@@ -67,8 +68,9 @@ export interface PhaseWorkerDeps {
 export interface WorkerFactoryDeps {
   loadQuery: () => QueryFn;
   model: string;
-  /** The context digest's markdown (read by the session from
-   *  contextDigestRef) — the sanctioned context channel (2026-07-17). */
+  /** Context digest markdown for this round — the sanctioned channel through
+   *  which a round learns what already exists (scoped to one journal ask, or
+   *  the union across asks for whole-space rounds). */
   contextDigest?: string;
 }
 
@@ -85,9 +87,9 @@ export interface WorkerRun {
 }
 
 /**
- * Grounding blocks shared by every generative round (2026-07-17): the human's
- * standing assumptions (from the model) and the context digest (the sanctioned
- * context channel). Both clearly labeled so provenance stays traceable.
+ * Grounding blocks shared by every generative round: the human's standing
+ * assumptions and this round's context digest. Both clearly labeled so a
+ * worker's knowledge beyond the journal stays traceable to a source.
  */
 export function renderGroundingBlocks(
   workingModel: WorkingModel,
@@ -101,9 +103,16 @@ export function renderGroundingBlocks(
       assumptions.map((a, i) => `${i + 1}. ${a.text}`).join("\n");
   }
   if (contextDigest?.trim()) {
+    // Bound the injection so a large digest does not dominate the prompt; the
+    // full text stays on disk under research/.
+    const trimmed = contextDigest.trim();
+    const injected =
+      trimmed.length <= 8000
+        ? trimmed
+        : `${trimmed.slice(0, 8000)}\n… (digest truncated for this prompt — full text under research/)`;
     out +=
-      `\n\nCONTEXT DIGEST (research/_context-digest.md — what already EXISTS; cite it, build on it, never silently contradict it):\n` +
-      contextDigest.trim();
+      `\n\nCONTEXT DIGEST (what already EXISTS; cite it, build on it, never silently contradict it):\n` +
+      injected;
   }
   return out;
 }
@@ -580,19 +589,15 @@ export function makeProductionQueryFnThunk(
       try {
         for await (const msg of sdkQuery({ prompt: fullPrompt, options })) {
           const rec = msg as Record<string, unknown>;
+          const rendered = summarizeEvent(rec);
+          if (rendered)
+            for (const l of rendered.split("\n")) if (l.trim()) log?.(`  ${l}`);
           if (rec.type === "assistant") {
             const m = rec.message as { content?: unknown } | undefined;
             const content = Array.isArray(m?.content) ? m!.content : [];
-            for (const b of content as Array<Record<string, unknown>>) {
-              if (b.type === "text" && typeof b.text === "string") {
+            for (const b of content as Array<Record<string, unknown>>)
+              if (b.type === "text" && typeof b.text === "string")
                 assistantText += b.text;
-                for (const line of b.text.split("\n")) {
-                  if (line.trim()) log?.(`  │ ${line}`);
-                }
-              } else if (b.type === "tool_use") {
-                log?.(`  ⚒ tool: ${String((b as { name?: unknown }).name ?? "?")}`);
-              }
-            }
           } else if (rec.type === "result" && typeof rec.result === "string") {
             resultText = rec.result;
           }

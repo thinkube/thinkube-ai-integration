@@ -1,6 +1,6 @@
 /**
- * Gap-close round (self-drive 2026-07-18): the researchable/decision split
- * and the parse/validate seam.
+ * Gap-close JUDGE round: the researchable / decidable / intent-fork split and
+ * the parse/validate seam (decide → constraint + closeGap).
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -11,6 +11,7 @@ import {
   buildGapClosePrompt,
   openGaps,
   parseGapCloseActions,
+  type OpenGap,
 } from "./gapClose";
 
 function withGaps(...texts: string[]): { model: WorkingModel; ids: string[] } {
@@ -30,41 +31,84 @@ function withGaps(...texts: string[]): { model: WorkingModel; ids: string[] } {
   return { model, ids };
 }
 
-test("openGaps returns active gaps without a decision proposal", () => {
+const constraintsSec = (m: WorkingModel) =>
+  m.sections.find((s) => s.kind === "constraints")!.id;
+const gapMapOf = (model: WorkingModel) =>
+  new Map<string, OpenGap>(openGaps(model).map((g) => [g.id, g]));
+
+test("openGaps returns active gaps (id, text, requires) without a decision proposal", () => {
   const { model, ids } = withGaps("where are logs captured", "which library");
-  assert.deepEqual(
-    openGaps(model).map((g) => g.id),
-    ids,
-  );
+  const gaps = openGaps(model);
+  assert.deepEqual(gaps.map((g) => g.id), ids);
+  assert.ok(Array.isArray(gaps[0].requires));
 });
 
-test("prompt lists the open gaps and both action shapes", () => {
+test("prompt grounds in the digest and lists all three action shapes", () => {
   const { model, ids } = withGaps("where are logs captured");
-  const p = buildGapClosePrompt(model, ["/repo"], undefined);
+  const p = buildGapClosePrompt(model, "DIGEST: logs live in Logger.ts (src/log.ts)");
   assert.ok(p.includes(ids[0]));
+  assert.ok(p.includes("CONTEXT DIGEST"));
+  assert.ok(p.includes("logs live in Logger.ts"));
   assert.ok(p.includes('"type":"closeGap"'));
+  assert.ok(p.includes('"type":"decide"'));
   assert.ok(p.includes('"type":"proposeDecision"'));
-  assert.ok(p.includes("NEVER guess"));
+  assert.ok(p.includes("Prefer DECIDABLE over INTENT FORK"));
 });
 
-test("parse validates ids, builds closeGap (researchable) and proposeDecision (decision)", () => {
-  const { ids } = withGaps("where are logs captured", "which UX mode");
-  const gapMap = new Map(ids.map((id) => [id, "x"]));
+test("parse: closeGap (researchable), decide→constraint+closeGap, proposeDecision (fork)", () => {
+  const { model, ids } = withGaps("where are logs captured", "which mechanism", "single vs multi tenant");
+  const secId = constraintsSec(model);
   const raw = `noise {"actions":[
-    {"type":"closeGap","itemId":"${ids[0]}","evidence":{"source":"src/log.ts","method":"read","summary":"logs captured in Logger.ts"}},
-    {"type":"proposeDecision","itemId":"${ids[1]}","recommendation":"side panel","reasoning":"matches the graph layout; modal steals focus"},
+    {"type":"closeGap","itemId":"${ids[0]}","evidence":{"source":"src/log.ts","summary":"logs captured in Logger.ts"}},
+    {"type":"decide","itemId":"${ids[1]}","constraint":"status updates are delivered by polling","rationale":"the digest shows no push infra exists","evidence":{"source":"src/net.ts","summary":"no websockets present"}},
+    {"type":"proposeDecision","itemId":"${ids[2]}","recommendation":"single-tenant","reasoning":"matches the stated intent"},
     {"type":"closeGap","itemId":"item-fake","evidence":{"source":"x"}}
   ]} trailing`;
-  const actions = parseGapCloseActions(raw, gapMap, "2026-07-18T00:00:00Z");
-  assert.equal(actions.length, 2);
-  const close = actions.find((a) => a.type === "closeGap");
-  assert.ok(close && close.type === "closeGap");
-  if (close.type === "closeGap") {
-    assert.equal(close.itemId, ids[0]);
-    assert.ok(close.evidence.method.includes("logs captured in Logger.ts"));
+  const actions = parseGapCloseActions(raw, gapMapOf(model), secId, "2026-07-18T00:00:00Z");
+  // researchable → 1 closeGap; decide → proposeItem + closeGap; fork → proposeDecision
+  assert.equal(actions.length, 4);
+  const propose = actions.find((a) => a.type === "proposeItem");
+  assert.ok(propose && propose.type === "proposeItem");
+  if (propose.type === "proposeItem") {
+    assert.equal(propose.sectionId, secId);
+    assert.equal(propose.item.text, "status updates are delivered by polling");
+    assert.ok((propose.item.note ?? "").includes("Decided"));
   }
-  const dec = actions.find((a) => a.type === "proposeDecision");
-  assert.ok(dec && dec.type === "proposeDecision");
+  assert.ok(actions.some((a) => a.type === "proposeDecision"));
+  assert.equal(actions.filter((a) => a.type === "closeGap").length, 2);
+});
+
+test("decide inherits the gap's element edges so the new constraint is not orphaned", () => {
+  // seed an element and a gap that requires it
+  let model = emptyModel("tep");
+  const elSec = model.sections.find((s) => s.kind === "elements")!.id;
+  model = reduce(model, {
+    type: "proposeItem",
+    actor: "gap-filler",
+    sectionId: elSec,
+    item: { text: "the graph view", modality: "mandatory", evals: {} },
+  }).model;
+  const elId = model.sections.find((s) => s.kind === "elements")!.items[0].id;
+  const gapSec = model.sections.find((s) => s.kind === "gap")!.id;
+  model = reduce(model, {
+    type: "proposeItem",
+    actor: "gap-filler",
+    sectionId: gapSec,
+    item: { text: "which render library", modality: "optional", evals: {}, requires: [elId], servesEntry: 2 },
+  }).model;
+  const gapId = model.sections.find((s) => s.kind === "gap")!.items[0].id;
+
+  const raw = `{"actions":[{"type":"decide","itemId":"${gapId}","constraint":"the graph renders via the native canvas","rationale":"already available","evidence":{"source":"pkg.json"}}]}`;
+  const actions = parseGapCloseActions(raw, gapMapOf(model), constraintsSec(model), "t");
+  const propose = actions.find((a) => a.type === "proposeItem");
+  if (propose && propose.type === "proposeItem") {
+    // The decided constraint inherits the gap's ask (never orphaned).
+    assert.equal(propose.item.servesEntry, 2);
+  }
+  assert.ok(propose && propose.type === "proposeItem");
+  if (propose.type === "proposeItem") {
+    assert.deepEqual(propose.item.requires, [elId]);
+  }
 });
 
 test("closeGap resolves a gap + attaches evidence; proposeDecision flags it", () => {

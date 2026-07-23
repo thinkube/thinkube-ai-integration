@@ -11,6 +11,7 @@ import {
   updateActiveContext,
   updateConfigContext,
 } from "./context/active";
+import { thinkyDiag } from "./scratchpad/chat/diag";
 import { AuthService } from "./github/AuthService";
 import { GitHubService } from "./github/GitHubService";
 import { ensureStableServerLink } from "./mcp/stableServerPath";
@@ -72,6 +73,17 @@ export interface TandemExtensionApi {
 
 export function activate(context: vscode.ExtensionContext): TandemExtensionApi {
   console.log("Thinkube Tandem is now active!");
+  // Stamp the ACTIVE build version into the shared log on every activation, so
+  // which build is live is a fact in the file — not a guess. (Reloading the
+  // window re-activates; the line that appears names the version that runs.)
+  try {
+    const v =
+      (context.extension?.packageJSON as { version?: string } | undefined)
+        ?.version ?? "unknown";
+    thinkyDiag(`━━━━━ extension activated: v${v} ━━━━━`);
+  } catch {
+    /* never block activation on a log line */
+  }
 
   // Create status bar item to show active project
   const statusBarItem = vscode.window.createStatusBarItem(

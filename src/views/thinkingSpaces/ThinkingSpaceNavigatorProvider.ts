@@ -87,7 +87,10 @@ export interface ProjectNode {
 export interface ThinkingDocNode {
   kind: "thinkingDoc";
   namespace: string;
+  /** The file slug (filename without .json) — the stable id used to open it. */
   name: string;
+  /** The human-chosen display title from the model, when present. */
+  title?: string;
 }
 
 /**
@@ -263,10 +266,23 @@ function listThinkingDocChildren(
     const entries = fs.readdirSync(thinkingDir, { withFileTypes: true });
     for (const e of entries) {
       if (e.isFile() && e.name.endsWith(".json")) {
+        // Read the model's display title (free text, may have spaces); fall
+        // back to the slug when the file is old/unreadable.
+        let title: string | undefined;
+        try {
+          const raw = JSON.parse(
+            fs.readFileSync(path.join(thinkingDir, e.name), "utf8"),
+          ) as { title?: unknown };
+          if (typeof raw.title === "string" && raw.title.trim())
+            title = raw.title.trim();
+        } catch {
+          // unreadable/corrupt — leave title undefined
+        }
         nodes.push({
           kind: "thinkingDoc",
           namespace,
           name: e.name.slice(0, -5), // strip .json
+          title,
         });
       }
     }
@@ -467,9 +483,11 @@ export class ThinkingSpaceNavigatorProvider implements vscode.TreeDataProvider<T
     }
     if (node.kind === "thinkingDoc") {
       const item = new vscode.TreeItem(
-        node.name,
+        node.title ?? node.name,
         vscode.TreeItemCollapsibleState.None,
       );
+      // Show the slug as a secondary label when a title renames the row.
+      if (node.title && node.title !== node.name) item.description = node.name;
       item.tooltip = `Thinking space: ${node.namespace}/${node.name}`;
       item.contextValue = "thinkingDoc";
       item.iconPath = new vscode.ThemeIcon("notebook");

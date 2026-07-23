@@ -14,7 +14,9 @@ import {
   EXPANSION_STAGES,
   journalEntries,
   liveElements,
+  stampServesEntry,
 } from "./expansionPipeline";
+import type { Action } from "../model";
 
 function seeded(): { model: WorkingModel; elementId: string } {
   let model = emptyModel("tep");
@@ -33,6 +35,30 @@ function seeded(): { model: WorkingModel; elementId: string } {
   const elementId = model.sections.find((s) => s.kind === "elements")!.items[0].id;
   return { model, elementId };
 }
+
+test("stampServesEntry: inherits the ask from the required element; attaches best element when none", () => {
+  const elements = [
+    { id: "el-graph", text: "the orchestration graph view", serves: 1 },
+    { id: "el-verify", text: "the verification instruments", serves: 2 },
+  ];
+  const mk = (text: string, requires?: string[]): Action => ({
+    type: "proposeItem",
+    actor: "gap-filler",
+    sectionId: "constraints-sec",
+    item: { text, modality: "optional", evals: {}, ...(requires ? { requires } : {}) },
+  });
+  const out = stampServesEntry(
+    [
+      mk("edges must be directed", ["el-graph"]), // has edge → serves 1
+      mk("the verification instruments must self-test", []), // no edge → best match el-verify → serves 2
+    ],
+    elements,
+  );
+  const [a, b] = out as Extract<Action, { type: "proposeItem" }>[];
+  assert.equal(a.item.servesEntry, 1);
+  assert.equal(b.item.servesEntry, 2);
+  assert.deepEqual(b.item.requires, ["el-verify"]); // best-match element attached
+});
 
 test("stages are elements → constraints → gap → acceptance", () => {
   assert.deepEqual(EXPANSION_STAGES, [
@@ -62,18 +88,24 @@ test("stage 1 (elements) iterates the journal, demands servesEntry, targets only
   assert.ok(p.includes(`Propose ONLY into the elements section ("${elId}")`));
 });
 
-test("stages 2-4 list the live elements and demand a requires edge (orphan rule)", () => {
+test("stages 2-4 list the live elements and ask each item to link its element", () => {
   const { model, elementId } = seeded();
   for (const stage of ["constraints", "gap", "acceptance"] as const) {
     const p = buildStagePrompt(stage, model);
     assert.ok(p.includes(elementId), `${stage} must list the element id`);
     assert.ok(p.includes("auditor nodes"), `${stage} lists element text`);
-    assert.ok(
-      p.includes('"requires" edge'),
-      `${stage} must demand a requires edge`,
-    );
-    assert.ok(p.includes("ORPHAN"), `${stage} states the orphan rule`);
+    assert.ok(p.includes('"requires"'), `${stage} references the requires edge`);
   }
+});
+
+test("the gap stage tells the worker to OMIT gaps that intent/digest/assumptions answer", () => {
+  const { model } = seeded();
+  const p = buildStagePrompt("gap", model);
+  assert.ok(/OMIT any gap/.test(p), "gap stage prunes answered gaps");
+  assert.ok(/standing assumption/i.test(p), "gap stage names assumptions as a filter");
+  assert.ok(/single-user/i.test(p), "gap stage gives the single-user example");
+  // constraints/acceptance do NOT carry the gap-pruning rule
+  assert.ok(!/OMIT any gap/.test(buildStagePrompt("constraints", model)));
 });
 
 test("liveElements returns active elements with ids", () => {

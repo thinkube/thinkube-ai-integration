@@ -466,12 +466,36 @@ test("precision (2026-07-17): commitments traced [delivered-by:], every element 
 
 // ── Phase A (2026-07-17): panic, assumptions, context digest ─────────────────
 
-test("panicReset: keeps journal+assumptions+digest ref, wipes derived, refuses after freeze", () => {
+test("markEntryDerived records derived entries (sorted, no duplicates) — the incremental key", () => {
+  let m = emptyModel("tep");
+  assert.equal(m.derivedEntries, undefined);
+  m = reduce(m, { type: "markEntryDerived", entry: 2 }).model;
+  m = reduce(m, { type: "markEntryDerived", entry: 1 }).model;
+  assert.deepEqual(m.derivedEntries, [1, 2]);
+  // Re-deriving an entry is refused — that is what keeps expand incremental.
+  const dup = reduce(m, { type: "markEntryDerived", entry: 1 });
+  assert.equal(dup.delta.kind, "rejected");
+  assert.deepEqual(dup.model.derivedEntries, [1, 2]);
+});
+
+test("panicReset keeps the space title but clears derivedEntries (nothing is derived after a wipe)", () => {
+  let m: WorkingModel = { ...emptyModel("tep"), title: "My space" };
+  m = reduce(m, { type: "seedGoal", text: "the goal" }).model;
+  m = reduce(m, { type: "markEntryDerived", entry: 1 }).model;
+  const { model: wiped, delta } = reduce(m, {
+    type: "panicReset",
+    actor: "human",
+  });
+  assert.equal(delta.kind, "applied");
+  assert.equal(wiped.title, "My space");
+  assert.equal(wiped.derivedEntries, undefined);
+});
+
+test("panicReset: keeps journal+assumptions, wipes derived, refuses after freeze", () => {
   let m = emptyModel("tep");
   m = reduce(m, { type: "seedGoal", text: "the goal" }).model;
   m = reduce(m, { type: "addRoughRequest", text: "ask two" }).model;
   m = reduce(m, { type: "addAssumption", text: "single-user platform" }).model;
-  m = reduce(m, { type: "setContextDigest", ref: "research/_context-digest.md" }).model;
   const els = m.sections.find((s) => s.kind === "elements")!;
   m = reduce(m, {
     type: "proposeItem",
@@ -493,7 +517,6 @@ test("panicReset: keeps journal+assumptions+digest ref, wipes derived, refuses a
   assert.equal(wiped.sections.find((s) => s.kind === "goal")!.text, "the goal");
   assert.deepEqual(wiped.roughRequests!.map((r) => r.text), ["ask two"]);
   assert.deepEqual(wiped.assumptions!.map((a) => a.text), ["single-user platform"]);
-  assert.equal(wiped.contextDigestRef, "research/_context-digest.md");
   assert.equal(wiped.sections.every((s) => s.items.length === 0), true);
   assert.equal(wiped.curatedIntent, undefined);
   assert.equal(wiped.readinessHistory.length, 0);
@@ -612,18 +635,23 @@ test("interpreter classify: statement/ask/question return empty-handed with the 
   }
 });
 
-test("contextualize prompt: sources, journal, budget, refresh block", () => {
-  const { buildContextualizePrompt } =
+test("per-ask context prompt: names the one ask, its sources, and the refresh block", () => {
+  const { buildAskContextPrompt } =
     require("./workers/contextualizer") as typeof import("./workers/contextualizer");
-  let m = emptyModel("tep");
-  m = reduce(m, { type: "seedGoal", text: "build the graph view" }).model;
-  const p1 = buildContextualizePrompt(m, ["/repo", "/store/ns"], undefined);
+  const p1 = buildAskContextPrompt(
+    2,
+    "build the graph view",
+    ["/repo", "/store/ns"],
+    ["single-user platform"],
+    undefined,
+  );
   assert.match(p1, /DECLARED SOURCES/);
   assert.match(p1, /- \/repo/);
-  assert.match(p1, /1\. build the graph view/);
-  assert.match(p1, /HARD BUDGET/);
+  assert.match(p1, /ask #2/);
+  assert.match(p1, /build the graph view/);
+  assert.match(p1, /single-user platform/);
   assert.doesNotMatch(p1, /EXISTING DIGEST/);
-  const p2 = buildContextualizePrompt(m, ["/repo"], "old digest body");
+  const p2 = buildAskContextPrompt(2, "build the graph view", ["/repo"], [], "old digest body");
   assert.match(p2, /EXISTING DIGEST/);
   assert.match(p2, /old digest body/);
 });

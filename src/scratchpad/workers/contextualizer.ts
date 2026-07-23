@@ -11,10 +11,59 @@
 
 import type { WorkingModel } from "../model";
 import type { DossierStore } from "./research";
+import { summarizeEvent } from "./streamLog";
 
-/** Space-relative ref where the digest lives (via the dossier store). */
-export const CONTEXT_DIGEST_TOPIC = "_context-digest";
-export const CONTEXT_DIGEST_REF = `research/${CONTEXT_DIGEST_TOPIC}.md`;
+/** Topic/ref for a journal ask's context digest, stored at
+ *  research/_ask-<n>.md and injected into the round that derives that ask. */
+export function askDigestTopic(askNum: number): string {
+  return `_ask-${askNum}`;
+}
+export function askDigestRef(askNum: number): string {
+  return `research/${askDigestTopic(askNum)}.md`;
+}
+
+/** Build the per-ASK context prompt: a small digest scoped to ONE journal ask. */
+export function buildAskContextPrompt(
+  askNum: number,
+  askText: string,
+  sources: string[],
+  assumptions: string[],
+  existing: string | undefined,
+): string {
+  const src = sources.map((s) => `- ${s}`).join("\n");
+  const asm = assumptions.map((a, i) => `${i + 1}. ${a}`).join("\n");
+  return (
+    `You are the CONTEXTUALIZER — an investigator, not a bulk reader. Produce a FOCUSED, SYNTHETIC ` +
+    `context digest scoped to EXACTLY this one ask, so the round that derives it works against reality ` +
+    `and doesn't invent open questions the codebase already answers.\n\n` +
+    `THE ASK (ask #${askNum}):\n${askText}\n\n` +
+    `DECLARED SOURCES (the ONLY places you may read — cite them):\n${src}\n\n` +
+    (asm
+      ? `Standing assumptions (already-settled truths — must not contradict; use them to know what NOT to investigate):\n${asm}\n\n`
+      : "") +
+    (existing
+      ? `EXISTING DIGEST for this ask (refresh — keep what holds, correct what changed):\n${existing}\n\n`
+      : "") +
+    `HOW TO INVESTIGATE (do not Glob-and-read everything — that wastes turns and misses the point):\n` +
+    `- GREP FIRST for the concepts this ask involves; Glob narrowly; Read only the spans that matter; follow references.\n` +
+    `- Look for how ANALOGOUS concerns are ALREADY handled here (persistence, errors, logging, auth, config), ` +
+    `and — just as important — what this codebase DELIBERATELY does NOT do (e.g. no auth layer anywhere → ` +
+    `single-user; no per-tenant code → not multi-tenant). Absences answer as many questions as presences.\n` +
+    `- Surface prior DECISIONS and conventions (TEPs, retros, defect lessons, established patterns) that pre-settle design choices.\n\n` +
+    `THE DIGEST (markdown; distinct short sections):\n` +
+    `- What EXISTS relevant to this ask, and where it lives (cite paths).\n` +
+    `- CONVENTIONS & DELIBERATE OMISSIONS — how analogous concerns are handled, and what is intentionally absent.\n` +
+    `- EXISTS-ALREADY vs GENUINELY-NEW split for this ask.\n` +
+    `- CANDIDATE ASSUMPTIONS — platform-wide truths the code implies (e.g. "no auth anywhere → single-user platform") ` +
+    `that a human could ratify once; list them plainly so they can suppress whole classes of non-questions.\n\n` +
+    `Rules:\n` +
+    `- SYNTHESIZE — distill each source to the few facts that change how this ask is built. Never reproduce whole files; ` +
+    `a fact plus its source path beats a quotation.\n` +
+    `- Every claim cites its source path. State uncertainty honestly ("not found in sources").\n` +
+    `- Complete but no longer than it needs to be. NO recommendations, NO proposals — facts about what exists (and doesn't).\n` +
+    `- Respond with ONLY the digest markdown (no preamble, no fences).`
+  );
+}
 
 export interface ContextualizerDeps {
   loadQuery: () => import("./worker").QueryFn;
@@ -23,64 +72,24 @@ export interface ContextualizerDeps {
   /** Declared context sources (absolute paths) — the ONLY places the round
    *  may read. Typically [workspaceRoot, <sidecarRoot>/<namespace>]. */
   sources: string[];
-}
-
-/** Build the contextualize prompt. Pure; exported for tests. */
-export function buildContextualizePrompt(
-  model: WorkingModel,
-  sources: string[],
-  existingDigest: string | undefined,
-): string {
-  const goalText =
-    model.sections.find((s) => s.kind === "goal")?.text.trim() ?? "";
-  const journal = [
-    ...(goalText ? [goalText] : []),
-    ...(model.roughRequests ?? []).map((r) => r.text),
-  ];
-  const journalBlock =
-    journal.length > 0
-      ? journal.map((t, i) => `${i + 1}. ${t}`).join("\n")
-      : "(empty)";
-  const assumptionsBlock = (model.assumptions ?? [])
-    .map((a, i) => `${i + 1}. ${a.text}`)
-    .join("\n");
-
-  return (
-    `You are the CONTEXTUALIZER for a thinking space. Your only output is a CONTEXT DIGEST: ` +
-    `a bounded markdown document describing what ALREADY EXISTS that is relevant to the journal below, ` +
-    `so that later (blind) worker rounds decompose against reality instead of inventing plausible generalities.\n\n` +
-    `DECLARED SOURCES (the ONLY places you may read — cite them):\n${sources.map((s) => `- ${s}`).join("\n")}\n\n` +
-    `Journal (the human's asks, numbered):\n${journalBlock}\n\n` +
-    (assumptionsBlock
-      ? `Standing assumptions (human statements — the digest must not contradict them):\n${assumptionsBlock}\n\n`
-      : "") +
-    (existingDigest
-      ? `EXISTING DIGEST (you are REFRESHING it — keep what still holds, correct what changed):\n${existingDigest}\n\n`
-      : "") +
-    `Digest rules:\n` +
-    `- HARD BUDGET: at most ~5 KB of markdown. Fewer, sharper facts beat coverage.\n` +
-    `- Every claim cites its source path (file or directory) in parentheses.\n` +
-    `- Cover ONLY what the journal makes relevant: existing components and where they live, ` +
-    `standing constraints and prior decisions (TEPs/retros/defect lessons), and an explicit ` +
-    `"exists already vs genuinely new" split for the journal's asks.\n` +
-    `- State uncertainty honestly ("not found in sources") rather than guessing.\n` +
-    `- NO recommendations, NO proposals, NO items — facts about what exists, only.\n\n` +
-    `Respond with ONLY the digest markdown (no preamble, no fences).`
-  );
+  /** Optional sink for the live worker stream (tool calls + text), so the read
+   *  round is followable in the "Thinkube Scratchpad" output. */
+  log?: (line: string) => void;
 }
 
 /**
- * Run the contextualize round: read-tools over the declared sources, digest
- * written through the dossier store. Returns the dossierRef, or undefined on
- * failure (fail-soft — the space simply stays context-blind until retried).
+ * Run the read-tools round over the declared sources; returns the round's
+ * final text (the digest), bounded, or undefined on failure (fail-soft — the
+ * space simply stays context-blind until retried).
  */
-export async function runContextualize(
-  deps: ContextualizerDeps,
-  model: WorkingModel,
+async function readDigest(
+  model: string,
+  sources: string[],
+  prompt: string,
+  ceiling = 20000,
+  log?: (line: string) => void,
+  effort: "low" | "medium" | "high" | "xhigh" | "max" = "high",
 ): Promise<string | undefined> {
-  const existing = await deps.dossier.read(CONTEXT_DIGEST_TOPIC);
-  const prompt = buildContextualizePrompt(model, deps.sources, existing);
-
   let sdkQuery: (args: {
     prompt: string;
     options: Record<string, unknown>;
@@ -93,23 +102,23 @@ export async function runContextualize(
   } catch {
     return undefined;
   }
-
   try {
     let resultText = "";
     let assistantText = "";
     for await (const msg of sdkQuery({
       prompt,
       options: {
-        model: deps.model,
+        model,
         permissionMode: "bypassPermissions",
-        thinking: { type: "disabled" },
-        // Bound the read loop (2026-07-18): the round greps/reads the scoped
-        // sources — plenty of turns for one repo, but never unbounded so it
-        // cannot grind across a monorepo forever.
+        // Contextualize is INVESTIGATION — thinking on so it plans the search
+        // (grep-first, targeted reads) instead of bulk-globbing. The bound is
+        // maxTurns (the read loop) + effort (thinking depth). No USD cap: runs
+        // ride the Claude Code subscription, so a notional-cost ceiling buys
+        // nothing and aborts legitimate reads mid-digest (field defect: a $1
+        // cap killed ask #1's digest outright).
+        thinking: { type: "adaptive" },
+        effort,
         maxTurns: 24,
-        // Read-only over the declared sources; NO mutation, no web (context
-        // is what exists HERE, not what the internet says — research covers
-        // the outside world separately, with its own provenance).
         allowedTools: ["Read", "Grep", "Glob"],
         disallowedTools: [
           "Write",
@@ -120,38 +129,72 @@ export async function runContextualize(
           "WebSearch",
           "Task",
         ],
-        additionalDirectories: deps.sources,
+        additionalDirectories: sources,
       },
     })) {
       const rec = msg as Record<string, unknown>;
+      const rendered = summarizeEvent(rec);
+      if (rendered)
+        for (const l of rendered.split("\n")) if (l.trim()) log?.(`  ${l}`);
       if (rec.type === "assistant") {
         const m = rec.message as { content?: unknown } | undefined;
         const content = Array.isArray(m?.content) ? m!.content : [];
-        for (const b of content as Array<Record<string, unknown>>) {
-          if (b.type === "text" && typeof b.text === "string") {
+        for (const b of content as Array<Record<string, unknown>>)
+          if (b.type === "text" && typeof b.text === "string")
             assistantText += b.text;
-          }
-        }
       } else if (rec.type === "result" && typeof rec.result === "string") {
         resultText = rec.result;
       }
     }
     const digest = (resultText || assistantText).trim();
     if (!digest) return undefined;
-    // Enforce the budget mechanically — a bloated digest pollutes every
-    // downstream prompt. Clip with an honest marker.
-    const bounded =
-      digest.length <= 6144
-        ? digest
-        : `${digest.slice(0, 6144)}\n\n> [digest clipped at 6 KB — refresh with a tighter focus]`;
-    const { dossierRef } = await deps.dossier.write(
-      CONTEXT_DIGEST_TOPIC,
-      bounded,
-    );
-    return dossierRef;
+    // The stored digest is an artifact the human opens — keep it COMPLETE. A
+    // truncated artifact stamped with advice ("narrow the scope") is the
+    // machine handing back its own failure. `ceiling` is only a runaway guard
+    // against a pathological round; when it trips, clip SILENTLY at a paragraph
+    // boundary — no marker, because directing the read is our job, not theirs.
+    if (digest.length <= ceiling) return digest;
+    const cut = digest.slice(0, ceiling);
+    const lastBreak = cut.lastIndexOf("\n\n");
+    return lastBreak > ceiling * 0.6 ? cut.slice(0, lastBreak) : cut;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Read a small context digest scoped to one journal ask over the declared
+ * sources, storing it at research/_ask-<n>.md. Returns { ref, text }, or
+ * undefined when the round fails (fail-soft).
+ */
+export async function runContextualizeAsk(
+  deps: ContextualizerDeps,
+  askNum: number,
+  askText: string,
+  assumptions: string[],
+): Promise<{ ref: string; text: string } | undefined> {
+  const topic = askDigestTopic(askNum);
+  const existing = await deps.dossier.read(topic);
+  const prompt = buildAskContextPrompt(
+    askNum,
+    askText,
+    deps.sources,
+    assumptions,
+    existing,
+  );
+  deps.log?.(`▸ contextualize ask #${askNum} (model: ${deps.model})`);
+  // A focused, synthetic per-ask digest sits well under this; the ceiling is a
+  // pure runaway guard, not a target — the stored file stays complete.
+  const bounded = await readDigest(
+    deps.model,
+    deps.sources,
+    prompt,
+    24000,
+    deps.log,
+  );
+  if (!bounded) return undefined;
+  const { dossierRef } = await deps.dossier.write(topic, bounded);
+  return { ref: dossierRef, text: bounded };
 }
 
 /**

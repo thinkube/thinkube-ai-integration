@@ -10,9 +10,10 @@
  *  - The agent's tool belt IS the tandem verb set, each tool calling the SAME
  *    postFromWebview seam every other surface uses — same gates, same
  *    normalize layer, same provenance.
- *  - HUMAN SOVEREIGNTY: settling (check), destructive verbs, freeze and panic
- *    are NOT in the belt. The agent stages and prepares; the human acts via
- *    the state-derived buttons.
+ *  - HUMAN SOVEREIGNTY is COMMANDING, not clicking: the agent may settle,
+ *    defer, drop and revise, but only on an explicit order, always via
+ *    select-then-act so the human sees the set first. Freeze and panic are
+ *    never the agent's — they stay on the board behind their own modals.
  *  - Model: pinned to sonnet (the chat routes and narrates; design/audit
  *    cognition lives in the worker rounds with their own role-based models).
  *
@@ -23,6 +24,9 @@
 import type { Delta, WorkingModel } from "../model";
 import type { ScratchpadInboundMessage } from "../session";
 import { computeElementRisk } from "../deriveRisk";
+import { computeIntegrity, integritySummary } from "../integrityGate";
+import type { ItemQuery } from "../query";
+import { findItems, indexItems, renderHits } from "../query";
 
 /** The narrow session surface the agent's tools need. */
 export interface ThinkyAgentSessionLike {
@@ -33,6 +37,18 @@ export interface ThinkyAgentSessionLike {
   readonly contextSources?: readonly string[];
   postFromWebview(message: ScratchpadInboundMessage): Promise<void>;
   dispatch?(action: unknown): Delta;
+  /** Revision — optional, so a surface that cannot revise simply omits it. */
+  readonly revisionDraft?: { entry: number; text: string };
+  readonly entryConcerns?: readonly {
+    entry: number;
+    kind: string;
+    why: string;
+    suggestedText?: string;
+  }[];
+  stageRevision?(entry: number, text: string): string;
+  dryRunRevision?(): Promise<string>;
+  applyRevision?(): Promise<string>;
+  discardRevision?(): string;
 }
 
 // ── Grounding ────────────────────────────────────────────────────────────────
@@ -53,6 +69,11 @@ export function renderSpaceSnapshot(session: ThinkyAgentSessionLike): string {
       lines.push(`  A${i + 1}. ${a.text.slice(0, 200)}`),
     );
   }
+  // Item ids → text, so edges can be shown as readable names.
+  const nameOf = new Map<string, string>();
+  for (const sec of model.sections)
+    for (const it of sec.items) nameOf.set(it.id, it.text);
+
   for (const sec of model.sections) {
     if (sec.kind === "goal") continue;
     const items = sec.items.filter((it) => it.state !== "dropped");
@@ -67,15 +88,39 @@ export function renderSpaceSnapshot(session: ThinkyAgentSessionLike): string {
         marks.push(`R${computeElementRisk(model, it.id).score}`);
       if (it.servesEntry !== undefined) marks.push(`entry${it.servesEntry}`);
       if ((it.flaggedBy ?? []).length > 0) marks.push("protected");
+      // CHEAP SIGNALS ONLY — the index says what exists and flags where depth
+      // is available; `inspect_item` fetches the reasoning on demand. Inlining
+      // every note/rationale/evidence would inflate every turn's prompt to pay
+      // for detail that most turns never use.
+      if (it.decisionProposal) marks.push("DECISION-PENDING");
+      if (it.notes.length > 0) marks.push(`${it.notes.length}n`);
+      if (it.evidence.length > 0) marks.push(`${it.evidence.length}ev`);
       lines.push(
-        `  - ${it.id}${marks.length ? ` [${marks.join(",")}]` : ""} ${it.text.slice(0, 160)}`,
+        `  - ${it.id}${marks.length ? ` [${marks.join(",")}]` : ""} ${it.text.slice(0, 200)}`,
       );
     }
   }
+  // Structural health — one cheap line the board also surfaces.
+  const integrity = computeIntegrity(model);
+  if (!integrity.clean) lines.push(integritySummary(integrity));
   if (model.curatedTitle) lines.push(`Curated intent: ${model.curatedTitle}`);
   if (session.contextSources?.length) {
     lines.push(
-      `Declared context sources (contextualize reads EXACTLY these — not chooseable): ${session.contextSources.join(", ")}`,
+      `Declared context sources (expand reads EXACTLY these when it derives — narrow them with scope_context, never by typing paths): ${session.contextSources.join(", ")}`,
+    );
+  }
+  if (session.entryConcerns?.length) {
+    lines.push("Journal entries a round flagged as themselves at fault:");
+    for (const c of session.entryConcerns)
+      lines.push(
+        `  entry ${c.entry} — ${c.kind}: ${c.why}` +
+          (c.suggestedText ? `\n    suggested wording: ${c.suggestedText}` : ""),
+      );
+  }
+  if (session.revisionDraft) {
+    lines.push(
+      `Revision drafted (NOT applied) for journal entry ${session.revisionDraft.entry}: ` +
+        `"${session.revisionDraft.text.slice(0, 200)}"`,
     );
   }
   if ((session.selectionCount ?? 0) > 0) {
@@ -90,7 +135,7 @@ export function renderSpaceSnapshot(session: ThinkyAgentSessionLike): string {
   const out = lines.join("\n");
   return out.length <= 12000
     ? out
-    : `${out.slice(0, 12000)}\n[snapshot clipped]`;
+    : `${out.slice(0, 12000)}\n[snapshot clipped — use find_items/inspect_item for anything not listed]`;
 }
 
 export function buildThinkySystemPrompt(): string {
@@ -98,13 +143,26 @@ export function buildThinkySystemPrompt(): string {
     `You are Thinky, the Thinkube tandem thinking-space assistant. You converse with the human ` +
     `about their design intent and act on the space ONLY through your tools.\n\n` +
     `Doctrine (non-negotiable):\n` +
-    `- HUMAN SOVEREIGNTY: you cannot settle (check), drop, defer, freeze, or panic. Those acts belong ` +
-    `to the human. You STAGE items (stage_items) and the human applies the verb via the buttons.\n` +
-    `- When refusing a sovereign act, point at the REAL control and never invent UI: settling = the ` +
-    `checkbox on the board; staged verbs = the board's action bar; panic (wipe derived state, keep the ` +
-    `journal) = the /panic slash command here or the Panic button in the board's top bar; freeze = the ` +
-    `board's Freeze button once the gate is green; deleting a mis-captured journal entry = the ✕ next to it ` +
-    `in the board's Journal fold.\n` +
+    `- HUMAN SOVEREIGNTY means the human COMMANDS, not that they click. You may settle, unsettle, defer and ` +
+    `drop — but ONLY on their explicit order, never on your own initiative and never as a helpful extra. ` +
+    `Freeze and panic are not yours at any time; they stay on the board.\n` +
+    `- Work in two steps, always: SELECT then ACT. select_items resolves the human's phrasing into a staged ` +
+    `set; you report that set back in their language; apply_verb then acts on it. Show the set before acting ` +
+    `unless they already named it exactly — a wrong selection acted on silently is the one unrecoverable ` +
+    `mistake here.\n` +
+    `- Selection is by CRITERIA, not by hand-listing ids. "the constraints for the first element" is ` +
+    `select_items{kind:'constraints', relatedTo:<that element's id>}; "everything from my third ask" is ` +
+    `{servesEntry:3}; "the risky ones" is {riskAtLeast:3}. Never infer which items are related — ask ` +
+    `find_items/select_items, which follow the real dependency edges.\n` +
+    `- For the acts that remain the human's: freeze = the board's Freeze button once the gate is green; ` +
+    `panic (wipe derived state, keep the journal) = the Panic button in the board's top bar; deleting a ` +
+    `mis-captured journal entry = the ✕ next to it in the board's Journal fold. Point at the real control; ` +
+    `never invent UI.\n` +
+    `- The journal is a DRAFT, not an axiom — creativity is iterative. When the human says an ask was ` +
+    `WRONG (not merely incomplete), propose_revision drafts a new wording and shows what it would cost; ` +
+    `refine the text with them for free, offer test_revision to see what it would break, and apply_revision ` +
+    `only on their order. When the ask is merely INCOMPLETE, journal a new entry instead — revision deletes ` +
+    `what the old wording produced, so never reach for it to add something.\n` +
     `- Cuts carve a TEP from SETTLED elements. cut_elements accepts element item ids; the closure ` +
     `pulls related context automatically at readiness/preview time.\n` +
     `- Never invent item ids — use exactly the ids in [SPACE STATE]. If the human refers to items ` +
@@ -118,13 +176,15 @@ export function buildThinkySystemPrompt(): string {
     `scope, call journal_verbatim and ask what more — one short question, no analysis yet. When the message ` +
     `mixes meta-talk with content ("yes, add this: …"), extract ONLY the content via the {text} excerpt — an ` +
     `exact substring; pure confirmations ("yes", "ok") and navigation words are NOT entries, do not journal ` +
-    `them. Keep going until they say it's all / that's everything.\n` +
-    `2. CONTEXT: then ask what already exists that matters here, and OFFER to run contextualize. The sources ` +
-    `are the PRODUCT's repositories (listed in [SPACE STATE]) — never ask for paths. When there are several, ` +
-    `offer scope_context so the human narrows to the repos this space actually touches, then contextualize. ` +
-    `Statements about the environment go through assumption_verbatim.\n` +
-    `3. DECOMPOSE: once the digest exists (or they decline context), offer expand_space (the staged pipeline). ` +
-    `Never call it uninvited — the human triggers the derivation.\n` +
+    `them. When the human PASTES A LIST (several lines or bullets, each a distinct ask), call journal_list ` +
+    `once — it records one independent entry per line. Keep going until they say it's all / that's everything.\n` +
+    `2. SCOPE: the sources expand reads are the PRODUCT's repositories (listed in [SPACE STATE]) — never ask ` +
+    `for paths. When there are several, offer scope_context so the human narrows to the repos this space ` +
+    `actually touches. Statements about the environment go through assumption_verbatim. Do NOT offer a ` +
+    `separate contextualize step — expand reads the scoped sources per ask on its own.\n` +
+    `3. DECOMPOSE: offer expand_space (the staged pipeline — it reads context for each journal ask, then ` +
+    `derives elements, constraints, gaps and acceptance, and closes what it can). Never call it uninvited — ` +
+    `the human triggers the derivation.\n` +
     `Risk is DERIVED (a function of an element's open gaps) — never claim to set it; to lower risk, close gaps ` +
     `(research or the human resolves them). To postpone a journal entry's whole functionality, park_group its ` +
     `entry number.\n` +
@@ -167,6 +227,25 @@ export function extractVerbatim(
   return norm(whole).includes(norm(requested)) ? norm(requested) : null;
 }
 
+/**
+ * Split a pasted list into one journal entry per line. Blank lines are
+ * dropped and a leading list marker (-, *, •, –, a number like "1." or "2)",
+ * or a "[ ]"/"[x]" checkbox) is stripped. Marker removal only trims the ends
+ * of a line, so every returned entry is still a contiguous slice of the
+ * human's own words — nothing is rewritten.
+ */
+export function splitJournalList(utterance: string): string[] {
+  return utterance
+    .split(/\r?\n/)
+    .map((line) =>
+      line
+        .trim()
+        .replace(/^(?:[-*•–]|\d+[.)]|\[[ xX]?\])\s+/, "")
+        .trim(),
+    )
+    .filter((line) => line.length > 0);
+}
+
 function validIds(model: WorkingModel, raw: unknown): {
   valid: string[];
   unknown: string[];
@@ -180,7 +259,205 @@ function validIds(model: WorkingModel, raw: unknown): {
   return { valid, unknown };
 }
 
+/**
+ * Read the query criteria out of a tool call. Unknown keys are ignored rather
+ * than guessed at, so a malformed call selects nothing instead of everything.
+ */
+function toQuery(args: Record<string, unknown>): ItemQuery {
+  const q: ItemQuery = {};
+  const kinds = ["elements", "constraints", "gap", "acceptance"] as const;
+  if (typeof args.kind === "string" &&
+      (kinds as readonly string[]).includes(args.kind))
+    q.kind = args.kind as ItemQuery["kind"];
+  if (typeof args.relatedTo === "string" && args.relatedTo)
+    q.relatedTo = args.relatedTo;
+  if (typeof args.servesEntry === "number") q.servesEntry = args.servesEntry;
+  if (typeof args.settled === "boolean") q.settled = args.settled;
+  if (typeof args.state === "string")
+    q.state = args.state as ItemQuery["state"];
+  if (typeof args.riskAtLeast === "number") q.riskAtLeast = args.riskAtLeast;
+  if (typeof args.complexityAtLeast === "number")
+    q.complexityAtLeast = args.complexityAtLeast;
+  if (typeof args.hasDecisionPending === "boolean")
+    q.hasDecisionPending = args.hasDecisionPending;
+  if (typeof args.textMatches === "string" && args.textMatches)
+    q.textMatches = args.textMatches;
+  if (typeof args.orphans === "boolean") q.orphans = args.orphans;
+  if (typeof args.isProtected === "boolean") q.isProtected = args.isProtected;
+  return q;
+}
+
 export const THINKY_TOOLS: Record<string, ThinkyToolDef> = {
+  find_items: {
+    description:
+      "Resolve items by CRITERIA (read-only — changes nothing). Args, all optional and combined with AND: " +
+      "{kind: 'elements'|'constraints'|'gap'|'acceptance', relatedTo: itemId, servesEntry: number, " +
+      "settled: boolean, state: 'active'|'shipped'|'deferred'|'dropped'|'any', riskAtLeast, complexityAtLeast, " +
+      "hasDecisionPending, textMatches, orphans, isProtected}. " +
+      "relatedTo follows the dependency graph: give an ELEMENT id to get everything belonging to it " +
+      "(its constraints, their gaps, the acceptance), or any other id to get what shares its elements. " +
+      "Use this to answer 'which items…' questions and to check a set BEFORE selecting it.",
+    async run(session, args) {
+      const q = toQuery(args);
+      const hits = findItems(session.model, q);
+      return `${hits.length} item(s) match:\n${renderHits(hits)}`;
+    },
+  },
+  select_items: {
+    description:
+      "Stage items by CRITERIA for a verb — same arguments as find_items, plus optional {itemIds: string[]} " +
+      "to stage explicit ids instead. This REPLACES the current staged selection. Always report back which " +
+      "items you staged (by text) so the human can see the set before ordering a verb.",
+    async run(session, args) {
+      const explicit = Array.isArray(args.itemIds)
+        ? validIds(session.model, args.itemIds).valid
+        : undefined;
+      const hits = explicit
+        ? findItems(session.model, { state: "any" }).filter((h) =>
+            explicit.includes(h.id),
+          )
+        : findItems(session.model, toQuery(args));
+      await session.postFromWebview({ type: "clearSelection" });
+      if (hits.length === 0)
+        return "Nothing staged — no items match those criteria. Selection cleared.";
+      for (const h of hits)
+        await session.postFromWebview({ type: "toggleSelect", itemId: h.id });
+      return `Staged ${hits.length} item(s):\n${renderHits(hits)}`;
+    },
+  },
+  apply_verb: {
+    description:
+      "Apply a verb to the STAGED selection, on the human's explicit order. Args: " +
+      "{verb: 'settle'|'unsettle'|'defer'|'drop'}. NEVER call this uninvited — the human must ask for the " +
+      "action. Freezing and panic are not verbs here; they stay on the board.",
+    async run(session, args) {
+      const map: Record<string, "check" | "uncheck" | "defer" | "drop"> = {
+        settle: "check",
+        check: "check",
+        unsettle: "uncheck",
+        uncheck: "uncheck",
+        defer: "defer",
+        drop: "drop",
+      };
+      const verb = map[String(args.verb ?? "").toLowerCase()];
+      if (!verb)
+        return "Unknown verb — use settle, unsettle, defer or drop.";
+      if ((session.selectionCount ?? 0) === 0)
+        return "Nothing is staged — select items first, then apply the verb.";
+      await session.postFromWebview({ type: "applySelection", verb });
+      return session.lastCommandMessage ?? `Applied ${args.verb}.`;
+    },
+  },
+  inspect_item: {
+    description:
+      "Read ONE item in full: its rationale, notes, evidence, dependencies, evals and any pending decision. " +
+      "The space snapshot is an index — use this whenever the human asks why an item exists, where a score " +
+      "came from, or what a decision recommends. Args: {itemId: string}",
+    async run(session, args) {
+      const id = typeof args.itemId === "string" ? args.itemId : "";
+      const byId = indexItems(session.model);
+      const found = byId.get(id);
+      if (!found) return `No item with id ${id || "(none given)"}.`;
+      const { kind, item } = found;
+      const nameOf = (x: string): string =>
+        byId.get(x)?.item.text.slice(0, 80) ?? x;
+      const out: string[] = [`${item.id} [${kind}] ${item.text}`];
+      out.push(
+        `state: ${item.state}${item.checked ? " (settled)" : ""}` +
+          `${item.servesEntry !== undefined ? ` · journal entry ${item.servesEntry}` : ""}` +
+          `${item.modality ? ` · ${item.modality}` : ""}`,
+      );
+      if (kind === "elements" && item.state === "active") {
+        const r = computeElementRisk(session.model, item.id);
+        out.push(`risk: R${r.score} (derived from its open gaps)`);
+      } else if (item.evals.risk !== undefined) {
+        out.push(`risk: R${item.evals.risk}${item.rationale?.risk ? ` — ${item.rationale.risk}` : ""}`);
+      }
+      if (item.evals.complexity !== undefined)
+        out.push(
+          `complexity: C${item.evals.complexity}${item.rationale?.complexity ? ` — ${item.rationale.complexity}` : ""}`,
+        );
+      if (item.decisionProposal)
+        out.push(
+          `DECISION PENDING — recommends: ${item.decisionProposal.recommendation}\n` +
+            `  reasoning: ${item.decisionProposal.reasoning}`,
+        );
+      if ((item.requires ?? []).length > 0)
+        out.push(
+          `requires:\n${item.requires!.map((r) => `  - ${r} (${nameOf(r)})`).join("\n")}`,
+        );
+      const dependents = [...byId.values()].filter((v) =>
+        (v.item.requires ?? []).includes(item.id),
+      );
+      if (dependents.length > 0)
+        out.push(
+          `required by:\n${dependents.map((d) => `  - ${d.item.id} [${d.kind}] ${d.item.text.slice(0, 80)}`).join("\n")}`,
+        );
+      if (item.notes.length > 0)
+        out.push(
+          `notes:\n${item.notes.map((n) => `  - (${n.by}) ${n.text}`).join("\n")}`,
+        );
+      if (item.evidence.length > 0)
+        out.push(
+          `evidence:\n${item.evidence.map((e) => `  - ${e.source} (${e.method})`).join("\n")}`,
+        );
+      if (item.accepted?.risk)
+        out.push(`risk accepted by the human: ${item.accepted.risk.reason}`);
+      if (item.accepted?.complexity)
+        out.push(
+          `complexity accepted by the human: ${item.accepted.complexity.reason}`,
+        );
+      if ((item.flaggedBy ?? []).length > 0)
+        out.push(`protected — served as context for ${item.flaggedBy!.join(", ")}`);
+      if (item.shippedIn) out.push(`shipped in ${item.shippedIn}`);
+      return out.join("\n");
+    },
+  },
+  propose_revision: {
+    description:
+      "Draft a NEW WORDING for a journal entry and show what applying it would cost. Args: " +
+      "{entry: number (goal = 1), text: string}. Changes NOTHING — it holds a draft and returns a preview " +
+      "of what would be deleted and what would survive. Call it again to refine the wording; the human " +
+      "argues with the text for free. Use whenever they say an ask was WRONG, not merely incomplete " +
+      "(a genuinely new requirement is a new journal entry instead).",
+    async run(session, args) {
+      const entry =
+        typeof args.entry === "number" ? args.entry : Number(args.entry);
+      const text = typeof args.text === "string" ? args.text : "";
+      if (!Number.isInteger(entry) || entry < 1)
+        return "Give the journal entry number to revise (goal = 1).";
+      if (!session.stageRevision) return "This surface cannot draft revisions.";
+      return session.stageRevision(entry, text);
+    },
+  },
+  test_revision: {
+    description:
+      "Dry-run the drafted revision: judge the NEW wording against the items that would survive it, and " +
+      "report what it would contradict — including anything a frozen TEP already shipped, which the " +
+      "revision cannot change. Changes nothing. Offer this when the human is weighing a rewording.",
+    async run(session) {
+      if (!session.dryRunRevision) return "This surface cannot test revisions.";
+      return session.dryRunRevision();
+    },
+  },
+  apply_revision: {
+    description:
+      "Commit the drafted revision on the human's explicit order: delete what the old wording produced " +
+      "(shipped and TEP-protected items survive), rewrite the entry, and re-derive it. DESTRUCTIVE and not " +
+      "undoable — never call it without a clear order, and only once they have seen the preview.",
+    async run(session) {
+      if (!session.applyRevision) return "This surface cannot apply revisions.";
+      return session.applyRevision();
+    },
+  },
+  discard_revision: {
+    description: "Throw away the drafted revision, leaving the entry as it is.",
+    async run(session) {
+      if (!session.discardRevision)
+        return "This surface cannot discard revisions.";
+      return session.discardRevision();
+    },
+  },
   read_space: {
     description:
       "Re-read the live space state (after your tools changed it). Returns the fresh snapshot.",
@@ -254,10 +531,12 @@ export const THINKY_TOOLS: Record<string, ThinkyToolDef> = {
   },
   contextualize: {
     description:
-      "Refresh the context digest from the declared sources (grounds later rounds in what exists).",
+      "OPTIONAL PREVIEW ONLY — regenerate each ask's context digest (research/_ask-<n>.md) so the human can " +
+      "audit what expand will read. Expand already does this itself; never offer this as a required step — " +
+      "run it only when the human explicitly asks to preview or debug the context.",
     async run(session) {
       await session.postFromWebview({ type: "contextualize" });
-      return session.lastCommandMessage ?? "Contextualize round completed.";
+      return session.lastCommandMessage ?? "Per-ask context digests regenerated.";
     },
   },
   research: {
@@ -286,6 +565,22 @@ export const THINKY_TOOLS: Record<string, ThinkyToolDef> = {
       if (!text) return "Nothing recorded — empty message.";
       await session.postFromWebview({ type: "addRoughRequest", text });
       return session.lastCommandMessage ?? "Journal entry recorded verbatim.";
+    },
+  },
+  journal_list: {
+    description:
+      "Record MANY independent journal entries at once from a LIST the human pasted in their CURRENT message — one entry per line/bullet. Use this (not journal_verbatim) whenever the message is a multi-line or bulleted list of distinct asks. List markers are stripped; each entry stays an exact slice of their words. If the journal is empty, the first entry seeds the goal.",
+    async run(session, _args, ctx) {
+      const entries = splitJournalList(ctx.utterance);
+      if (entries.length === 0) return "Nothing recorded — no list items found.";
+      if (entries.length === 1) {
+        await session.postFromWebview({ type: "addRoughRequest", text: entries[0] });
+        return session.lastCommandMessage ?? "Recorded 1 journal entry.";
+      }
+      for (const text of entries) {
+        await session.postFromWebview({ type: "addRoughRequest", text });
+      }
+      return `Recorded ${entries.length} independent journal entries from the pasted list.`;
     },
   },
   assumption_verbatim: {
@@ -327,7 +622,7 @@ export const THINKY_TOOLS: Record<string, ThinkyToolDef> = {
   },
   close_gaps: {
     description:
-      "Run the gap-close round now: read the product sources, close every researchable gap with evidence, and recommend a decision on each decision-gap for the human to ratify. Use when there are open gaps to drive down.",
+      "Run the gap-close round now: resolve every researchable gap with evidence, DECIDE the decidable implementation gaps into constraints (the human reviews/overrides them — non-blocking), and recommend a decision only on genuine intent forks for the human to ratify. Use when there are open gaps to drive down.",
     async run(session) {
       await session.postFromWebview({ type: "command", utterance: "close gaps" });
       return session.lastCommandMessage ?? "Gap-close round done.";
@@ -392,7 +687,28 @@ export async function runThinkyAgentTurn(
     return false;
   }
 
+  const criteria = {
+    kind: z.string().optional(),
+    relatedTo: z.string().optional(),
+    servesEntry: z.number().optional(),
+    settled: z.boolean().optional(),
+    state: z.string().optional(),
+    riskAtLeast: z.number().optional(),
+    complexityAtLeast: z.number().optional(),
+    hasDecisionPending: z.boolean().optional(),
+    textMatches: z.string().optional(),
+    orphans: z.boolean().optional(),
+    isProtected: z.boolean().optional(),
+  };
   const schemas: Record<string, Record<string, unknown>> = {
+    propose_revision: { entry: z.number(), text: z.string() },
+    test_revision: {},
+    apply_revision: {},
+    discard_revision: {},
+    find_items: criteria,
+    select_items: { ...criteria, itemIds: z.array(z.string()).optional() },
+    apply_verb: { verb: z.string() },
+    inspect_item: { itemId: z.string() },
     read_space: {},
     stage_items: { itemIds: z.array(z.string()) },
     cut_elements: { itemIds: z.array(z.string()) },
@@ -403,6 +719,7 @@ export async function runThinkyAgentTurn(
     contextualize: {},
     research: { subject: z.string(), itemId: z.string().optional() },
     journal_verbatim: { text: z.string().optional() },
+    journal_list: {},
     assumption_verbatim: { text: z.string().optional() },
     park_group: { entry: z.number() },
     scope_context: {},

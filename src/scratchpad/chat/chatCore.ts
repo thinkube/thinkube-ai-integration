@@ -11,6 +11,7 @@
  * wiring lives in participant.ts.
  */
 
+import { freezeEnabled } from "../model";
 import type { WorkingModel } from "../model";
 import type { ScratchpadInboundMessage } from "../session";
 
@@ -64,7 +65,98 @@ export interface ThinkySessionLike {
   readonly lastCommandMessage: string | undefined;
   /** Items staged for action (optional for fakes/back-compat). */
   readonly selectionCount?: number;
+  /** Elements in the TEP cut (optional for fakes/back-compat). */
+  readonly cutCount?: number;
   postFromWebview(message: ScratchpadInboundMessage): Promise<void>;
+}
+
+/**
+ * Where the space is in its lifecycle. The chat offers ONLY the act that is
+ * valid here — a fixed "Check readiness" on an empty space is noise, not
+ * guidance. Every button and every slash command maps to exactly one phase;
+ * an act with no phase does not belong on the chat surface.
+ */
+export type ThinkyPhase =
+  | "staged"
+  | "intake"
+  | "toExpand"
+  | "toRatify"
+  | "toCloseGaps"
+  | "toFreeze"
+  | "toCheckReadiness"
+  | "toCut"
+  | "toSettle";
+
+/** Classify the space's current phase. Pure; exported for tests. */
+export function phaseOf(session: ThinkySessionLike): ThinkyPhase {
+  const model = session.model;
+  const active = (kind: string) =>
+    model.sections
+      .filter((s) => s.kind === kind)
+      .flatMap((s) => s.items)
+      .filter((it) => it.state === "active");
+
+  // A staged selection is a pending human act — it outranks everything.
+  if ((session.selectionCount ?? 0) > 0) return "staged";
+
+  const goalText =
+    model.sections.find((s) => s.kind === "goal")?.text.trim() ?? "";
+  const journalCount =
+    (goalText ? 1 : 0) + (model.roughRequests?.length ?? 0);
+  const elements = active("elements");
+  // Intake only while the space is truly empty: nothing said AND nothing
+  // derived. (Elements without journal text still mean a derived space.)
+  if (journalCount === 0 && elements.length === 0) return "intake";
+  if (elements.length === 0) return "toExpand";
+
+  // Decisions the machine recommended are the human's to ratify — surface
+  // them before anything else derived.
+  const gaps = active("gap");
+  if (gaps.some((it) => it.decisionProposal)) return "toRatify";
+  if (gaps.length > 0) return "toCloseGaps";
+
+  if (freezeEnabled(model)) return "toFreeze";
+  if ((session.cutCount ?? 0) > 0) return "toCheckReadiness";
+
+  const settled = model.sections.some(
+    (s) =>
+      s.kind !== "goal" &&
+      s.items.some((it) => it.checked && it.state === "active"),
+  );
+  return settled ? "toCut" : "toSettle";
+}
+
+/** The one-line "what to do next" for the current phase. */
+export function nextStepHint(session: ThinkySessionLike): string {
+  const model = session.model;
+  const activeOf = (kind: string) =>
+    model.sections
+      .filter((s) => s.kind === kind)
+      .flatMap((s) => s.items)
+      .filter((it) => it.state === "active");
+  const journal = 1 + (model.roughRequests?.length ?? 0);
+  switch (phaseOf(session)) {
+    case "staged":
+      return `${session.selectionCount} item(s) staged — apply a verb (settle, defer, drop) or clear.`;
+    case "intake":
+      return "Tell me what you want to build — each message becomes a journal entry, verbatim.";
+    case "toExpand":
+      return `${journal} journal entr${journal === 1 ? "y" : "ies"} recorded — expand to derive the space.`;
+    case "toRatify": {
+      const n = activeOf("gap").filter((it) => it.decisionProposal).length;
+      return `${n} decision(s) recommended — ratify them on the board, or decide your own way.`;
+    }
+    case "toCloseGaps":
+      return `${activeOf("gap").length} open question(s) — close gaps to drive the risk down.`;
+    case "toSettle":
+      return "Nothing settled yet — settle the elements you want on the board, then cut a TEP.";
+    case "toCut":
+      return "Elements settled — cut a TEP from the ones you want to ship.";
+    case "toCheckReadiness":
+      return "A cut is active — check readiness before freezing.";
+    case "toFreeze":
+      return "Readiness is clean — freeze the cut into a TEP.";
+  }
 }
 
 /** The narrow response-stream surface (vscode.ChatResponseStream subset). */
@@ -82,11 +174,18 @@ export interface ThinkyStreamLike {
  * a command-field utterance the session already understands — the chat adds
  * no new verbs.
  */
+/**
+ * Slash commands — one per PHASE act, and nothing else. `contextualize` is
+ * gone (expand runs it; audit the digests via the board's per-ask context
+ * links) and `panic` is gone (a destructive sovereign act belongs behind the
+ * board's confirm modal, not one keystroke away).
+ */
 export const THINKY_SLASH_COMMANDS: Record<string, string> = {
+  expand: "expand",
+  scope: "scope context",
+  closegaps: "close gaps",
   readiness: "check readiness",
   reframe: "reframe",
-  contextualize: "contextualize",
-  panic: "panic",
 };
 
 /** Compact space status appended to every reply. */
@@ -144,7 +243,10 @@ export async function handleThinkyRequest(
     : args.prompt.trim();
 
   if (!utterance) {
-    stream.markdown(`Here is where the space stands:\n\n${renderThinkyStatus(session.model)}`);
+    stream.markdown(
+      `Here is where the space stands:\n\n${renderThinkyStatus(session.model)}` +
+        `\n\n**Next:** ${nextStepHint(session)}`,
+    );
     return;
   }
 
@@ -159,7 +261,9 @@ export async function handleThinkyRequest(
       await session.postFromWebview({ type: "command", utterance });
       stream.markdown(`\n\n${session.lastCommandMessage ?? "Done."}`);
     }
-    stream.markdown(`\n\n${renderThinkyStatus(session.model)}`);
+    stream.markdown(
+      `\n\n${renderThinkyStatus(session.model)}\n\n**Next:** ${nextStepHint(session)}`,
+    );
     emitFollowUpButtons(session, stream);
     return;
   }
@@ -168,7 +272,9 @@ export async function handleThinkyRequest(
 
   const outcome = session.lastCommandMessage;
   stream.markdown(outcome ?? "Done.");
-  stream.markdown(`\n\n${renderThinkyStatus(session.model)}`);
+  stream.markdown(
+      `\n\n${renderThinkyStatus(session.model)}\n\n**Next:** ${nextStepHint(session)}`,
+    );
 
   emitFollowUpButtons(session, stream);
 }
@@ -188,44 +294,57 @@ export function emitFollowUpButtons(
   stream: ThinkyStreamLike,
 ): void {
   if (!stream.button) return;
-  if ((session.selectionCount ?? 0) > 0) {
-    stream.button({
-      command: "thinkube.thinky.applySelection",
-      title: "Check staged (settle)",
-      arguments: ["check"],
-    });
-    stream.button({
-      command: "thinkube.thinky.applySelection",
-      title: "Defer staged",
-      arguments: ["defer"],
-    });
-    stream.button({
-      command: "thinkube.thinky.applySelection",
-      title: "Drop staged (veto)",
-      arguments: ["drop"],
-    });
-    stream.button({
+  const say = (title: string, utterance: string): void =>
+    stream.button!({
       command: "thinkube.thinky.say",
-      title: "Clear selection",
-      arguments: ["clear selection"],
+      title,
+      arguments: [utterance],
     });
-    return;
-  }
-  stream.button({
-    command: "thinkube.thinky.say",
-    title: "Check readiness",
-    arguments: ["check readiness"],
-  });
-  const anythingSettled = session.model.sections.some(
-    (s) =>
-      s.kind !== "goal" &&
-      s.items.some((it) => it.checked && it.state === "active"),
-  );
-  if (anythingSettled) {
-    stream.button({
-      command: "thinkube.thinky.say",
-      title: "Reframe intent",
-      arguments: ["reframe"],
-    });
+
+  switch (phaseOf(session)) {
+    case "staged":
+      stream.button({
+        command: "thinkube.thinky.applySelection",
+        title: "Check staged (settle)",
+        arguments: ["check"],
+      });
+      stream.button({
+        command: "thinkube.thinky.applySelection",
+        title: "Defer staged",
+        arguments: ["defer"],
+      });
+      stream.button({
+        command: "thinkube.thinky.applySelection",
+        title: "Drop staged (veto)",
+        arguments: ["drop"],
+      });
+      say("Clear selection", "clear selection");
+      return;
+    case "intake":
+      // Typing IS the act here — offering a button would be noise.
+      return;
+    case "toExpand":
+      say("Expand the space", "expand");
+      if (session.model.contextScope === undefined)
+        say("Scope context", "scope context");
+      return;
+    case "toRatify":
+      say("Open the board to ratify", "open board");
+      return;
+    case "toCloseGaps":
+      say("Close gaps", "close gaps");
+      return;
+    case "toSettle":
+      say("Open the board to settle", "open board");
+      return;
+    case "toCut":
+      say("Reframe intent", "reframe");
+      return;
+    case "toCheckReadiness":
+      say("Check readiness", "check readiness");
+      return;
+    case "toFreeze":
+      say("Freeze the TEP", "freeze");
+      return;
   }
 }

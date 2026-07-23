@@ -16,6 +16,22 @@ function apply(model: WorkingModel, action: Action): WorkingModel {
   return next;
 }
 
+test("board header shows the space title when set, falls back to 'Thinking Board'", () => {
+  const plain = buildBoardHtml(emptyModel("tep"), { selection: [], cut: [] });
+  assert.ok(plain.includes(">Thinking Board<"));
+  const titled = buildBoardHtml(
+    { ...emptyModel("tep"), title: "Plugin delivery hardening" },
+    { selection: [], cut: [] },
+  );
+  assert.ok(titled.includes("Plugin delivery hardening"));
+  assert.ok(!titled.includes(">Thinking Board<"));
+});
+
+test("board has an always-available context-scope control", () => {
+  const html = buildBoardHtml(emptyModel("tep"), { selection: [], cut: [] });
+  assert.ok(html.includes('data-act="scope"'));
+});
+
 function seeded(): { model: WorkingModel; itemId: string } {
   let model = emptyModel("tep");
   const elements = model.sections.find((s) => s.kind === "elements")!;
@@ -191,10 +207,10 @@ test("integrity findings surface as a fold and row flags (2026-07-18)", () => {
   assert.ok(html.includes(">no acceptance<"), "uncovered element flag");
 });
 
-test("context digest + evidence open as rendered read-only tabs (2026-07-18)", () => {
+test("per-ask context digests + evidence open as rendered read-only tabs", () => {
   let model = emptyModel("tep");
-  (model as { contextDigestRef?: string }).contextDigestRef =
-    "research/_context-digest.md";
+  model = reduce(model, { type: "seedGoal", text: "the goal" }).model;
+  model = reduce(model, { type: "addRoughRequest", text: "ask two" }).model;
   const elId = model.sections.find((s) => s.kind === "elements")!.id;
   model = reduce(model, {
     type: "proposeItem",
@@ -215,10 +231,12 @@ test("context digest + evidence open as rendered read-only tabs (2026-07-18)", (
     },
   }).model;
   const html = buildBoardHtml(model, { selection: [], cut: [] });
-  assert.ok(html.includes('data-act="opendigest"'), "digest link present");
+  // One per-ask digest link per journal entry (goal = ask 1, rough = ask 2).
+  assert.ok(html.includes('data-digest="1"'), "ask-1 digest link present");
+  assert.ok(html.includes('data-digest="2"'), "ask-2 digest link present");
   assert.ok(html.includes("data-open-evidence"), "evidence is clickable");
   assert.ok(html.includes('data-ref="research/panel.md"'));
   const script = html.slice(html.indexOf("<script>") + 8, html.lastIndexOf("</script>"));
-  assert.ok(script.includes("opendigest"));
+  assert.ok(script.includes("_ask-"), "digest handler opens the per-ask file");
   assert.doesNotThrow(() => new Function(script));
 });

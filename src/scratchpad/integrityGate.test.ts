@@ -50,6 +50,22 @@ test("an unlinked constraint is an orphan", () => {
   assert.ok(integritySummary(r).includes("orphan"));
 });
 
+test("an item stamped with an ask (servesEntry) is NOT an orphan, even with no element edge", () => {
+  let { model, id: el } = propose(emptyModel("tep"), "elements", "an element");
+  model = propose(model, "acceptance", "done when X", [el]).model;
+  // A refinement-ask constraint with no edge but tagged servesEntry=2: belongs
+  // to ask 2, so it is NOT an orphan (the ask is the anchor).
+  const secId = model.sections.find((s) => s.kind === "constraints")!.id;
+  model = apply(model, {
+    type: "proposeItem",
+    actor: "gap-filler",
+    sectionId: secId,
+    item: { text: "hardening constraint from ask 2", modality: "optional", evals: {}, servesEntry: 2 },
+  });
+  const r = computeIntegrity(model);
+  assert.equal(r.orphans.length, 0, JSON.stringify(r.orphans));
+});
+
 test("an element with no acceptance is uncovered", () => {
   const { model } = propose(emptyModel("tep"), "elements", "lonely element");
   const r = computeIntegrity(model);

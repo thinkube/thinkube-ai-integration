@@ -87,12 +87,18 @@ export function computeIntegrity(model: WorkingModel): IntegrityReport {
     return !!e && e.kind === "elements" && e.item.state === "active";
   };
 
-  // Orphans: active non-element items reaching no element.
+  // Orphans: active non-element items that belong to NO ask (servesEntry
+  // unset) AND reach no element. The ask is the structural anchor — an item
+  // stamped with the journal entry that produced it belongs there, so it is
+  // never an orphan even if a worker omitted the element edge. Truly homeless
+  // items (no ask, no edge) are the only orphans, and the ask-tagging pipeline
+  // does not produce them.
   const orphans: IntegrityReport["orphans"] = [];
   for (const s of model.sections) {
     if (s.kind === "goal" || s.kind === "elements") continue;
     for (const it of s.items) {
       if (it.state !== "active") continue;
+      if (it.servesEntry !== undefined) continue; // belongs to an ask
       const reach = reachable(adj, it.id);
       if (![...reach].some(isActiveElement)) {
         orphans.push({ id: it.id, kind: s.kind, text: it.text });

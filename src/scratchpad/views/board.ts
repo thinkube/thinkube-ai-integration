@@ -52,6 +52,8 @@ export interface BoardOptions {
   cut: readonly string[];
   commandMessage?: string;
   busy?: boolean;
+  /** The space slug — used to resolve per-space digest refs (research/<space>/…). */
+  space?: string;
 }
 
 function esc(s: string): string {
@@ -312,12 +314,10 @@ export function buildBoardHtml(
 
   const body =
     `<div class="top">` +
-    `<span class="title">Thinking Board</span>` +
+    `<span class="title">${esc(model.title ?? "Thinking Board")}</span>` +
     `<span class="spacer"></span>` +
     (opts.busy ? `<span class="busy">working…</span>` : "") +
-    (model.contextDigestRef
-      ? `<button data-act="opendigest" title="Open the context digest (rendered, read-only)">Context digest</button>`
-      : "") +
+    `<button data-act="scope" title="Choose which repositories this space reads for context (editable any time)">Context scope</button>` +
     `<button data-act="openchat">Open chat</button>` +
     `<button data-act="panic" class="danger" title="Wipe derived state — journal and assumptions survive verbatim (refused after any freeze)">Panic</button>` +
     `<button data-act="freeze" ${canFreeze ? "" : "disabled"} title="${canFreeze ? "Freeze the cut into a TEP" : "Blocked — ask Thinky to check readiness"}">Freeze</button>` +
@@ -327,10 +327,10 @@ export function buildBoardHtml(
       : "") +
     `<div class="goal">${esc(goal?.text ?? "")}</div>` +
     `<details class="fold"><summary>Journal (${1 + journal.length})</summary>` +
-    `<ol><li>${esc(goal?.text ?? "")} <button class="jpark" data-park="1" title="Park entry 1 — defer this entry's elements and their private context for a later TEP">park</button></li>${journal
+    `<ol><li>${esc(goal?.text ?? "")} <button class="jdigest" data-digest="1" title="Open this ask's context digest (rendered, read-only)">context</button> <button class="jpark" data-park="1" title="Park entry 1 — defer this entry's elements and their private context for a later TEP">park</button></li>${journal
       .map(
         (r, i) =>
-          `<li>${esc(r.text)} <button class="jpark" data-park="${i + 2}" title="Park this entry — defer its elements and private context">park</button> <button class="jdel" data-journal-del="${r.id}" title="Delete this entry (recording-error correction — asks to confirm)">✕</button></li>`,
+          `<li>${esc(r.text)} <button class="jdigest" data-digest="${i + 2}" title="Open this ask's context digest (rendered, read-only)">context</button> <button class="jpark" data-park="${i + 2}" title="Park this entry — defer its elements and private context">park</button> <button class="jdel" data-journal-del="${r.id}" title="Delete this entry (recording-error correction — asks to confirm)">✕</button></li>`,
       )
       .join("")}</ol></details>` +
     (assumptions.length > 0
@@ -357,7 +357,7 @@ export function buildBoardHtml(
     `</div>`;
 
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${CSS}</style></head>` +
-    `<body>${body}<script>${SCRIPT}</script></body></html>`;
+    `<body data-space="${esc(opts.space ?? "")}">${body}<script>${SCRIPT}</script></body></html>`;
 }
 
 const CSS = `
@@ -448,11 +448,18 @@ document.body.addEventListener('change', function(e){
 });
 document.body.addEventListener('click', function(e){
   let t = e.target;
-  while (t && t !== document.body && !(t.hasAttribute && (t.hasAttribute('data-ratify')||t.hasAttribute('data-open-evidence')||t.hasAttribute('data-park')||t.hasAttribute('data-journal-del')||t.hasAttribute('data-chev')||t.hasAttribute('data-verb')||t.hasAttribute('data-act')||t.hasAttribute('data-eval')||t.hasAttribute('data-accept')||t.hasAttribute('data-resolve')||t.hasAttribute('data-resolve-edit')||t.hasAttribute('data-item')||t.hasAttribute('data-check')))) t = t.parentElement;
+  while (t && t !== document.body && !(t.hasAttribute && (t.hasAttribute('data-ratify')||t.hasAttribute('data-open-evidence')||t.hasAttribute('data-park')||t.hasAttribute('data-digest')||t.hasAttribute('data-journal-del')||t.hasAttribute('data-chev')||t.hasAttribute('data-verb')||t.hasAttribute('data-act')||t.hasAttribute('data-eval')||t.hasAttribute('data-accept')||t.hasAttribute('data-resolve')||t.hasAttribute('data-resolve-edit')||t.hasAttribute('data-item')||t.hasAttribute('data-check')))) t = t.parentElement;
   if (!t || t === document.body) return;
   if (t.hasAttribute('data-check')) return; // checkbox handled on change
   if (t.hasAttribute('data-journal-del')) {
     vscodeApi.postMessage({type:'removeJournalEntry', requestId:t.getAttribute('data-journal-del')});
+    return;
+  }
+  if (t.hasAttribute('data-digest')) {
+    var n = t.getAttribute('data-digest');
+    var sp = document.body.getAttribute('data-space') || '';
+    var ref = sp ? 'research/'+sp+'/_ask-'+n+'.md' : 'research/_ask-'+n+'.md';
+    vscodeApi.postMessage({type:'openEvidence', dossierRef:ref, source:'context digest for ask '+n});
     return;
   }
   if (t.hasAttribute('data-park')) {
@@ -489,7 +496,7 @@ document.body.addEventListener('click', function(e){
     if (act==='setcut') vscodeApi.postMessage({type:'setCutFromSelection'});
     else if (act==='clearsel') vscodeApi.postMessage({type:'clearSelection'});
     else if (act==='ask' || act==='openchat') vscodeApi.postMessage({type:'askThinky'});
-    else if (act==='opendigest') vscodeApi.postMessage({type:'openEvidence', dossierRef:'research/_context-digest.md', source:'context digest'});
+    else if (act==='scope') vscodeApi.postMessage({type:'scopeContext'});
     else if (act==='panic') vscodeApi.postMessage({type:'panic'});
     else if (act==='freeze') vscodeApi.postMessage({type:'freeze'});
     return;

@@ -76,11 +76,15 @@ test("free text routes through the command seam verbatim", async () => {
   assert.ok(stream.markdowns[0].includes("standing assumption"));
 });
 
-test("slash commands map to the exact command-field utterances", async () => {
+test("slash commands are exactly the phase acts — no contextualize, no panic", async () => {
+  assert.equal(THINKY_SLASH_COMMANDS.expand, "expand");
+  assert.equal(THINKY_SLASH_COMMANDS.scope, "scope context");
+  assert.equal(THINKY_SLASH_COMMANDS.closegaps, "close gaps");
   assert.equal(THINKY_SLASH_COMMANDS.readiness, "check readiness");
   assert.equal(THINKY_SLASH_COMMANDS.reframe, "reframe");
-  assert.equal(THINKY_SLASH_COMMANDS.contextualize, "contextualize");
-  assert.equal(THINKY_SLASH_COMMANDS.panic, "panic");
+  // contextualize is folded into expand; panic is a board-only destructive act.
+  assert.equal(THINKY_SLASH_COMMANDS.contextualize, undefined);
+  assert.equal(THINKY_SLASH_COMMANDS.panic, undefined);
   const session = fakeSession(emptyModel("tep"));
   const stream = fakeStream();
   await handleThinkyRequest(
@@ -123,16 +127,20 @@ test("status counts settled/active per section and shows the curated title", () 
   assert.ok(status.includes("A short title"));
 });
 
-test("reply carries outcome then status; unsettled empty space offers ONLY readiness", async () => {
-  const session = fakeSession(emptyModel("tep"), "Link round done — 3 edges.");
+test("a journalled but underived space offers EXPAND — never readiness", async () => {
+  // A journal entry exists but nothing is derived yet: the only sensible act
+  // is to expand. (Readiness over an underived space is the old noise.)
+  const journalled = emptyModel("tep");
+  journalled.sections.find((s) => s.kind === "goal")!.text = "build the graph";
+  const session = fakeSession(journalled, "Link round done — 3 edges.");
   const stream = fakeStream();
   await handleThinkyRequest({ prompt: "link the space" }, session, stream);
   assert.equal(stream.markdowns[0], "Link round done — 3 edges.");
-  assert.ok(stream.markdowns[1].includes("journal 1"));
-  // Nothing staged, nothing settled: reframe would error, so it is NOT offered.
-  assert.deepEqual(
-    stream.buttons.map((b) => b.arguments?.[0]),
-    ["check readiness"],
+  const args = stream.buttons.map((b) => b.arguments?.[0]);
+  assert.ok(args.includes("expand"), `expected expand, got ${args.join(", ")}`);
+  assert.ok(
+    !args.includes("check readiness"),
+    "readiness must NOT be offered before anything is derived",
   );
 });
 
@@ -154,7 +162,8 @@ test("staged selection switches the buttons to the apply verbs (field defect 202
   );
 });
 
-test("reframe button appears once something is settled", async () => {
+test("phase machine: settled-with-no-cut offers reframe (toCut), a cut offers readiness", async () => {
+  const { phaseOf } = await import("./chatCore");
   let model = emptyModel("tep");
   const elements = model.sections.find((s) => s.kind === "elements")!;
   model = reduce(model, {
@@ -165,13 +174,67 @@ test("reframe button appears once something is settled", async () => {
   }).model;
   const itemId = model.sections.find((s) => s.kind === "elements")!.items[0].id;
   model = reduce(model, { type: "checkItem", actor: "human", itemId }).model;
+
+  // Settled, no cut → toCut (reframe), NOT readiness.
   const session = fakeSession(model, "ok");
+  assert.equal(phaseOf(session), "toCut");
   const stream = fakeStream();
   await handleThinkyRequest({ prompt: "anything" }, session, stream);
   assert.deepEqual(
     stream.buttons.map((b) => b.arguments?.[0]),
-    ["check readiness", "reframe"],
+    ["reframe"],
   );
+
+  // A cut makes readiness the meaningful act.
+  const withCut = Object.assign(fakeSession(model, "ok"), { cutCount: 1 });
+  assert.equal(phaseOf(withCut), "toCheckReadiness");
+  const s2 = fakeStream();
+  await handleThinkyRequest({ prompt: "anything" }, withCut, s2);
+  assert.deepEqual(
+    s2.buttons.map((b) => b.arguments?.[0]),
+    ["check readiness"],
+  );
+});
+
+test("phase machine: an empty journal is intake — no buttons at all", async () => {
+  const { phaseOf } = await import("./chatCore");
+  const bare = emptyModel("tep");
+  bare.sections.find((s) => s.kind === "goal")!.text = "";
+  const session = fakeSession(bare, "ok");
+  assert.equal(phaseOf(session), "intake");
+  const stream = fakeStream();
+  await handleThinkyRequest({ prompt: "anything" }, session, stream);
+  assert.equal(stream.buttons.length, 0, "typing is the act during intake");
+});
+
+test("phase machine: open gaps → close gaps; a pending decision → ratify first", async () => {
+  const { phaseOf } = await import("./chatCore");
+  let model = emptyModel("tep");
+  const elSec = model.sections.find((s) => s.kind === "elements")!.id;
+  model = reduce(model, {
+    type: "proposeItem",
+    actor: "gap-filler",
+    sectionId: elSec,
+    item: { text: "an element", modality: "optional", evals: {} },
+  }).model;
+  const gapSec = model.sections.find((s) => s.kind === "gap")!.id;
+  model = reduce(model, {
+    type: "proposeItem",
+    actor: "gap-filler",
+    sectionId: gapSec,
+    item: { text: "an open question", modality: "optional", evals: {} },
+  }).model;
+  assert.equal(phaseOf(fakeSession(model, "ok")), "toCloseGaps");
+
+  const gapId = model.sections.find((s) => s.kind === "gap")!.items[0].id;
+  model = reduce(model, {
+    type: "proposeDecision",
+    actor: "research",
+    itemId: gapId,
+    recommendation: "use X",
+    reasoning: "because",
+  }).model;
+  assert.equal(phaseOf(fakeSession(model, "ok")), "toRatify");
 });
 
 // ── Session↔space binding (2026-07-17) ───────────────────────────────────────

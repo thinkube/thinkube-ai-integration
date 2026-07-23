@@ -437,8 +437,15 @@ function buildDossierContent(
 export function makeDefaultDossierStore(
   sidecarRoot: string,
   namespace: string,
+  space?: string,
 ): DossierStore {
-  const dir = nodePath.join(sidecarRoot, namespace, "research");
+  // Per-SPACE research (2026-07-18): each space owns its digests under
+  // research/<space>/ so two spaces never overwrite each other's _ask-N.md and
+  // deleting a space can remove its whole research folder. Space-relative ref
+  // (space ? research/<space>/<topic>.md : research/<topic>.md) resolves under
+  // <sidecarRoot>/<namespace>/.
+  const rel = space ? `research/${space}` : "research";
+  const dir = nodePath.join(sidecarRoot, namespace, rel);
 
   return {
     async read(topic: string): Promise<string | undefined> {
@@ -457,7 +464,7 @@ export function makeDefaultDossierStore(
       await nodeFs.mkdir(dir, { recursive: true });
       const filePath = nodePath.join(dir, `${topic}.md`);
       await nodeFs.writeFile(filePath, markdown, "utf8");
-      return { dossierRef: `research/${topic}.md` };
+      return { dossierRef: `${rel}/${topic}.md` };
     },
   };
 }

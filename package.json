@@ -2,7 +2,7 @@
   "name": "thinkube-tandem",
   "displayName": "Thinkube Tandem",
   "description": "Thinkube integration for AI assistants - Launch Claude from explorer context menu with smart directory detection and project configuration",
-  "version": "0.1.289",
+  "version": "0.1.314",
   "publisher": "thinkube",
   "engines": {
     "vscode": "^1.101.0"
@@ -408,6 +408,12 @@
         "title": "New Thinking Space Document",
         "category": "Tandem ThinkingSpaces",
         "icon": "$(add)"
+      },
+      {
+        "command": "thinkube.thinkingSpace.deleteDoc",
+        "title": "Delete Thinking Space",
+        "category": "Tandem ThinkingSpaces",
+        "icon": "$(trash)"
       }
     ],
     "menus": {
@@ -640,6 +646,11 @@
           "group": "inline"
         },
         {
+          "command": "thinkube.thinkingSpace.deleteDoc",
+          "when": "view == thinkubeThinkingSpaces && viewItem == thinkingDoc",
+          "group": "inline@9"
+        },
+        {
           "command": "thinkube.thinkingSpace.newDoc",
           "when": "view == thinkubeThinkingSpaces && viewItem == newThinkingDoc",
           "group": "inline"
@@ -785,8 +796,20 @@
         "name": "thinky",
         "fullName": "Thinky",
         "description": "Talk to your thinking space — statements, asks, questions, operations",
-        "isSticky": true,
+        "isSticky": false,
         "commands": [
+          {
+            "name": "expand",
+            "description": "Derive the space from the journal"
+          },
+          {
+            "name": "scope",
+            "description": "Choose which repositories the space reads"
+          },
+          {
+            "name": "closegaps",
+            "description": "Research and close the open questions"
+          },
           {
             "name": "readiness",
             "description": "Run the four-dimension readiness check"
@@ -794,14 +817,6 @@
           {
             "name": "reframe",
             "description": "Re-synthesize the curated intent"
-          },
-          {
-            "name": "contextualize",
-            "description": "Refresh the context digest from declared sources"
-          },
-          {
-            "name": "panic",
-            "description": "Wipe derived state, keep the journal"
           }
         ]
       }
@@ -827,20 +842,24 @@
         },
         "commands": [
           {
+            "name": "expand",
+            "description": "Derive the space from the journal"
+          },
+          {
+            "name": "scope",
+            "description": "Choose which repositories the space reads"
+          },
+          {
+            "name": "closegaps",
+            "description": "Research and close the open questions"
+          },
+          {
             "name": "readiness",
             "description": "Run the four-dimension readiness check"
           },
           {
             "name": "reframe",
             "description": "Re-synthesize the curated intent"
-          },
-          {
-            "name": "contextualize",
-            "description": "Refresh the context digest from declared sources"
-          },
-          {
-            "name": "panic",
-            "description": "Wipe derived state, keep the journal"
           }
         ]
       }

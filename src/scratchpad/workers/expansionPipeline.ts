@@ -20,6 +20,7 @@
  */
 
 import type { Action, WorkingModel } from "../model";
+import { anchorElementsFor, buildAdjacency, indexItems } from "../query";
 import { renderActionGuide } from "./actionGuide";
 import {
   createPhaseWorker,
@@ -70,44 +71,10 @@ function sectionId(model: WorkingModel, kind: ExpansionStage): string {
  * not parked out from under the groups that still need it).
  */
 export function groupItemIds(model: WorkingModel, entry: number): string[] {
-  const byId = new Map<
-    string,
-    { kind: string; item: WorkingModel["sections"][0]["items"][0] }
-  >();
-  for (const s of model.sections)
-    for (const it of s.items) byId.set(it.id, { kind: s.kind, item: it });
-  const adj = new Map<string, Set<string>>();
-  const link = (a: string, b: string): void => {
-    (adj.get(a) ?? adj.set(a, new Set()).get(a)!).add(b);
-    (adj.get(b) ?? adj.set(b, new Set()).get(b)!).add(a);
-  };
-  for (const { item } of byId.values())
-    for (const req of item.requires ?? [])
-      if (byId.has(req)) link(item.id, req);
-  const isElement = (id: string): boolean => byId.get(id)?.kind === "elements";
-
-  // The ELEMENTS a non-element item anchors to: reachable through requires
-  // edges WITHOUT traversing through another element (elements are sinks —
-  // otherwise everything is transitively connected through shared elements
-  // and nothing is ever "private").
-  const anchorElements = (start: string): string[] => {
-    const anchors = new Set<string>();
-    const seen = new Set([start]);
-    const q = [start];
-    while (q.length) {
-      const cur = q.shift()!;
-      for (const nb of adj.get(cur) ?? []) {
-        if (seen.has(nb)) continue;
-        seen.add(nb);
-        if (isElement(nb)) {
-          anchors.add(nb); // sink — record, do not expand
-        } else {
-          q.push(nb);
-        }
-      }
-    }
-    return [...anchors];
-  };
+  const byId = indexItems(model);
+  const adj = buildAdjacency(byId);
+  const anchorElements = (start: string): string[] =>
+    anchorElementsFor(byId, adj, start);
 
   const entryOf = (elementId: string): number | undefined =>
     byId.get(elementId)?.item.servesEntry;
@@ -197,9 +164,13 @@ export function buildStagePrompt(
     gap: {
       title: "STAGE 3 of the expansion pipeline: derive the GAPS",
       what:
-        `A gap is an OPEN QUESTION / unknown that must be resolved before an element can be ` +
-        `specified — the reason an element is not yet safe to build. It raises the element's risk. ` +
-        `Derive the gaps each element carries.`,
+        `A gap is a GENUINE unknown that BLOCKS building an element — a real decision not yet made, ` +
+        `or a fact not yet known, whose answer would change WHAT gets built. Before raising one, CHECK ` +
+        `it against the intent, the CONTEXT DIGEST, and the STANDING ASSUMPTIONS above: if any of them ` +
+        `already answers or settles it, it is NOT a gap — do NOT raise it. A question you COULD ask but ` +
+        `whose answer is already established (or would not change the build) is not a gap. In ` +
+        `particular, never raise a gap a standing assumption resolves — e.g. per-user auth, ` +
+        `access-control, or multi-tenant questions on a single-user platform. Few and load-bearing.`,
     },
     acceptance: {
       title: "STAGE 4 of the expansion pipeline: derive the ACCEPTANCE criteria",
@@ -219,9 +190,13 @@ export function buildStagePrompt(
     grounding +
     `\n\nRules:\n` +
     `- Propose ONLY into the ${stage} section ("${secId}"). Nothing else this stage.\n` +
-    `- EVERY item MUST carry a "requires" edge naming the element id(s) it derives from ` +
-    `(from the list above). An item that serves no element is an ORPHAN and will be rejected — ` +
-    `so if you cannot tie it to an element, do not propose it.\n` +
+    `- Link every item to the element id(s) it derives from via "requires" (from the list above) — ` +
+    `the specific one or few it bears on. If you omit it the system attaches the closest element, ` +
+    `but a precise link is better.\n` +
+    (stage === "gap"
+      ? `- OMIT any gap the intent, the context digest, or a standing assumption already answers — ` +
+        `do not raise it at all. Only genuine, load-bearing unknowns.\n`
+      : "") +
     `- Sharp and few. Do not restate an existing item in any wording.\n` +
     `- EVERY item carries a "note" (Why / Impact / Modality, one sentence each).` +
     (stage === "constraints" || stage === "acceptance"
@@ -230,6 +205,232 @@ export function buildStagePrompt(
     `\n\n` +
     guide
   );
+}
+
+// ── Per-ASK derivation (2026-07-18): the interleaved pipeline. For each ask,
+//    derive its elements, then its constraints/gap/acceptance scoped to those
+//    elements — the orchestrator stamps the requires edge, so orphans are
+//    structurally impossible.
+
+export type AskSection = "constraints" | "gap" | "acceptance";
+
+/** Derive ONLY this ask's elements (servesEntry = askNum). */
+export function buildAskElementsPrompt(
+  askNum: number,
+  askText: string,
+  model: WorkingModel,
+  contextDigest?: string,
+): string {
+  const grounding = renderGroundingBlocks(model, contextDigest);
+  const secId = sectionId(model, "elements");
+  const guide = renderActionGuide(
+    model,
+    GATES.gapFiller.allowedTools,
+    "gap-filler",
+  );
+  return (
+    `You are deriving the ELEMENTS for ONE journal ask.\n\n` +
+    `THE ASK (#${askNum}):\n${askText}\n\n` +
+    `Elements are the SUBJECT MATTER — the concrete BUILDABLE things THIS ask commits to. ` +
+    `They are the root everything else hangs off. Set "servesEntry" to ${askNum} on every element.` +
+    grounding +
+    `\n\nRules:\n` +
+    `- Propose ONLY into elements ("${secId}"). One element = one buildable thing. Sharp and few (2-5).\n` +
+    `- A REFINEMENT ask (hardening, safeguards, resolving open questions about things that already ` +
+    `exist) introduces NO new subject matter — propose ZERO elements and stop; its constraints and ` +
+    `gaps will attach to the elements already present. Only add an element for genuinely NEW buildable scope.\n` +
+    `- Intent altitude — WHAT is built, never HOW (no languages, frameworks, endpoints).\n` +
+    `- EVERY new element carries servesEntry=${askNum} and a "note" (Why / Impact / Modality).\n` +
+    `- Never restate an existing item in any wording.\n\n` +
+    guide
+  );
+}
+
+/** Derive one SECTION for THIS ask's elements (edges stamped by the orchestrator). */
+export function buildAskSectionPrompt(
+  section: AskSection,
+  askNum: number,
+  askElements: { id: string; text: string }[],
+  askText: string,
+  model: WorkingModel,
+  contextDigest?: string,
+  isRefinement = false,
+): string {
+  const grounding = renderGroundingBlocks(model, contextDigest);
+  const secId = sectionId(model, section);
+  const guide = renderActionGuide(
+    model,
+    GATES.gapFiller.allowedTools,
+    "gap-filler",
+  );
+  const elBlock = askElements.map((e) => `  - ${e.id}: ${e.text}`).join("\n");
+  const what: Record<AskSection, string> = {
+    constraints: "boundaries / invariants that must HOLD on these elements",
+    gap:
+      "GENUINE unknowns that BLOCK specifying or building these elements — a real " +
+      "unmade decision or a missing fact the work waits on. A question you COULD ask " +
+      "but whose answer would not change what gets built is NOT a gap. Few and load-bearing.",
+    acceptance:
+      "falsifiable conditions that must be TRUE for these elements to count as delivered",
+  };
+  // A refinement ask does not re-derive the whole space — it adds only the few
+  // NEW items it introduces, attached to the specific existing elements it names.
+  const scope = isRefinement
+    ? `This ask REFINES elements that already exist — it introduces NO new subject matter. Add ONLY ` +
+      `the few NEW ${section} items THIS ask itself introduces, each attached to the SPECIFIC element(s) ` +
+      `it concerns. The space already lists its current ${section} items below — do NOT re-derive them ` +
+      `across the whole element set; if this ask adds nothing to ${section}, propose nothing.`
+    : `${section} = ${what[section]}, derived FROM these elements.`;
+  return (
+    `You are deriving the ${section.toUpperCase()} for ONE journal ask (#${askNum}: ${askText}).\n\n` +
+    `Its ELEMENTS (link each item you propose to the element id(s) it serves):\n${elBlock}\n\n` +
+    scope +
+    grounding +
+    `\n\nRules:\n` +
+    `- Propose ONLY into ${section} ("${secId}"). Sharp and FEW — prefer the smallest set that is load-bearing.\n` +
+    `- Put the SPECIFIC element id(s) this item concerns in "requires" (from the list above) — ` +
+    `the one or few it actually bears on, not all of them. If you omit it, the system links the ` +
+    `item to this ask's elements automatically.\n` +
+    `- Never restate or duplicate an existing item (the space state below lists them). ` +
+    `EVERY item carries a "note" (Why / Impact / Modality).\n\n` +
+    guide
+  );
+}
+
+/** Worker for a per-ask element round. */
+export function askElementsWorker(
+  askNum: number,
+  askText: string,
+  deps: WorkerFactoryDeps,
+): WorkerRun {
+  const base = createPhaseWorker({
+    loadQuery: deps.loadQuery,
+    model: deps.model,
+    allowedTools: GATES.gapFiller.allowedTools,
+    disallowedTools: GATES.gapFiller.disallowedTools,
+    actor: "gap-filler",
+  });
+  return {
+    ...base,
+    buildPrompt(model: WorkingModel): string {
+      return buildAskElementsPrompt(askNum, askText, model, deps.contextDigest);
+    },
+    async run(model: WorkingModel, conversation: string[]): Promise<Action[]> {
+      return base.run(model, conversation);
+    },
+  };
+}
+
+/** Worker for a per-ask section round. `isRefinement` = this ask reuses
+ *  existing elements (added no new subject matter) — derive only what it adds. */
+export function askSectionWorker(
+  section: AskSection,
+  askNum: number,
+  askElements: { id: string; text: string }[],
+  askText: string,
+  deps: WorkerFactoryDeps,
+  isRefinement = false,
+): WorkerRun {
+  const base = createPhaseWorker({
+    loadQuery: deps.loadQuery,
+    model: deps.model,
+    allowedTools: GATES.gapFiller.allowedTools,
+    disallowedTools: GATES.gapFiller.disallowedTools,
+    actor: "gap-filler",
+  });
+  return {
+    ...base,
+    buildPrompt(model: WorkingModel): string {
+      return buildAskSectionPrompt(
+        section,
+        askNum,
+        askElements,
+        askText,
+        model,
+        deps.contextDigest,
+        isRefinement,
+      );
+    },
+    async run(model: WorkingModel, conversation: string[]): Promise<Action[]> {
+      return base.run(model, conversation);
+    },
+  };
+}
+
+/**
+ * Stamp the requires-edge on section actions (orphan-proofing 2026-07-18):
+ * any proposeItem into a per-ask section that does not already require one of
+ * the ask's elements gets ALL of them added — so the orchestrator, which KNOWS
+ * the ask's elements, guarantees the link the worker might have omitted.
+ */
+export function stampAskEdges(
+  actions: Action[],
+  askElementIds: string[],
+): Action[] {
+  if (askElementIds.length === 0) return actions;
+  const elSet = new Set(askElementIds);
+  return actions.map((a) => {
+    if (a.type !== "proposeItem") return a;
+    const req = a.item.requires ?? [];
+    if (req.some((id) => elSet.has(id))) return a;
+    return { ...a, item: { ...a.item, requires: [...req, ...askElementIds] } };
+  });
+}
+
+/** Lowercased word tokens, for best-element matching. */
+function wordTokens(text: string): Set<string> {
+  return new Set(text.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+}
+
+/**
+ * Anchor every section proposeItem to the ask that owns it (2026-07-18 global
+ * passes): stamp `servesEntry` — the primary structural anchor — deriving it
+ * from the element the item requires. If the worker omitted the element edge,
+ * attach the best-matching element (token overlap) so the item still has both
+ * an edge (risk/cut precision) and a servesEntry (the anchor). With every item
+ * tagged this way, orphans are impossible by construction — no per-ask
+ * interleaving needed. Elements are passed with their own servesEntry.
+ */
+export function stampServesEntry(
+  actions: Action[],
+  elements: { id: string; text: string; serves: number }[],
+): Action[] {
+  if (elements.length === 0) return actions;
+  const byId = new Map(elements.map((e) => [e.id, e]));
+  const elTokens = elements.map((e) => ({ e, toks: wordTokens(e.text) }));
+  const bestElement = (text: string): { id: string; serves: number } => {
+    const ot = wordTokens(text);
+    let best = elTokens[0].e;
+    let bestScore = -1;
+    for (const { e, toks } of elTokens) {
+      let s = 0;
+      for (const t of ot) if (toks.has(t)) s++;
+      if (s > bestScore) {
+        bestScore = s;
+        best = e;
+      }
+    }
+    return best;
+  };
+  return actions.map((a) => {
+    if (a.type !== "proposeItem") return a;
+    const req = a.item.requires ?? [];
+    const linked = req.map((id) => byId.get(id)).filter(Boolean) as {
+      id: string;
+      serves: number;
+    }[];
+    if (linked.length > 0) {
+      const serves = a.item.servesEntry ?? linked[0].serves;
+      return { ...a, item: { ...a.item, servesEntry: serves } };
+    }
+    // No element edge — attach the best-matching element and inherit its ask.
+    const best = bestElement(a.item.text);
+    const serves = a.item.servesEntry ?? best.serves;
+    return {
+      ...a,
+      item: { ...a.item, requires: [...req, best.id], servesEntry: serves },
+    };
+  });
 }
 
 /**
