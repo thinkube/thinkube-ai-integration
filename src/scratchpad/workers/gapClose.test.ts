@@ -94,7 +94,7 @@ test("decide inherits the gap's element edges so the new constraint is not orpha
     type: "proposeItem",
     actor: "gap-filler",
     sectionId: gapSec,
-    item: { text: "which render library", modality: "optional", evals: {}, requires: [elId], servesEntry: 2 },
+    item: { text: "which render library", modality: "optional", evals: {}, requires: [elId], servesEntries: [2] },
   }).model;
   const gapId = model.sections.find((s) => s.kind === "gap")!.items[0].id;
 
@@ -103,7 +103,7 @@ test("decide inherits the gap's element edges so the new constraint is not orpha
   const propose = actions.find((a) => a.type === "proposeItem");
   if (propose && propose.type === "proposeItem") {
     // The decided constraint inherits the gap's ask (never orphaned).
-    assert.equal(propose.item.servesEntry, 2);
+    assert.deepEqual(propose.item.servesEntries, [2]);
   }
   assert.ok(propose && propose.type === "proposeItem");
   if (propose.type === "proposeItem") {

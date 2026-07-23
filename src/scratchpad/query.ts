@@ -14,6 +14,7 @@
  */
 
 import type { Item, ItemState, SectionKind, WorkingModel } from "./model";
+import { entriesOf } from "./model";
 import { computeElementRisk } from "./deriveRisk";
 import { computeIntegrity } from "./integrityGate";
 
@@ -38,8 +39,8 @@ export interface ItemQuery {
   hasDecisionPending?: boolean;
   /** Case-insensitive substring of the item text. */
   textMatches?: string;
-  /** Structurally orphaned items (integrity gate's definition). */
-  orphans?: boolean;
+  /** Items the machine never placed under an ask (they serve the whole space). */
+  unattributed?: boolean;
   /** Items protected by a frozen TEP (flaggedBy) — or, negated, unprotected. */
   isProtected?: boolean;
 }
@@ -50,7 +51,7 @@ export interface QueryHit {
   text: string;
   settled: boolean;
   state: ItemState;
-  servesEntry?: number;
+  servesEntries: number[];
   risk?: number;
   complexity?: number;
 }
@@ -129,10 +130,12 @@ export function findItems(model: WorkingModel, q: ItemQuery): QueryHit[] {
     wantedAnchors = new Set(anchorElementsFor(byId, adj, q.relatedTo));
   }
 
-  const orphanIds =
-    q.orphans === undefined
+  const unattributedIds =
+    q.unattributed === undefined
       ? undefined
-      : new Set(computeIntegrity(model).orphans.map((o) => o.id));
+      : new Set(
+          computeIntegrity(model).unattributed.map((u: { id: string }) => u.id),
+        );
 
   const needle = q.textMatches?.trim().toLowerCase();
   const hits: QueryHit[] = [];
@@ -142,7 +145,12 @@ export function findItems(model: WorkingModel, q: ItemQuery): QueryHit[] {
     const state = q.state ?? "active";
     if (state !== "any" && item.state !== state) continue;
     if (q.kind !== undefined && kind !== q.kind) continue;
-    if (q.servesEntry !== undefined && item.servesEntry !== q.servesEntry)
+    // Matches ANY anchor: an item serving several asks belongs to each of
+    // them, and an unattributed item serves them all.
+    if (
+      q.servesEntry !== undefined &&
+      !entriesOf(model, item).includes(q.servesEntry)
+    )
       continue;
     if (q.settled !== undefined && item.checked !== q.settled) continue;
     if (q.hasDecisionPending !== undefined &&
@@ -152,7 +160,11 @@ export function findItems(model: WorkingModel, q: ItemQuery): QueryHit[] {
         (item.flaggedBy ?? []).length > 0 !== q.isProtected)
       continue;
     if (needle && !item.text.toLowerCase().includes(needle)) continue;
-    if (orphanIds !== undefined && orphanIds.has(id) !== q.orphans) continue;
+    if (
+      unattributedIds !== undefined &&
+      unattributedIds.has(id) !== q.unattributed
+    )
+      continue;
 
     const risk = riskOf(model, kind, item);
     if (q.riskAtLeast !== undefined && (risk ?? 0) < q.riskAtLeast) continue;
@@ -175,7 +187,7 @@ export function findItems(model: WorkingModel, q: ItemQuery): QueryHit[] {
       text: item.text,
       settled: item.checked,
       state: item.state,
-      servesEntry: item.servesEntry,
+      servesEntries: entriesOf(model, item),
       risk,
       complexity,
     });
@@ -191,7 +203,7 @@ export function renderHits(hits: readonly QueryHit[], limit = 40): string {
     const marks = [
       h.settled ? "✓settled" : undefined,
       h.state !== "active" ? h.state : undefined,
-      h.servesEntry !== undefined ? `entry${h.servesEntry}` : undefined,
+      h.servesEntries.length > 0 ? `entry ${h.servesEntries.join("/")}` : undefined,
       h.risk !== undefined ? `R${h.risk}` : undefined,
     ].filter(Boolean);
     return `  - ${h.id} [${h.kind}${marks.length ? `,${marks.join(",")}` : ""}] ${h.text.slice(0, 160)}`;

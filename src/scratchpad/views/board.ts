@@ -289,17 +289,26 @@ export function buildBoardHtml(
   // Integrity findings (2026-07-18): surfaced as a fold + row flags so orphans
   // / uncovered / duplicates are actionable, not just a one-line summary.
   const integrity = computeIntegrity(model);
-  const orphanIds = new Set(integrity.orphans.map((o) => o.id));
+  const orphanIds = new Set<string>(
+    integrity.unattributed.map((u: { id: string }) => u.id),
+  );
   const uncoveredIds = new Set(integrity.uncoveredElements.map((e) => e.id));
   const dupIds = new Set(integrity.duplicates.flatMap((p) => [p[0].id, p[1].id]));
-  const integrityFold = integrity.clean
-    ? ""
-    : `<details class="fold integrity" open><summary>⚠ Integrity — ${integrity.orphans.length} orphan(s), ${integrity.uncoveredElements.length} uncovered, ${integrity.duplicates.length} duplicate pair(s)</summary>` +
-      (integrity.orphans.length
-        ? `<div class="ig"><b>Orphans</b> (tied to no element — drop, or add the missing element):<ul>${integrity.orphans
-            .map((o) => `<li>[${esc(o.kind)}] ${esc(o.text)}</li>`)
-            .join("")}</ul></div>`
-        : "") +
+  // Unattributed items are shown but never make the fold an alarm: they serve
+  // the whole space, so there is nothing here for the human to clear.
+  const unattributedBlock = integrity.unattributed.length
+    ? `<div class="ig"><b>Not tied to a specific ask</b> (they apply to the whole space — ask Thinky to place them if you want them narrower):<ul>${integrity.unattributed
+        .map(
+          (u: { kind: string; text: string }) =>
+            `<li>[${esc(u.kind)}] ${esc(u.text)}</li>`,
+        )
+        .join("")}</ul></div>`
+    : "";
+  const integrityFold =
+    integrity.clean && integrity.unattributed.length === 0
+      ? ""
+      : `<details class="fold integrity"${integrity.clean ? "" : " open"}><summary>${integrity.clean ? "Integrity" : "⚠ Integrity"} — ${integrity.unattributed.length} unplaced, ${integrity.uncoveredElements.length} uncovered, ${integrity.duplicates.length} duplicate pair(s)</summary>` +
+      unattributedBlock +
       (integrity.uncoveredElements.length
         ? `<div class="ig"><b>Elements with no acceptance</b>:<ul>${integrity.uncoveredElements
             .map((e) => `<li>${esc(e.text)}</li>`)

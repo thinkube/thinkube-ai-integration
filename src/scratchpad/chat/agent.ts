@@ -22,6 +22,7 @@
  */
 
 import type { Delta, WorkingModel } from "../model";
+import { entriesOf, isAttributed } from "../model";
 import type { ScratchpadInboundMessage } from "../session";
 import { computeElementRisk } from "../deriveRisk";
 import { computeIntegrity, integritySummary } from "../integrityGate";
@@ -86,7 +87,10 @@ export function renderSpaceSnapshot(session: ThinkyAgentSessionLike): string {
       if (it.evals.complexity !== undefined) marks.push(`C${it.evals.complexity}`);
       if (sec.kind === "elements" && it.state === "active")
         marks.push(`R${computeElementRisk(model, it.id).score}`);
-      if (it.servesEntry !== undefined) marks.push(`entry${it.servesEntry}`);
+      const serves = entriesOf(model, it);
+      marks.push(
+        isAttributed(it) ? `entry ${serves.join("/")}` : "whole-space",
+      );
       if ((it.flaggedBy ?? []).length > 0) marks.push("protected");
       // CHEAP SIGNALS ONLY — the index says what exists and flags where depth
       // is available; `inspect_item` fetches the reasoning on demand. Inlining
@@ -282,7 +286,8 @@ function toQuery(args: Record<string, unknown>): ItemQuery {
     q.hasDecisionPending = args.hasDecisionPending;
   if (typeof args.textMatches === "string" && args.textMatches)
     q.textMatches = args.textMatches;
-  if (typeof args.orphans === "boolean") q.orphans = args.orphans;
+  if (typeof args.unattributed === "boolean")
+    q.unattributed = args.unattributed;
   if (typeof args.isProtected === "boolean") q.isProtected = args.isProtected;
   return q;
 }
@@ -293,7 +298,7 @@ export const THINKY_TOOLS: Record<string, ThinkyToolDef> = {
       "Resolve items by CRITERIA (read-only — changes nothing). Args, all optional and combined with AND: " +
       "{kind: 'elements'|'constraints'|'gap'|'acceptance', relatedTo: itemId, servesEntry: number, " +
       "settled: boolean, state: 'active'|'shipped'|'deferred'|'dropped'|'any', riskAtLeast, complexityAtLeast, " +
-      "hasDecisionPending, textMatches, orphans, isProtected}. " +
+      "hasDecisionPending, textMatches, unattributed, isProtected}. " +
       "relatedTo follows the dependency graph: give an ELEMENT id to get everything belonging to it " +
       "(its constraints, their gaps, the acceptance), or any other id to get what shares its elements. " +
       "Use this to answer 'which items…' questions and to check a set BEFORE selecting it.",
@@ -364,7 +369,7 @@ export const THINKY_TOOLS: Record<string, ThinkyToolDef> = {
       const out: string[] = [`${item.id} [${kind}] ${item.text}`];
       out.push(
         `state: ${item.state}${item.checked ? " (settled)" : ""}` +
-          `${item.servesEntry !== undefined ? ` · journal entry ${item.servesEntry}` : ""}` +
+          `${isAttributed(item) ? ` · journal entry ${entriesOf(session.model, item).join(", ")}` : " · applies to the whole space"}` +
           `${item.modality ? ` · ${item.modality}` : ""}`,
       );
       if (kind === "elements" && item.state === "active") {
@@ -697,7 +702,7 @@ export async function runThinkyAgentTurn(
     complexityAtLeast: z.number().optional(),
     hasDecisionPending: z.boolean().optional(),
     textMatches: z.string().optional(),
-    orphans: z.boolean().optional(),
+    unattributed: z.boolean().optional(),
     isProtected: z.boolean().optional(),
   };
   const schemas: Record<string, Record<string, unknown>> = {

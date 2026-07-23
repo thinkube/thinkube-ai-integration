@@ -77,6 +77,7 @@ export function groupItemIds(model: WorkingModel, entry: number): string[] {
     anchorElementsFor(byId, adj, start);
 
   const entryOf = (elementId: string): number | undefined =>
+    byId.get(elementId)?.item.servesEntries?.[0] ??
     byId.get(elementId)?.item.servesEntry;
 
   const parked = new Set<string>();
@@ -85,7 +86,7 @@ export function groupItemIds(model: WorkingModel, entry: number): string[] {
     if (
       v.kind === "elements" &&
       v.item.state === "active" &&
-      v.item.servesEntry === entry
+      (v.item.servesEntries ?? []).includes(entry)
     )
       parked.add(id);
   // Non-element items whose anchor elements are ALL in this group (private).
@@ -420,15 +421,15 @@ export function stampServesEntry(
       serves: number;
     }[];
     if (linked.length > 0) {
-      const serves = a.item.servesEntry ?? linked[0].serves;
-      return { ...a, item: { ...a.item, servesEntry: serves } };
+      const serves = a.item.servesEntries?.[0] ?? linked[0].serves;
+      return { ...a, item: { ...a.item, servesEntries: [serves] } };
     }
     // No element edge — attach the best-matching element and inherit its ask.
     const best = bestElement(a.item.text);
-    const serves = a.item.servesEntry ?? best.serves;
+    const serves = a.item.servesEntries?.[0] ?? best.serves;
     return {
       ...a,
-      item: { ...a.item, requires: [...req, best.id], servesEntry: serves },
+      item: { ...a.item, requires: [...req, best.id], servesEntries: [serves] },
     };
   });
 }

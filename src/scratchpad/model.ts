@@ -93,14 +93,21 @@ export interface Item {
    */
   decisionProposal?: { recommendation: string; reasoning: string };
   /**
-   * Journal-entry group this item serves: the index of the numbered journal
-   * entry (goal = 1) this item was derived from — stamped on EVERY item
-   * (elements, constraints, gaps, acceptance), not just elements. It is the
-   * primary structural anchor: an item belongs to the ask that produced it, so
-   * an item with a servesEntry is never an orphan (the `requires` edge to an
-   * element is a secondary refinement for risk/cut precision, not the anchor).
-   * Also the parking key — deferring a group defers an entry's whole subtree.
+   * Journal entries this item serves (goal = 1) — the primary structural
+   * anchor, stamped on EVERY item, not just elements. It is a SET because
+   * items genuinely serve several asks: a constraint like "everything renders
+   * in the VS Code theme" belongs to all of them, and forcing one would make
+   * revision delete it out from under the others.
+   *
+   * An item with NO anchors is not homeless — it serves the WHOLE SPACE (see
+   * entriesOf). Attribution is the machine's job; an item it could not place
+   * is over-broad, never broken, and never something the human is asked to
+   * adjudicate without the context that produced it.
+   *
+   * Also the parking key — deferring a group defers what only that entry uses.
    */
+  servesEntries?: number[];
+  /** Legacy single anchor (pre-2026-07-23 spaces). Read, never written. */
   servesEntry?: number;
   /**
    * TEPs this item served as CONTEXT for (cut flags, 2026-07-16). A flagged
@@ -133,6 +140,37 @@ export interface Item {
   evidence: Evidence[];
   notes: Note[];
   pendingEdit?: PendingEdit;
+}
+
+/**
+ * The journal entries an item serves, resolved (2026-07-23).
+ *
+ * Anchors when it has them; otherwise EVERY entry — an item the machine could
+ * not attribute serves the whole space. This is what makes homeless items
+ * impossible: the fallback is total, so there is nothing left for a human to
+ * adjudicate on the machine's behalf. Legacy spaces carrying the old single
+ * `servesEntry` are read transparently.
+ */
+export function entriesOf(model: WorkingModel, item: Item): number[] {
+  const set = item.servesEntries;
+  if (set && set.length > 0) return [...set];
+  if (item.servesEntry !== undefined) return [item.servesEntry];
+  return allEntryNumbers(model);
+}
+
+/** Every journal entry number in the space: goal = 1, then each rough request. */
+export function allEntryNumbers(model: WorkingModel): number[] {
+  const n = 1 + (model.roughRequests?.length ?? 0);
+  return Array.from({ length: n }, (_, i) => i + 1);
+}
+
+/**
+ * Whether the machine actually placed this item. An UNATTRIBUTED item is
+ * reported as information — it is over-broad (it serves everything), never
+ * broken, and never blocks a gate.
+ */
+export function isAttributed(item: Item): boolean {
+  return (item.servesEntries?.length ?? 0) > 0 || item.servesEntry !== undefined;
 }
 
 export type ToolName =
@@ -305,9 +343,10 @@ export type Action =
         requires?: string[];
         /** WHICH factor produced each eval score (closed vocabularies). */
         factors?: { complexity?: ComplexityFactor; risk?: RiskFactor };
-        /** Journal-entry group this ELEMENT serves (expansion pipeline
-         *  2026-07-18; elements only — the parking key). */
+        /** Journal entries this item serves. Workers name ONE on the wire
+         *  (servesEntry); the stamping layer stores the SET. */
         servesEntry?: number;
+        servesEntries?: number[];
         /** One-line complexity justification (explainable evals). */
         complexityRationale?: string;
       };
@@ -416,6 +455,13 @@ export type Action =
   | { type: "purgeItems"; actor: "human"; itemIds: string[] }
   /** Mark an entry as needing re-derivation (the inverse of markEntryDerived). */
   | { type: "unmarkEntryDerived"; entry: number }
+  /**
+   * Set which journal entries an item serves. Used by revision to DE-ATTRIBUTE
+   * a shared item from the entry being rewritten while leaving it in place for
+   * the asks that still need it. An empty set is legal — the item then serves
+   * the whole space rather than becoming homeless.
+   */
+  | { type: "setItemEntries"; actor: Actor; itemId: string; entries: number[] }
   | { type: "setContextScope"; actor: "human"; paths: string[] }
   | { type: "curateIntent"; text: string; title?: string } // reframe worker (or human edit)
   // 2026-07-17: add dependency edges to an EXISTING item (merge-unique).
@@ -432,6 +478,7 @@ export type Action =
       itemId: string;
       toKind: SectionKind;
       servesEntry?: number;
+      servesEntries?: number[];
     };
 
 /**
@@ -816,8 +863,12 @@ export function reduce(
       if (action.item.requires !== undefined && action.item.requires.length) {
         newItem.requires = [...action.item.requires];
       }
-      if (action.item.servesEntry !== undefined) {
-        newItem.servesEntry = action.item.servesEntry;
+      // The SET is authoritative; a wire-level single entry becomes a set of
+      // one, so nothing downstream has to know which form arrived.
+      if (action.item.servesEntries?.length) {
+        newItem.servesEntries = [...new Set(action.item.servesEntries)];
+      } else if (action.item.servesEntry !== undefined) {
+        newItem.servesEntries = [action.item.servesEntry];
       }
       if (
         action.item.complexityRationale !== undefined &&
@@ -1619,7 +1670,7 @@ export function reduce(
       const moved: Item = {
         ...item,
         ...(action.toKind === "elements" && action.servesEntry !== undefined
-          ? { servesEntry: action.servesEntry }
+          ? { servesEntries: [action.servesEntry] }
           : {}),
       };
       const sections = model.sections.map((s, i) => {
@@ -1903,6 +1954,38 @@ export function reduce(
           field: "sections",
           before: found.size,
           after: 0,
+        },
+      };
+    }
+
+    case "setItemEntries": {
+      let hit: Item | undefined;
+      const sections = model.sections.map((s) => ({
+        ...s,
+        items: s.items.map((it) => {
+          if (it.id !== action.itemId) return it;
+          hit = it;
+          const entries = [...new Set(action.entries)].sort((a, b) => a - b);
+          const next = { ...it, servesEntries: entries };
+          // The legacy scalar would otherwise resurrect the old attribution
+          // through entriesOf's fallback chain.
+          delete next.servesEntry;
+          return next;
+        }),
+      }));
+      if (!hit)
+        return {
+          model,
+          delta: { kind: "rejected", action, reason: "no such item" },
+        };
+      return {
+        model: { ...model, sections },
+        delta: {
+          kind: "applied",
+          action,
+          field: "servesEntries",
+          before: hit.servesEntries ?? hit.servesEntry,
+          after: action.entries,
         },
       };
     }

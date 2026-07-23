@@ -4,23 +4,29 @@
  * After derivation, the space must be structurally sound. Three checks, all
  * pure over the model:
  *
- *  - ORPHANS — every constraint/gap/acceptance item must reach at least one
- *    element through the `requires` edges. An orphan is either noise (drop it)
- *    or the signal of a MISSING element (add it). Never silently kept.
+ *  - UNATTRIBUTED — items the machine could not place under any journal entry.
+ *    Reported, never gated (2026-07-23): an unplaced item serves the whole
+ *    space, so it is over-broad rather than broken. Making it a blocker asked
+ *    the human to adjudicate an item whose producing context they never saw —
+ *    and attribution is the machine's job, not theirs.
  *  - COVERAGE — every element should carry acceptance; an element with none
  *    cannot be shown to be delivered.
  *  - DUPLICATES — near-duplicate active items (token-overlap ≥ 0.75), the same
  *    similarity the proposal wall uses, surfaced as pairs for the human.
  *
- * The gate REPORTS; it never mutates. Orphans and dupes are the human's to
- * resolve (drop, supersede, or add the missing element).
+ * The gate REPORTS; it never mutates. Duplicates and uncovered elements are
+ * the human's to resolve; unattributed items are the machine's to place.
  */
 
 import type { WorkingModel } from "./model";
+import { isAttributed } from "./model";
 
 export interface IntegrityReport {
-  /** Non-element active items that reach no element — {id, kind, text}. */
-  orphans: { id: string; kind: string; text: string }[];
+  /**
+   * Active items the machine never attributed to a journal entry. INFORMATION
+   * ONLY — these serve the whole space, so they never make the report unclean.
+   */
+  unattributed: { id: string; kind: string; text: string }[];
   /** Active elements with no acceptance reachable — {id, text}. */
   uncoveredElements: { id: string; text: string }[];
   /** Near-duplicate active item pairs — [{id,text},{id,text}]. */
@@ -93,16 +99,19 @@ export function computeIntegrity(model: WorkingModel): IntegrityReport {
   // never an orphan even if a worker omitted the element edge. Truly homeless
   // items (no ask, no edge) are the only orphans, and the ask-tagging pipeline
   // does not produce them.
-  const orphans: IntegrityReport["orphans"] = [];
+  // Unattributed: active items with no ask anchor AND no element edge. They
+  // are not homeless — entriesOf() gives them the whole space — but the
+  // machine failed to place them, which is worth saying out loud so a later
+  // round can narrow them.
+  const unattributed: IntegrityReport["unattributed"] = [];
   for (const s of model.sections) {
     if (s.kind === "goal" || s.kind === "elements") continue;
     for (const it of s.items) {
       if (it.state !== "active") continue;
-      if (it.servesEntry !== undefined) continue; // belongs to an ask
+      if (isAttributed(it)) continue;
       const reach = reachable(adj, it.id);
-      if (![...reach].some(isActiveElement)) {
-        orphans.push({ id: it.id, kind: s.kind, text: it.text });
-      }
+      if (![...reach].some(isActiveElement))
+        unattributed.push({ id: it.id, kind: s.kind, text: it.text });
     }
   }
 
@@ -139,24 +148,19 @@ export function computeIntegrity(model: WorkingModel): IntegrityReport {
   }
 
   return {
-    orphans,
+    unattributed,
     uncoveredElements,
     duplicates,
-    clean:
-      orphans.length === 0 &&
-      uncoveredElements.length === 0 &&
-      duplicates.length === 0,
+    // Unattributed items are deliberately NOT part of cleanliness: they are
+    // over-broad, not broken, and no human should have to clear them.
+    clean: uncoveredElements.length === 0 && duplicates.length === 0,
   };
 }
 
 /** One-line human summary for the command strip / chat. */
 export function integritySummary(r: IntegrityReport): string {
-  if (r.clean) return "Integrity check clean — no orphans, no duplicates, every element covered.";
+  if (r.clean) return "Integrity check clean — no duplicates, every element covered.";
   const parts: string[] = [];
-  if (r.orphans.length)
-    parts.push(
-      `${r.orphans.length} orphan${r.orphans.length === 1 ? "" : "s"} (item${r.orphans.length === 1 ? "" : "s"} tied to no element — drop, or add the missing element)`,
-    );
   if (r.uncoveredElements.length)
     parts.push(
       `${r.uncoveredElements.length} element${r.uncoveredElements.length === 1 ? "" : "s"} with no acceptance`,
@@ -164,4 +168,15 @@ export function integritySummary(r: IntegrityReport): string {
   if (r.duplicates.length)
     parts.push(`${r.duplicates.length} near-duplicate pair${r.duplicates.length === 1 ? "" : "s"}`);
   return `Integrity check: ${parts.join("; ")}.`;
+}
+
+/** The unattributed note, when there is one — informational, never a blocker. */
+export function unattributedNote(r: IntegrityReport): string | undefined {
+  const n = r.unattributed.length;
+  if (n === 0) return undefined;
+  return (
+    `${n} item${n === 1 ? "" : "s"} could not be tied to a specific ask, so ` +
+    `${n === 1 ? "it applies" : "they apply"} to the whole space. Nothing is blocked — ` +
+    `ask Thinky to place ${n === 1 ? "it" : "them"} if you want it narrower.`
+  );
 }

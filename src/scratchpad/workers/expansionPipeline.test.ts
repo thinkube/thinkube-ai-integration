@@ -55,8 +55,10 @@ test("stampServesEntry: inherits the ask from the required element; attaches bes
     elements,
   );
   const [a, b] = out as Extract<Action, { type: "proposeItem" }>[];
-  assert.equal(a.item.servesEntry, 1);
-  assert.equal(b.item.servesEntry, 2);
+  // The anchor is a SET: an item can serve several asks, so stamping writes
+  // a one-element set rather than a scalar.
+  assert.deepEqual(a.item.servesEntries, [1]);
+  assert.deepEqual(b.item.servesEntries, [2]);
   assert.deepEqual(b.item.requires, ["el-verify"]); // best-match element attached
 });
 
@@ -142,7 +144,7 @@ test("parking a group defers its elements + private context, keeps shared contex
   assert.ok(!parked.includes(e2), "other group's element untouched");
 });
 
-test("reclassifyItem promotes an orphan into elements, preserving id + edges", () => {
+test("reclassifyItem promotes an unplaced item into elements, preserving id + edges", () => {
   let model = emptyModel("tep");
   const cId = model.sections.find((s) => s.kind === "constraints")!.id;
   model = reduce(model, {
@@ -170,13 +172,13 @@ test("reclassifyItem promotes an orphan into elements, preserving id + edges", (
   assert.equal(delta.kind, "applied");
   const el = next.sections.find((s) => s.kind === "elements")!.items.find((it) => it.id === orphanId);
   assert.ok(el, "orphan now lives in elements");
-  assert.equal(el!.servesEntry, 2);
+  assert.deepEqual(el!.servesEntries, [2]);
   assert.equal(next.sections.find((s) => s.kind === "constraints")!.items.length, 0);
   // the acceptance edge still points at the (now element) id — no longer orphan
   const { computeIntegrity } = require("../integrityGate") as {
-    computeIntegrity: (m: typeof next) => { orphans: unknown[] };
+    computeIntegrity: (m: typeof next) => { unattributed: unknown[] };
   };
-  assert.equal(computeIntegrity(next).orphans.length, 0);
+  assert.equal(computeIntegrity(next).unattributed.length, 0);
 });
 
 test("buildRepairPrompt lists orphans + elements and forbids drop/invent", async () => {

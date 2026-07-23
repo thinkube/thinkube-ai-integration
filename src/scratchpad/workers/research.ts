@@ -308,6 +308,10 @@ export function research(
         sectionItemCounts.set(section.id, section.items.length);
       }
 
+      // What the round is aimed at: its anchors are inherited by everything
+      // the round proposes.
+      const targetAnchors = resolveTargetAnchors(model, target.itemId);
+
       // ── Build the final action list ────────────────────────────────────────
       const finalActions: Action[] = [];
 
@@ -332,9 +336,12 @@ export function research(
             },
           });
         } else if (action.type === "proposeItem") {
-          // Push the proposeItem, track the predicted new item ID, then attach
-          // evidence to it. The reducer assigns id = `item-<sectionId>-<count>`.
-          finalActions.push(action);
+          // ANCHOR INHERITANCE (2026-07-23, field defect): research proposed
+          // items with no ask anchor and no edge, so every finding it produced
+          // landed unplaced — six of them in the first field space. A round
+          // aimed at an item inherits that item's anchors and links back to it,
+          // which is exactly the attribution the round already knows.
+          finalActions.push(inheritAnchors(action, targetAnchors));
           const count = sectionItemCounts.get(action.sectionId) ?? 0;
           const predictedItemId = `item-${action.sectionId}-${count}`;
           sectionItemCounts.set(action.sectionId, count + 1);
@@ -465,6 +472,63 @@ export function makeDefaultDossierStore(
       const filePath = nodePath.join(dir, `${topic}.md`);
       await nodeFs.writeFile(filePath, markdown, "utf8");
       return { dossierRef: `${rel}/${topic}.md` };
+    },
+  };
+}
+
+/** The anchors a research round inherits from the item it was aimed at. */
+export interface TargetAnchors {
+  itemId: string;
+  /** The target's own journal entries, when it has any. */
+  entries?: number[];
+}
+
+/**
+ * Find what the round is pointed at. Undefined for a free-subject round: it has
+ * no ask to inherit from, so its findings serve the whole space.
+ */
+export function resolveTargetAnchors(
+  model: WorkingModel,
+  itemId: string | undefined,
+): TargetAnchors | undefined {
+  if (itemId === undefined) return undefined;
+  for (const section of model.sections)
+    for (const it of section.items)
+      if (it.id === itemId) {
+        const entries = it.servesEntries?.length
+          ? [...it.servesEntries]
+          : it.servesEntry !== undefined
+            ? [it.servesEntry]
+            : undefined;
+        return entries ? { itemId: it.id, entries } : { itemId: it.id };
+      }
+  return undefined;
+}
+
+/**
+ * ANCHOR INHERITANCE (2026-07-23, field defect).
+ *
+ * Research used to propose items with no ask anchor and no edge, so every
+ * finding it produced landed unplaced — six of them in the first field space.
+ * A round aimed at an item already knows where its findings belong: the target
+ * item's entries, and an edge back to the target. Anchors the worker set
+ * itself are respected; nothing else is touched.
+ */
+export function inheritAnchors(
+  action: Action,
+  anchors: TargetAnchors | undefined,
+): Action {
+  if (anchors === undefined || action.type !== "proposeItem") return action;
+  return {
+    ...action,
+    item: {
+      ...action.item,
+      ...(action.item.servesEntries?.length || anchors.entries === undefined
+        ? {}
+        : { servesEntries: anchors.entries }),
+      requires: [
+        ...new Set([...(action.item.requires ?? []), anchors.itemId]),
+      ],
     },
   };
 }

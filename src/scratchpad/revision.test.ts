@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { emptyModel, reduce } from "./model";
 import type { WorkingModel } from "./model";
 import { findItems } from "./query";
+import { entriesOf, isAttributed } from "./model";
 import { describeRevisionPlan, journalEntries, planRevision } from "./revision";
 
 function push(
@@ -224,4 +225,116 @@ test("after a purge the surviving items are still findable by their own ask", ()
     [el1],
   );
   assert.equal(findItems(after, { servesEntry: 2 }).length, 0);
+});
+
+// ── Multi-anchoring (2026-07-23) ────────────────────────────────────────────
+// A single anchor forced a lie: a constraint serving several asks was stamped
+// with one of them, and revising THAT ask deleted it out from under the others.
+
+test("revising an ask does NOT delete items that also serve another ask", () => {
+  let m = reduce(emptyModel("tep"), {
+    type: "seedGoal",
+    text: "surface per-step log output",
+  }).model;
+  m = reduce(m, { type: "addRoughRequest", text: "dock the log panel" }).model;
+  m = reduce(m, { type: "addRoughRequest", text: "colour-code the nodes" }).model;
+  const el = push(m, "elements", "the log panel", { servesEntries: [2] });
+  m = el.model;
+  // A cross-cutting constraint genuinely serving asks 2 AND 3.
+  const shared = push(m, "constraints", "everything renders in the VS Code theme", {
+    servesEntries: [2, 3],
+    requires: [el.id],
+  });
+  m = shared.model;
+  const onlyTwo = push(m, "constraints", "the panel is docked in-graph", {
+    servesEntries: [2],
+    requires: [el.id],
+  });
+  m = onlyTwo.model;
+
+  const plan = planRevision(m, 2);
+  assert.deepEqual(
+    plan.purge.map((h) => h.id).sort(),
+    [el.id, onlyTwo.id].sort(),
+    "only what serves entry 2 alone is deleted",
+  );
+  assert.deepEqual(
+    plan.shared.map((h) => h.id),
+    [shared.id],
+    "the cross-cutting constraint survives — ask 3 still needs it",
+  );
+  const text = describeRevisionPlan(plan, "put the log panel in its own window");
+  assert.match(text, /also serve other asks — they are KEPT/);
+  assert.match(text, /VS Code theme/);
+});
+
+test("a surviving shared item stops being attributed to the revised ask", () => {
+  let m = reduce(emptyModel("tep"), { type: "seedGoal", text: "g" }).model;
+  m = reduce(m, { type: "addRoughRequest", text: "ask two" }).model;
+  const shared = push(m, "constraints", "cross-cutting", { servesEntries: [1, 2] });
+  m = shared.model;
+  const { model: after, delta } = reduce(m, {
+    type: "setItemEntries",
+    actor: "gap-filler",
+    itemId: shared.id,
+    entries: [2],
+  });
+  assert.equal(delta.kind, "applied");
+  const it = after.sections.flatMap((s) => s.items).find((x) => x.id === shared.id)!;
+  assert.deepEqual(it.servesEntries, [2]);
+  assert.equal(findItems(after, { servesEntry: 1 }).length, 0);
+  assert.deepEqual(findItems(after, { servesEntry: 2 }).map((h) => h.id), [shared.id]);
+});
+
+test("de-attributing every entry leaves an item space-wide, never homeless", () => {
+  let m = reduce(emptyModel("tep"), { type: "seedGoal", text: "g" }).model;
+  m = reduce(m, { type: "addRoughRequest", text: "ask two" }).model;
+  const c = push(m, "constraints", "cross-cutting", { servesEntries: [1] });
+  m = reduce(c.model, {
+    type: "setItemEntries",
+    actor: "gap-filler",
+    itemId: c.id,
+    entries: [],
+  }).model;
+  const it = m.sections.flatMap((s) => s.items).find((x) => x.id === c.id)!;
+  assert.deepEqual(entriesOf(m, it), [1, 2], "it now serves the whole space");
+  assert.equal(isAttributed(it), false, "and is reported as unplaced");
+  // Which means it is found by BOTH asks rather than by neither.
+  assert.equal(findItems(m, { servesEntry: 1 }).length, 1);
+  assert.equal(findItems(m, { servesEntry: 2 }).length, 1);
+});
+
+test("a legacy single anchor is read as a set of one", () => {
+  let m = reduce(emptyModel("tep"), { type: "seedGoal", text: "g" }).model;
+  m = reduce(m, { type: "addRoughRequest", text: "ask two" }).model;
+  const sectionId = m.sections.find((s) => s.kind === "constraints")!.id;
+  // Simulate a space saved before the anchor became a set.
+  m = {
+    ...m,
+    sections: m.sections.map((s) =>
+      s.id !== sectionId
+        ? s
+        : {
+            ...s,
+            items: [
+              {
+                id: "item-legacy",
+                text: "from an older space",
+                checked: false,
+                modality: "mandatory" as const,
+                evals: {},
+                origin: "gap-filler" as const,
+                state: "active" as const,
+                servesEntry: 2,
+                evidence: [],
+                notes: [],
+              },
+            ],
+          },
+    ),
+  };
+  const it = m.sections.flatMap((s) => s.items).find((x) => x.id === "item-legacy")!;
+  assert.deepEqual(entriesOf(m, it), [2]);
+  assert.ok(isAttributed(it));
+  assert.deepEqual(findItems(m, { servesEntry: 2 }).map((h) => h.id), ["item-legacy"]);
 });

@@ -1,7 +1,7 @@
 /**
  * REVISION (2026-07-23) — the journal stops being an axiom.
  *
- * Every item is anchored to the journal entry that produced it (servesEntry),
+ * Every item is anchored to the journal entries it serves (servesEntries),
  * which made orphans structurally impossible but also welded the derived space
  * to the exact words written first, when the author knew least. Revision is
  * the way back: change an ask, and the consequences derived from the old
@@ -10,7 +10,9 @@
  * The rule the author chose, deliberately hard:
  *  - items shipped in a frozen TEP (or protected as another TEP's context)
  *    SURVIVE untouched — a later edit to the words cannot rewrite history;
- *  - every other item of that entry is DELETED, settled or not. If the ask
+ *  - items that ALSO serve another ask survive too, and merely stop being
+ *    attributed to this one. Deleting them would damage asks nobody revised;
+ *  - everything else the entry produced is DELETED, settled or not. If the ask
  *    changed, agreement to its consequences is void until re-given.
  *
  * Drafting is separate from committing: the wording is argued over in the chat
@@ -32,6 +34,12 @@ export interface RevisionPlan {
   purge: QueryHit[];
   /** Shipped/TEP-protected items that survive the revision. */
   preserved: QueryHit[];
+  /**
+   * Items that ALSO serve other entries. They survive — deleting them would
+   * damage asks that were never revised — but they stop being attributed to
+   * this one, since the wording that produced that link is gone.
+   */
+  shared: QueryHit[];
   /** Reason this plan cannot be applied, when it cannot. */
   refusal?: string;
 }
@@ -60,23 +68,31 @@ export function planRevision(model: WorkingModel, entry: number): RevisionPlan {
       currentText: "",
       purge: [],
       preserved: [],
+      shared: [],
       refusal: `there is no journal entry ${entry}`,
     };
 
   const subtree = findItems(model, { servesEntry: entry, state: "any" });
-  const isPreserved = (h: QueryHit): boolean => h.state === "shipped";
   const protectedIds = new Set(
     model.sections
       .flatMap((s) => s.items)
       .filter((it) => (it.flaggedBy ?? []).length > 0)
       .map((it) => it.id),
   );
+  const isPreserved = (h: QueryHit): boolean =>
+    h.state === "shipped" || protectedIds.has(h.id);
+  // Serving several asks means this entry is not the item's only reason to
+  // exist. Purging it would silently damage the asks that were not revised —
+  // the failure a single anchor made invisible.
+  const isShared = (h: QueryHit): boolean =>
+    h.servesEntries.filter((e) => e !== entry).length > 0;
   return {
     entry,
     currentText: found.text,
     requestId: found.requestId,
-    purge: subtree.filter((h) => !isPreserved(h) && !protectedIds.has(h.id)),
-    preserved: subtree.filter((h) => isPreserved(h) || protectedIds.has(h.id)),
+    purge: subtree.filter((h) => !isPreserved(h) && !isShared(h)),
+    preserved: subtree.filter(isPreserved),
+    shared: subtree.filter((h) => !isPreserved(h) && isShared(h)),
   };
 }
 
@@ -105,6 +121,16 @@ export function describeRevisionPlan(
     lines.push(
       `  ${[...byKind].map(([k, n]) => `${n} ${k}`).join(", ")}`,
     );
+  }
+  if (plan.shared.length > 0) {
+    lines.push(
+      `${plan.shared.length} item(s) also serve other asks — they are KEPT, and simply stop being ` +
+        `attributed to entry ${plan.entry}:`,
+    );
+    for (const h of plan.shared.slice(0, 10))
+      lines.push(
+        `  - [${h.kind}] ${h.text.slice(0, 110)} (also entry ${h.servesEntries.filter((e) => e !== plan.entry).join(", ")})`,
+      );
   }
   if (plan.preserved.length > 0) {
     lines.push(

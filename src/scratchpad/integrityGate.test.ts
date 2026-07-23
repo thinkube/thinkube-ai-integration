@@ -7,7 +7,12 @@ import assert from "node:assert/strict";
 
 import { emptyModel, reduce } from "./model";
 import type { Action, WorkingModel } from "./model";
-import { computeIntegrity, integritySummary } from "./integrityGate";
+import {
+  computeIntegrity,
+  integritySummary,
+  unattributedNote,
+} from "./integrityGate";
+import { entriesOf, isAttributed } from "./model";
 
 function apply(model: WorkingModel, action: Action): WorkingModel {
   const { model: next, delta } = reduce(model, action);
@@ -39,18 +44,32 @@ test("a well-formed space (element + linked acceptance) is clean", () => {
   assert.ok(integritySummary(r).includes("clean"));
 });
 
-test("an unlinked constraint is an orphan", () => {
+test("an unplaced constraint is REPORTED but never blocks the gate", () => {
   let { model, id: el } = propose(emptyModel("tep"), "elements", "an element");
   model = propose(model, "acceptance", "done when X", [el]).model;
   model = propose(model, "constraints", "a floating constraint").model; // no edge
   const r = computeIntegrity(model);
-  assert.equal(r.orphans.length, 1);
-  assert.equal(r.orphans[0].kind, "constraints");
-  assert.ok(!r.clean);
-  assert.ok(integritySummary(r).includes("orphan"));
+  assert.equal(r.unattributed.length, 1);
+  assert.equal(r.unattributed[0].kind, "constraints");
+  // The whole point (2026-07-23): the machine failed to place it, so the
+  // machine owns it. The human is never asked to clear it to proceed.
+  assert.ok(r.clean, "unattributed items do not make the report unclean");
+  assert.match(unattributedNote(r) ?? "", /whole space/);
+  assert.match(unattributedNote(r) ?? "", /Nothing is blocked/);
 });
 
-test("an item stamped with an ask (servesEntry) is NOT an orphan, even with no element edge", () => {
+test("an unplaced item still serves every entry, so it is never homeless", () => {
+  let { model } = propose(emptyModel("tep"), "elements", "an element");
+  model = apply(model, { type: "addRoughRequest", text: "a second ask" });
+  model = propose(model, "constraints", "a floating constraint").model;
+  const floating = model.sections
+    .find((s) => s.kind === "constraints")!
+    .items[0];
+  assert.deepEqual(entriesOf(model, floating), [1, 2]);
+  assert.equal(isAttributed(floating), false);
+});
+
+test("an item stamped with an ask is placed, even with no element edge", () => {
   let { model, id: el } = propose(emptyModel("tep"), "elements", "an element");
   model = propose(model, "acceptance", "done when X", [el]).model;
   // A refinement-ask constraint with no edge but tagged servesEntry=2: belongs
@@ -63,7 +82,7 @@ test("an item stamped with an ask (servesEntry) is NOT an orphan, even with no e
     item: { text: "hardening constraint from ask 2", modality: "optional", evals: {}, servesEntry: 2 },
   });
   const r = computeIntegrity(model);
-  assert.equal(r.orphans.length, 0, JSON.stringify(r.orphans));
+  assert.equal(r.unattributed.length, 0, JSON.stringify(r.unattributed));
 });
 
 test("an element with no acceptance is uncovered", () => {
@@ -97,5 +116,5 @@ test("transitive linkage (gap ← constraint ← element) is NOT an orphan", () 
   model = c.model;
   model = propose(model, "gap", "an unknown", [c.id]).model;
   const r = computeIntegrity(model);
-  assert.equal(r.orphans.length, 0);
+  assert.equal(r.unattributed.length, 0);
 });

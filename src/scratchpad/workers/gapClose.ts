@@ -34,7 +34,7 @@ export interface OpenGap {
   requires: string[];
   /** The ask this gap belongs to — inherited by a decided constraint so it
    *  stays ask-anchored (never orphaned). */
-  servesEntry?: number;
+  servesEntries?: number[];
 }
 
 /** Open gap items (active, no decision proposal pending). */
@@ -47,7 +47,7 @@ export function openGaps(model: WorkingModel): OpenGap[] {
       id: it.id,
       text: it.text,
       requires: [...(it.requires ?? [])],
-      servesEntry: it.servesEntry,
+      servesEntries: it.servesEntries ?? (it.servesEntry !== undefined ? [it.servesEntry] : undefined),
     }));
 }
 
@@ -276,8 +276,8 @@ export function parseGapCloseActions(
           evals: {},
           ...(rationale ? { note: `Decided: ${rationale}` } : {}),
           ...(gap.requires.length ? { requires: [...gap.requires] } : {}),
-          ...(gap.servesEntry !== undefined
-            ? { servesEntry: gap.servesEntry }
+          ...(gap.servesEntries?.length
+            ? { servesEntries: gap.servesEntries }
             : {}),
         },
       });

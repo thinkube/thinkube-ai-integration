@@ -5,6 +5,7 @@ import * as nodeFs from "node:fs/promises";
 
 import { emptyModel, reduce } from "./model";
 import type { Action, Delta, SectionKind, WorkingModel } from "./model";
+import { entriesOf, isAttributed } from "./model";
 import { deserialize, serialize } from "./persistence";
 import {
   explainer,
@@ -586,7 +587,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
         // This round KNOWS its ask — stamp it rather than guessing a default.
         return actions.map((a) =>
           a.type === "proposeItem" && a.sectionId === elementsSecId
-            ? { ...a, item: { ...a.item, servesEntry: askNum } }
+            ? { ...a, item: { ...a.item, servesEntries: [askNum] } }
             : a,
         );
       });
@@ -599,8 +600,9 @@ class ScratchpadSessionImpl implements ScratchpadSession {
     const perAsk = new Map<number, number>();
     for (const it of this._model.sections.find((s) => s.kind === "elements")
       ?.items ?? [])
-      if (it.state === "active" && it.servesEntry !== undefined)
-        perAsk.set(it.servesEntry, (perAsk.get(it.servesEntry) ?? 0) + 1);
+      if (it.state === "active" && isAttributed(it))
+        for (const e of entriesOf(this._model, it))
+          perAsk.set(e, (perAsk.get(e) ?? 0) + 1);
     const uncoveredAsks = asks
       .map((_, i) => i + 1)
       .filter((n) => !perAsk.has(n));
@@ -617,7 +619,11 @@ class ScratchpadSessionImpl implements ScratchpadSession {
     const liveElements = () =>
       (this._model.sections.find((s) => s.kind === "elements")?.items ?? [])
         .filter((it) => it.state === "active")
-        .map((it) => ({ id: it.id, text: it.text, serves: it.servesEntry ?? 1 }));
+        .map((it) => ({
+          id: it.id,
+          text: it.text,
+          serves: entriesOf(this._model, it)[0] ?? 1,
+        }));
 
     if (!isIncremental) {
       // FULL expand: ONE global pass each over ALL elements (this is where the
@@ -682,7 +688,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
                 scope.map((e) => e.id),
               ).map((a) =>
                 a.type === "proposeItem"
-                  ? { ...a, item: { ...a.item, servesEntry: ask.n } }
+                  ? { ...a, item: { ...a.item, servesEntries: [ask.n] } }
                   : a,
               );
             },
@@ -742,14 +748,14 @@ class ScratchpadSessionImpl implements ScratchpadSession {
       }
     }
 
-    // Backstop repair: per-ask edge-stamping should leave no orphans, so this
-    // runs only for an imported or legacy orphan — link it to the element it
-    // serves, or promote a mislabeled orphan into elements.
+    // Backstop repair: an unplaced item is not broken (it serves the whole
+    // space), but narrower is better — try to tie it to the element it serves,
+    // or promote a mislabeled one into elements. Best-effort, never a blocker.
     let integrity = computeIntegrity(this._model);
-    if (integrity.orphans.length > 0) {
-      this._commandMessage = `Repairing — ${integrity.orphans.length} orphan(s)…`;
+    if (integrity.unattributed.length > 0) {
+      this._commandMessage = `Placing — ${integrity.unattributed.length} unplaced item(s)…`;
       this._updatePanel();
-      const orphans = integrity.orphans;
+      const orphans = integrity.unattributed;
       await this._runWorkerRound(
         "repair",
         ["elements", "constraints", "gap", "acceptance"],
@@ -785,7 +791,7 @@ class ScratchpadSessionImpl implements ScratchpadSession {
         : "") +
       `Review on the board; nothing is settled yet.`;
     scratchpadLog(
-      `━━ integrity: ${integrity.orphans.length} orphans, ${integrity.uncoveredElements.length} uncovered, ${integrity.duplicates.length} dup-pairs`,
+      `━━ integrity: ${integrity.unattributed.length} unplaced, ${integrity.uncoveredElements.length} uncovered, ${integrity.duplicates.length} dup-pairs`,
     );
     this._updatePanel();
   }
@@ -987,20 +993,30 @@ class ScratchpadSessionImpl implements ScratchpadSession {
     const wrote = this.dispatch(rewrite);
     if (wrote.kind !== "applied")
       return `Revision aborted — ${(wrote as { reason?: string }).reason ?? "the rewrite was refused"}.`;
+    // Shared items stay, but stop claiming to serve the ask whose wording no
+    // longer produced them. Re-derivation may re-attach them on the new words.
+    for (const h of plan.shared) {
+      this.dispatch({
+        type: "setItemEntries",
+        actor: "gap-filler",
+        itemId: h.id,
+        entries: h.servesEntries.filter((e) => e !== draft.entry),
+      });
+    }
     // Back into the queue: the entry is now underived, so expand walks it alone.
     this.dispatch({ type: "unmarkEntryDerived", entry: draft.entry });
     this._revisionDraft = undefined;
     this._selection.clear();
     const purged = plan.purge.length;
-    const kept = plan.preserved.length;
+    const kept = plan.preserved.length + plan.shared.length;
     this._commandMessage =
       `Entry ${draft.entry} revised — ${purged} derived item(s) deleted` +
-      `${kept > 0 ? `, ${kept} shipped/protected kept` : ""}. Re-deriving…`;
+      `${kept > 0 ? `, ${kept} kept (shipped, protected, or serving another ask)` : ""}. Re-deriving…`;
     this._updatePanel();
     await this.expandStaged();
     return (
       `Entry ${draft.entry} rewritten and re-derived. Deleted ${purged} item(s) from the old wording` +
-      `${kept > 0 ? `; kept ${kept} that a frozen TEP already shipped or protects` : ""}.`
+      `${kept > 0 ? `; kept ${kept} that a frozen TEP shipped or protects, or that other asks still need` : ""}.`
     );
   }
 

@@ -447,6 +447,7 @@ export function normalizeWorkerActions(
           requires?: string[];
           factors?: { complexity?: ComplexityFactor; risk?: RiskFactor };
           servesEntry?: number;
+          servesEntries?: number[];
           complexityRationale?: string;
         } = {
           text,
@@ -465,7 +466,8 @@ export function normalizeWorkerActions(
               ? Number(servesRaw)
               : NaN;
         if (Number.isInteger(servesNum) && servesNum >= 1)
-          item.servesEntry = servesNum;
+          // Workers name a single ask on the wire; the model stores a SET.
+          item.servesEntries = [servesNum];
         const cxRat = asNonEmptyString(
           itemRec?.complexityRationale ?? rec.complexityRationale,
         );
@@ -720,7 +722,7 @@ export function normalizeWorkerActions(
             | "gap"
             | "acceptance",
           ...(Number.isInteger(servesNum) && servesNum >= 1
-            ? { servesEntry: servesNum }
+            ? { servesEntries: [servesNum] }
             : {}),
         });
         continue;
